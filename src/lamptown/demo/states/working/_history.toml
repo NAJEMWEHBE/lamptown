@@ -1,0 +1,7 @@
+# The working state's book: Otter is still drafting (no approval asked yet). This replaces the
+# world's events for the same id; see the world's _history.toml for the form. Every name here is
+# made up.
+
+[[agent]]
+id = "otter"
+events = ["-35m start", "-24m files 4"]

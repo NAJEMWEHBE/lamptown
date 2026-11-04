@@ -34,13 +34,22 @@ Security fixes go into the newest release. Lamptown is young, so please update b
   e-mail address). With `--excerpts` (or `LAMPTOWN_STATUS_EXCERPTS=1`) it also keeps the first
   line of the reply, cut to 80 characters, with anything that looks like a key, token or
   password masked. `lamptown status run` keeps the command line and the last stderr lines.
+- **Your agents' own logs, with `[live]` on** (`lamptown watch`, `open --watch`, the app), only
+  through the readers you list, read-only: Claude Code's `~/.claude/sessions/` and session logs
+  under `~/.claude/projects/`, Codex's `~/.codex/sessions/` and the titles in
+  `~/.codex/state_5.sqlite`, and repositories' reflogs (`.git/logs/`). From them it keeps a
+  title, a project folder's name, a tool's name, a state, times and counts; never prompts,
+  replies, tool input, file contents, paths, commit messages or author names. Agents in a
+  `private_dirs` folder become "Private agent". See
+  [docs/live.md](docs/live.md#what-it-reads-and-what-it-keeps).
 
 ## What Lamptown writes
 
 | Command | Writes |
 |---|---|
-| `lamptown build`, `open`, `app` | `town.html` and `town-details.html` in the output folder (per-user data folder by default, or `[town] out`, or `--out`), atomically. |
-| `lamptown demo` | A copy of the fictional demo world and its town, in a new temp folder (or `--out`). |
+| `lamptown build`, `open`, `app` | `town.html`, `town-details.html` and `town-data.js` in the output folder (per-user data folder by default, or `[town] out`, or `--out`), atomically. With `[live]` on, also `town-history.js` and `town-live.js` (names, states, times and counts only); with it off, a build removes those two if an earlier one left them there. |
+| `lamptown watch`, `open --watch`, and `app` with `[live]` on | The town files above, rebuilt every 15 s or so (`watch --rebuild` sets it), and `town-live.js` every few seconds. In the status folder (`[live] status_dir`, else the first `status_dir` source's folder, `$AGENT_STATUS_DIR` or `~/.agent-status`, made if missing): one `<id>.json` status file for each agent session the readers find (the `git` reader adds commit and push counts to those), the event log `events/YYYY-MM-DD.jsonl` (one file per local day; files older than `[live] history_days` are removed), and `.lamptown/cursors.json` (the readers' places in the logs and the last folder snapshot: names, ids, counts, times and hashes, never a path or text) with the lock `.lamptown/watch.lock`. |
+| `lamptown demo` | A copy of the fictional demo world and its town, in a new temp folder (or `--out`). While it stays live (the default, until Ctrl+C) it runs the `lamptown watch` loop on that copy, so the Watcher's event log and `.lamptown/` go into the copy's own status folder (`world/agents/`), never outside it. |
 | `lamptown status set`, `run`, `hook` | One `<id>.json` status file in `~/.agent-status/`, `$AGENT_STATUS_DIR` or `--dir`, atomically, at most 64 KB. |
 | `lamptown status clear` | Removes old status files from that folder (`--older-than`, `--all`, `--dry-run`). Only valid `agent-status/1` files named `<id>.json`, directly in the folder, and not one that changed while it looked. |
 | `lamptown app` | Its log, a lock file, `instance.json` (a port and a random token; owner-only on macOS and Linux) and the web view's profile, in a per-user state folder (`$LAMPTOWN_APP_DIR` or `--state-dir` to move them). |

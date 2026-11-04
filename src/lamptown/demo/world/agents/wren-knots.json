@@ -1,0 +1,16 @@
+{
+  "spec": "agent-status/1",
+  "id": "wren-knots",
+  "title": "Knot check",
+  "agent": "claude-code",
+  "kind": "task",
+  "state": "working",
+  "message": "Checking the bridle knots",
+  "started": "{{-9m}}",
+  "updated": "{{-1m}}",
+  "stale_after": 1800,
+  "x-project": "paper-kite",
+  "x-plot": "boathouse",
+  "x-parent": "wren",
+  "x-files": 1
+}

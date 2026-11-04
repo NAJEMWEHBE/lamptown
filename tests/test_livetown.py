@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from datetime import UTC, datetime, timedelta, tzinfo
 from pathlib import Path
@@ -16,6 +17,7 @@ from lamptown import build as B
 from lamptown import livetown as L
 from lamptown.config import ConfigError, parse_config
 from lamptown.status import events as ev
+from lamptown.status.readers import BUILTIN
 from lamptown.status.store import update_status
 from lamptown.status.watch import Watcher
 from test_town import run
@@ -153,6 +155,15 @@ def test_live_config_errors_read_clearly(toml, words):
     with pytest.raises(ConfigError) as e:
         parse_config(toml)
     assert words in str(e.value)
+
+
+def test_the_missing_kind_hint_names_only_real_readers():
+    # review L12 m3: the hint said kind = "claude-code", a reader that doesn't exist
+    with pytest.raises(ConfigError) as e:
+        parse_config("[[live.reader]]\nname = \"x\"")
+    hint = str(e.value).split("needs kind = ", 1)[1].split("(", 1)[0]
+    named = set(re.findall(r'"([^"]+)"', hint))
+    assert named == set(BUILTIN), (hint, sorted(BUILTIN))
 
 
 # ----------------------------------------------------------------------------- folder -> plot

@@ -8,7 +8,8 @@ building's **room data**, the JSON its collectors produced, and draws it. The ru
 **everything that moves stands for real data.** A quiet setup gives a still room.
 
 This page has two halves: the six built-in rooms (what data they read, what each state looks like,
-how far they scale), and [how to bring your own room](#bring-your-own-room).
+how far they scale) plus [the live town's lighthouse](#lighthouse-the-keepers-book), and
+[how to bring your own room](#bring-your-own-room).
 
 ## The five states
 
@@ -283,7 +284,7 @@ framed boards on the "past voyages" wall.
 | `ok` | A green work lamp, "ALL GOOD". |
 | `waiting` | An amber lamp and a "!" bubble; the items wait on your desk. |
 | `working` | A shipwright lays the next plank under a cyan work light. |
-| `error` | Its `TASKS.md` can't be read: greyed planks, a red distress flag. |
+| `error` | A project: its `TASKS.md` can't be read, "CAN'T READ": greyed planks, a red distress flag. An agent: it failed, "FAILED", under the same red flag. |
 | `missing` | Its folder is gone: an empty cradle under a grey dust sheet. |
 
 **Scale.** Berths share the bay: an active one takes two units, a paused one takes one, ten units
@@ -293,6 +294,45 @@ boards in two rows, then "+N".
 **Sources.** [`projects`](config.md#projects) and [`status_dir`](config.md#status_dir) (one berth
 per status file with `kind` `task` or `project`).
 Demo: `&state=...`, `&boats=N`, `&closed=N`.
+
+**Live.** With `[live]` on, the wharf along the room's floor shows the same berths as the town
+([live.md](live.md)), in the same order and paint, with each project's Lamplighters standing at
+its berth.
+
+### `lighthouse`: the keeper's book
+
+![The lighthouse room: the keeper's handover book open on today, the closing slip listing what is still open](media/room-lighthouse.png)
+
+The live town's own room: it stands only with `[live]` on, in the bay rather than on a plot, and
+no building can use its name (see [live.md](live.md)). Click the lighthouse to go in. The keeper
+keeps a handover book of the last `history_days` days (7 by default), today last.
+
+- **The book.** One line per agent, in the order they came in: its name and tool on the left page,
+  what happened on the right, written by the pen as it happens: IN, PUSHED, CI GREEN or CI RED,
+  WAITING, DONE, FAILED, QUIET. Files changed and commits are counted in the margin when the agent
+  finishes. 15 lines a leaf.
+- **The tabs.** One per day, today marked; up to 10 show at once.
+- **The brass clock.** Replays the day in about a minute. Quiet hours fold away, so a quiet day
+  plays faster. The strip under the book is the day hour by hour: drag or click it to scrub. The
+  window shows the town, its plots lighting up as the replay goes.
+- **The closing slip.** What is still open, most urgent first: waiting for you, failed, gone quiet,
+  still working. It is handed over at the end of a replay and when you open today. Click a name on
+  it to watch that moment. Past days say "open at close", never "needs you". A line still open
+  from an earlier day is carried over ("FROM MON 22:30").
+
+**Keys.** `P` play or pause, Left / Right scrub an hour (Shift: three), Home / End the start or
+the end of the day, Up / Down the day before or after, PageUp / PageDown a leaf, `S` the slip.
+Never with Alt, Ctrl or Meta held: those are the browser's.
+
+**Data.** `town-history.js` (`lamptown-history/1`), written by the Watcher at most once a minute
+and with each rebuild; the room reads it again while you are inside. Today's open lines also
+follow the live payload while it is fresh. Each day has `agents` (names only: "PROJECT / TITLE",
+tool, plot) and `events` as `[minute of the local day, agent, kind, count or result]`.
+
+**Scale.** At most 300 agents and 4000 events a day.
+
+**Sources.** The Watcher's event log (`<status folder>/events/`), see [live.md](live.md).
+Demo: `&demo=1`, a made-up week with a busy day of 40 agents and an empty day.
 
 ## Bring your own room
 

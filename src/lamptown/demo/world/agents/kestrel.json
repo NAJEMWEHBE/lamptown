@@ -1,0 +1,15 @@
+{
+  "spec": "agent-status/1",
+  "id": "kestrel",
+  "title": "Kestrel: gull counter",
+  "agent": "codex",
+  "kind": "task",
+  "state": "error",
+  "message": "Stopped by an API error",
+  "started": "{{-48m}}",
+  "updated": "{{-20m}}",
+  "stale_after": 1800,
+  "x-project": "moss-engine",
+  "x-plot": "boathouse",
+  "x-files": 2
+}

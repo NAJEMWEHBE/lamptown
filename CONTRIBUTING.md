@@ -42,7 +42,7 @@ the standard library only: please keep `dependencies` in `pyproject.toml` empty.
 python -m pytest                     # every test
 ruff check .                         # lint
 python tools/privacy_gate.py         # the privacy gate over the working tree
-lamptown demo                        # and look at it
+lamptown demo --no-live              # opens the demo town and returns: look at it
 ```
 
 CI runs the same on Windows, macOS and Linux. A pull request needs all of them green.

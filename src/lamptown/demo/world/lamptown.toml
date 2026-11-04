@@ -92,7 +92,7 @@ label = "Skill shelf"
   dirs = ["shelf/skills"]
   staging_dir = "shelf/staging"
 
-# ---- the boathouse: three projects and five agents writing agent-status/1 files
+# ---- the boathouse: three projects and the agents writing agent-status/1 files
 [[building]]
 id = "harbour"
 type = "harbour"
@@ -108,3 +108,11 @@ label = "Harbour"
   [[building.source]]
   kind = "status_dir"
   dir = "agents"
+
+# ---- the live town: the same agents walk the town as Lamplighters, and the lighthouse keeps
+# their book (the last week is in agents/events/). The live town watches the status_dir
+# folder above. Your own town would add readers here, for example:
+#   [[live.reader]]
+#   kind = "claude_code"
+[live]
+history_days = 7

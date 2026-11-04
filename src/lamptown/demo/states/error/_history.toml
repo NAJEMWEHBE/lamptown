@@ -1,0 +1,7 @@
+# The error state's book: Puffin went silent 45 minutes ago and was marked as stopped responding
+# 30 minutes later, as its status file says. This replaces the world's events for the same id;
+# see the world's _history.toml for the form. Every name here is made up.
+
+[[agent]]
+id = "puffin"
+events = ["-1h10m start", "-50m files 41", "-15m fail"]

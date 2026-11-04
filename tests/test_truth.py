@@ -344,7 +344,8 @@ UNREADABLE_BODY = """return { err: DATA_ERR, sample: !!D.sample, lamps: SEEN.lam
                                  "not json at all", '{"parts": []}'])
 @pytest.mark.parametrize("query", [DAY, DAY + "&preview=1"])
 def test_unreadable_data_goes_dark_and_never_shows_made_up_numbers(pages, raw, query):
-    r = run(pages["lively"].town, UNREADABLE_BODY, query=query, replace_data=raw)
+    # &live=0: the demo is live, and its fresh town-data.js would rightly heal the broken slot
+    r = run(pages["lively"].town, UNREADABLE_BODY, query=query + "&live=0", replace_data=raw)
     assert r["err"] and r["sample"] is False  # ?preview=1 never brings the sample to a real page
     assert r["lamps"] == {} and len(r["lots"]) == 6
     assert all(p["num"] == "" for p in r["plates"].values())
@@ -439,7 +440,9 @@ def test_still_mode_is_still_and_still_tells_the_truth(pages):
     r = check(pages, f, HASH + """const h0 = hash(); await wait(1500);
       return { still: stillMode(), running, h0, h1: hash(), walkers: SEEN.walkers,
                A: SEEN.belts.A, bell: SEEN.bell || null };""",
-              query=f"?at={AT}", flags=("--force-prefers-reduced-motion",))
+              # &live=0: the demo is live, and its town-live.js arriving (or turning 30 s old)
+              # inside the 1.5 s would rightly change the picture on a slow runner
+              query=f"?at={AT}&live=0", flags=("--force-prefers-reduced-motion",))
     assert r["still"] is True and r["running"] is False
     assert r["h0"] == r["h1"]  # no frame loop: nothing changes on screen
     # ...yet it shows the real state: the walkers already at the door, the crates, a tilted bell
@@ -490,7 +493,7 @@ STATE_BODY = """return { lamps: SEEN.lamps, walkers: SEEN.walkers, from: SEEN.wa
 def test_the_lively_demo_world_moves_for_real_reasons(pages):
     r = run(pages["lively"].town, STATE_BODY, query=NIGHT)
     assert r["lamps"] == {"tower": "green", "library": "amber", "gate": "green", "lab": "amber",
-                          "workshop": "red", "boathouse": "amber"}
+                          "workshop": "red", "boathouse": "red"}  # Kestrel failed at the harbour
     assert r["walkers"] == 3 and r["from"] == ["boathouse", "workshop", "tower"]
     assert r["belts"]["A"] == ["scan"] and r["scanner"] is True and r["guard"] == STC["working"]
     assert r["belts"]["B"] == ["staged", "building"]

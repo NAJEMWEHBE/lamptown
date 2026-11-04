@@ -293,7 +293,8 @@ function pausedBoat(b, t, hov) { // cached per berth (two looks: hovered or not)
 function nameBoards(t) {
   for (const b of LAY.bays) {
     const p = b.p, act = p.status === 'active', st = p.state, hov = HOV === 'boat:' + p.id;
-    const cands = [p.name.toUpperCase(), p.short, p.short.split(' ')[0]].filter(Boolean), room = b.w - 6 - (act ? 11 : 6);
+    // L12: the first word alone drops the punctuation that led on ("KESTREL: GULL..." -> "KESTREL", not "KESTREL:")
+    const cands = [p.name.toUpperCase(), p.short, p.short.split(' ')[0].replace(/[:;,.\-/]+$/, '')].filter(Boolean), room = b.w - 6 - (act ? 11 : 6);
     const nm = cands.find(s => textW(s) <= room) || fitText(p.short || p.name, room);
     const w = Math.min(b.w - 6, textW(nm) + (act ? 14 : 8)), x = Math.round(b.x + (b.w - 2 - w) / 2), y = 74;
     R(x, y, w, 9, hov ? GOLD : OL); R(x + 1, y + 1, w - 2, 7, '#161b38'); R(x + 1, y + 1, w - 2, 1, '#2b336a');
@@ -301,7 +302,8 @@ function nameBoards(t) {
       const c = ST[st], blink = K.still || !(st === 'waiting' || st === 'error') || Math.sin(t * 4) > 0;
       R(x + 3, y + 3, 3, 3, c.lamp); if (blink && st !== 'missing') P(x + 3, y + 3, c.hi);
       textL(nm, x + 9, y + 2, st === 'missing' ? '#8a8ea8' : WHITE);
-      const word = WHY_WORD[p.why] || WORD[st], ww = textW(word); R(x + (w >> 1) - (ww >> 1) - 2, y + 9, ww + 4, 8, OL); textC(word, x + w / 2, y + 10, c.txt);
+      // L12: an agent in error failed (its file was read fine): "CAN'T READ" is for projects
+      const word = WHY_WORD[p.why] || (p.agent && st === 'error' ? 'FAILED' : WORD[st]), ww = textW(word); R(x + (w >> 1) - (ww >> 1) - 2, y + 9, ww + 4, 8, OL); textC(word, x + w / 2, y + 10, c.txt);
     } else {
       textL(nm, x + 4, y + 2, p.exists ? PAUSE_TXT : '#7a7f99'); R(b.cx, y + 9, 1, 3, '#5a5068');
     }

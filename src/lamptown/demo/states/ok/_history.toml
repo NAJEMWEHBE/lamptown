@@ -1,0 +1,16 @@
+# The ok state's book: today, the agents this state keeps end their work done, at the times their
+# status files say (the agents it skips leave the book by themselves). These replace the world's
+# events for the same ids; see the world's _history.toml for the form. Every name here is made up.
+
+[[agent]]
+id = "otter"
+events = ["-35m start", "-33m files 4", "-30m done"]
+
+[[agent]]
+id = "puffin"
+events = ["-1h10m start", "-50m files 20", "-30m files 100", "-15m done"]
+
+[[agent]]
+id = "wren"
+events = ["-40m start", "-36m files 3", "-32m commit 1", "-29m files 3", "-27m commit 1",
+          "-25m push", "-22m ci ok", "-20m done"]

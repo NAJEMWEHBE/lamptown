@@ -1,0 +1,15 @@
+{
+  "spec": "agent-status/1",
+  "id": "lark",
+  "title": "Lark: tide clock",
+  "agent": "kitebot",
+  "kind": "task",
+  "state": "working",
+  "message": "Winding the tide clock",
+  "started": "{{-8h}}",
+  "updated": "{{-7h}}",
+  "stale_after": 1800,
+  "x-project": "tidebook",
+  "x-plot": "tower",
+  "x-files": 2
+}

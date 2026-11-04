@@ -5,8 +5,10 @@ Builds ``lamptown demo`` at a fixed moment (a full-moon night), photographs it w
 Chrome, and writes into ``docs/media/`` (the only folder the privacy gate allows images in):
 
 * ``hero.gif``       the town for a few seconds, then a walk into three rooms and back out
-* ``town.png``       the town, still
-* ``room-<id>.png``  one still per room (every building in the demo has one)
+* ``town.png``       the town, still, with its live town: Lamplighters, the lighthouse, berths
+* ``live-town.png``  the same moment with one Lamplighter's card pinned open (a click)
+* ``room-<id>.png``  one still per room (every building in the demo has one, the lighthouse
+                     too)
 
 Every picture is the page's own 400 x 225 pixel art, scaled up by whole pixels (2x), so it
 stays crisp. Every machine makes the same pictures: the build time, the page clock (``?at=``)
@@ -263,14 +265,80 @@ def save_gif(frames: list[Image.Image], path: Path) -> None:
 
 
 def build_media_town(root: Path):
-    """The demo world at WHEN, with the sky at LAT, LON (the demo itself leaves them unset)."""
-    cfg = make_world(root / "world", WHEN)
+    """The demo world at WHEN, with the sky at LAT, LON (the demo itself leaves them unset). The
+    lighthouse's days are UTC days too, so no machine's zone moves an event in its book."""
+    cfg = make_world(root / "world", WHEN, tz=dt.UTC)
     text = cfg.read_text(encoding="utf-8")
     if text.count("\n[town]\n") != 1:
         raise RuntimeError("the demo world's config has no single [town] table")
     cfg.write_text(text.replace("\n[town]\n", f"\n[town]\nlatitude = {LAT}\nlongitude = {LON}\n"),
                    encoding="utf-8")
-    return build(load_config(cfg), out_dir=root / "town", now=WHEN)
+    return build(load_config(cfg), out_dir=root / "town", now=WHEN, tz=dt.UTC)
+
+
+LIVE_JS = "town-live.js"
+# live-town.png: a Lamplighter at the notes vault, its card pinned open. Its card opens into the
+# open grass, so the wharf (the berths), the lighthouse and its sign stay in the picture; the
+# waiting agent's card (Otter's) would open over the wharf. tests/test_media.py checks that.
+LIVE_PIN = "puffin"
+
+
+def live_push(town_dir: Path) -> str:
+    """The live town for the media copy of the page. The page shows the Lamplighters, the
+    lighthouse and the berths only while the live payload is fresh by the *real* clock (under
+    30 s old), and a Watcher's file on disk ages while Chrome works. So the payload is pushed in
+    the page itself, as the desktop app does (``lamptownLive(p)``), stamped with the page's own
+    moment; the file is taken away, so the page's poll can't swap in the stale one. The page
+    ages an agent from the payload's ``at`` to its ``since``, so every ``since`` moves with
+    ``at`` by the same amount: "waiting 12 min" stays 12 min on any machine and any day.
+    Everything else in it (the agents' states) is the build's, pinned to WHEN."""
+    path = town_dir / LIVE_JS
+    text = path.read_text(encoding="utf-8").strip()
+    head = "lamptownLive("
+    if not (text.startswith(head) and text.endswith(");")):
+        raise RuntimeError(f"{LIVE_JS} is not a lamptownLive(...) call")
+    payload = text[len(head):-2]
+    path.unlink()
+    # the sinces are the build's (WHEN), the file's `at` is the clock on the wall: move from WHEN
+    when = WHEN.isoformat().replace("+00:00", "Z")
+    return ("<script>(() => { const p = " + payload + ", now = Date.now(),"
+            f" off = now - Date.parse('{when}'), move = s => new Date(Date.parse(s) + off)"
+            ".toISOString();"
+            " for (const a of p.agents || []) if (a.since) a.since = move(a.since);"
+            " p.at = new Date(now).toISOString(); lamptownLive(p); })();</script>")
+
+
+# ``?pin=<agent id>`` (the media copy only): click that Lamplighter once it stands still, as a
+# reader would, so its card stays pinned in the picture. The click goes in only at a point whose
+# tooltip is that agent's own card (its first line is the agent's title), so a miss can never
+# fall through to the town and walk into a building.
+PIN = ("<script>(() => { const id = new URLSearchParams(location.search).get('pin');"
+       " if (!id) return; let tries = 0;"
+       " const go = () => { if (++tries > 400) return;"
+       # SEEN is the page's top-level const (not a window property)
+       " const f = (SEEN.agents || []).find(e => e.id === id && !e.small);"
+       " const a = ((SEEN.live || {}).agents || []).find(e => e.id === id);"
+       " if (!f || !a || f.mode === 'walk') return setTimeout(go, 25);"
+       " for (let dy = -24; dy <= 4; dy++) for (let dx = -4; dx <= 4; dx++) {"
+       " const x = f.x + dx, y = f.y + dy, tp = tipAt(x, y);"
+       " if (!tp || tp.tip[0] !== String(a.title)) continue;"
+       " const r = cvs.getBoundingClientRect();"
+       " stage.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true,"
+       " clientX: r.left + (x + 0.5) / W * r.width, clientY: r.top + (y + 0.5) / H * r.height }));"
+       # one click, then a look 300 ms on (the click redraws at once): no card yet, try again
+       " return setTimeout(() => { if (!SEEN.agentCard) go(); }, 300); }"
+       " setTimeout(go, 25); };"
+       " addEventListener('load', go); })();</script>")
+
+
+def media_page(html: str, push: str) -> str:
+    """The media copy of the town: seeded (above), fed the live payload (live_push), and able to
+    pin one agent's card (PIN)."""
+    out = seeded(html)
+    end = out.rfind("</body>")
+    if end < 0:
+        raise RuntimeError("the built town has no </body>")
+    return out[:end] + push + PIN + out[end:]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -288,9 +356,11 @@ def main(argv: list[str] | None = None) -> int:
         demo = build_media_town(Path(tmp) / "demo")
         rooms = [bid for bid, room in demo.data["rooms"].items() if isinstance(room, dict)]
         page = demo.town.with_name("town-media.html")   # beside town.html, so its files resolve
-        page.write_text(seeded(demo.town.read_text(encoding="utf-8")), encoding="utf-8")
+        page.write_text(media_page(demo.town.read_text(encoding="utf-8"),
+                                   live_push(demo.town.parent)), encoding="utf-8")
         cam = Camera(chrome, page, Path(tmp) / "shots")
-        stills = [("town", query(T), "")] + [(f"room-{r}", query(T), f"#room={r}") for r in rooms]
+        stills = [("town", query(T), ""), ("live-town", query(T) + f"&pin={LIVE_PIN}", "")]
+        stills += [(f"room-{r}", query(T), f"#room={r}") for r in rooms]
         jobs = stills + hero_plan()
         with ThreadPoolExecutor(max_workers=max(1, args.jobs)) as pool:
             pics = list(pool.map(lambda j: cam(*j), jobs))

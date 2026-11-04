@@ -2,10 +2,11 @@
   "spec": "agent-status/1",
   "id": "otter",
   "title": "Otter: ferry timetable",
-  "agent": "otter",
+  "agent": "codex",
   "kind": "task",
   "state": "waiting",
   "message": "Asks you to approve the plan",
+  "started": "{{-35m}}",
   "updated": "{{-12m}}",
   "stale_after": 1800,
   "needs_you": [
@@ -13,5 +14,8 @@
       "text": "Approve the ferry timetable plan",
       "href": "https://example.com/otter"
     }
-  ]
+  ],
+  "x-project": "moss-engine",
+  "x-plot": "boathouse",
+  "x-files": 4
 }

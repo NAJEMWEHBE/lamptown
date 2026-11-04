@@ -337,10 +337,11 @@ Every key except `kind`, `name` and the reserved `_` keys is passed through. `st
 
 ## `[live]`
 
-The live town (Lamptown 0.2, in progress). A `[live]` table switches it on: the build also writes
-`town-live.js` and `town-history.js` next to `town.html`, and the town gets a lighthouse. Only
-names leave your computer's files: a title, a project folder's name and a tool. Never message
-text, file contents or full paths.
+The live town: your agents walk the town as they work. A `[live]` table switches it on: the
+build also writes `town-live.js` and `town-history.js` next to `town.html`, and the town gets a
+lighthouse. `lamptown watch` (or the desktop app) keeps those files up to date. Only names leave
+your computer's files: a title, a project folder's name and a tool. Never message text, file
+contents or full paths. The whole picture is in [live.md](live.md).
 
 ```toml
 [live]
@@ -350,7 +351,7 @@ private_dirs = ["~/private"]      # agents working in or under these show as "Pr
 # status_dir = "~/.agent-status"  # default: the status_dir source's dir, else $AGENT_STATUS_DIR
 
 [[live.reader]]
-kind = "claude-code"              # a reader by name, or reader = "./my_reader.py"
+kind = "claude_code"              # a built-in reader, or reader = "./my_reader.py"
 
 [[live.place]]
 dir = "~/work/ideas"              # work in or under this folder (a glob: from its fixed part)
@@ -364,6 +365,16 @@ plot = "lab"                      # walks to this plot
 | `history_days` | integer | `7` | Days of history. |
 | `private_dirs` | path or list | none | Private folders. They count for `status_dir` sources too, and a `status_dir` source's own `private_dirs` count here. An agent is private when its folder (`x-folder`), its `x-project` written as a path, or the status folder is in or under one. |
 | `status_dir` | path | see above | The status folder the live town watches. A `status_dir` source with no `dir` reads it too. |
+| `[[live.reader]]` | array of tables | none | `kind = "<name>"` or `reader = "./file.py"`; every other key goes to the reader as an option (path keys are resolved as for sources). |
+| `[[live.place]]` | array of tables | none | `dir` and `plot` (one of the six plots). |
+
+The built-in readers (each one's options are in [live.md](live.md#what-it-reads-and-what-it-keeps)):
+
+| `kind` | Follows | Options |
+|---|---|---|
+| `claude_code` | Claude Code's session files and logs, no hooks needed | `root` (`~/.claude`), `on_stop` (`"ok"` or `"waiting"`), `days` (7), `titles` (`"session"` or `"folder"`) |
+| `codex` | Codex's rollout logs and thread titles, no hooks needed | `root` (`$CODEX_HOME`, else `~/.codex`), `days` (7) |
+| `git` | commits and pushes from repository reflogs | `repos` (a list of folders), `status_dir` (count them on the agents in this status folder), `days` (7) |
 
 `~`, `$VARS` and config-relative paths work in `private_dirs`, `status_dir` and
 `[[live.place]] dir`, exactly as in a `status_dir` source's `private_dirs`.
@@ -375,8 +386,6 @@ and the live town agree. A finished agent stays on the page for 15 minutes.
 An agent started in your home folder, above it, or at a drive or file-system root has no
 project on the page (no berth, no project in the book): the folder's name there would be your
 login name.
-| `[[live.reader]]` | array of tables | none | `kind = "<name>"` or `reader = "./file.py"`; every other key goes to the reader as an option (path keys are resolved as for sources). |
-| `[[live.place]]` | array of tables | none | `dir` and `plot` (one of the six plots). |
 
 Where an agent walks: the reader's own choice, else the tower for scheduled jobs, else the
 building whose folders hold its working folder (from each building's sources: `skill_dirs` and

@@ -48,8 +48,12 @@ Codex asks you to review and trust new hooks before they run.
 | `SessionEnd` | ok | Session ended |
 
 If you use hooks, `notify` is optional (`Stop` covers a finished turn). The file id is
-`codex-<first 12 characters of the session or thread id>`, so `notify` and hooks update
-the same file only when Codex gives them the same id.
+`codex-<last 12 hex digits of the session or thread id>` (Codex thread ids are UUIDv7: their
+first digits are a clock, so parallel sessions share them; the last ones are random), so
+`notify` and hooks update the same file only when Codex gives them the same id. The live town's
+`codex` reader uses the same id, so it and the hooks share one record
+([live.md](../live.md)). Lamptown 0.1 used the first 12 characters: a file a 0.1 hook wrote
+goes stale once after the upgrade, see [Upgrading from 0.1](../live.md#upgrading-from-01).
 
 ## Checked
 

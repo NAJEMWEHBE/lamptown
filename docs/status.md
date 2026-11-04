@@ -281,3 +281,12 @@ every 3 s, and each such tick may read 32 MB (4 MB a file) within a 200 ms readi
 live sessions are read first. History that no one is writing any more is skimmed: only lines
 that can change a count, a title, an error or a turn's end are parsed. A finished subagent log
 over 64 MB is read by its head and its last 1 MB only (its file count is then a floor).
+
+## The live town
+
+With a `[live]` table, the status folder is also what the live town watches: every agent's file
+here becomes a Lamplighter walking the town, and every change a line in the lighthouse's book. Besides
+the hooks and `lamptown status`, built-in readers can write these files from a tool's own logs:
+`claude_code` (above), `codex` (Codex's rollout logs) and `git` (commits and pushes, counted on
+the agent working in that repository). The live town, its readers and its event log are in
+[live.md](live.md).

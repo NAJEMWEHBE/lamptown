@@ -2,10 +2,14 @@
   "spec": "agent-status/1",
   "id": "otter",
   "title": "Otter: ferry timetable",
-  "agent": "otter",
+  "agent": "codex",
   "kind": "task",
   "state": "working",
   "message": "Drafting the ferry timetable",
+  "started": "{{-35m}}",
   "updated": "{{-4m}}",
-  "stale_after": 1800
+  "stale_after": 1800,
+  "x-project": "moss-engine",
+  "x-plot": "boathouse",
+  "x-files": 4
 }

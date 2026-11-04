@@ -2,14 +2,18 @@
   "spec": "agent-status/1",
   "id": "puffin",
   "title": "Puffin: tide photos",
-  "agent": "puffin",
+  "agent": "codex",
   "kind": "task",
   "state": "working",
   "message": "Sorting the tide photos",
-  "updated": "{{-3h}}",
+  "started": "{{-1h10m}}",
+  "updated": "{{-45m}}",
   "stale_after": 1800,
   "progress": {
     "done": 41,
     "total": 120
-  }
+  },
+  "x-project": "tidebook",
+  "x-plot": "library",
+  "x-files": 41
 }

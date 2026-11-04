@@ -1,0 +1,14 @@
+{
+  "spec": "agent-status/1",
+  "id": "gannet",
+  "title": "Gannet: ferry names",
+  "agent": "claude-code",
+  "kind": "task",
+  "state": "working",
+  "message": "Reading the contest entries",
+  "started": "{{-15m}}",
+  "updated": "{{-3m}}",
+  "stale_after": 1800,
+  "x-plot": "lab",
+  "x-files": 1
+}

@@ -1,0 +1,192 @@
+# The demo's live-town history: the last seven days of the lighthouse's handover book.
+# `lamptown demo` turns these into the event log the Watcher would have written
+# (<status_dir>/events/YYYY-MM-DD.jsonl), dated from now, so the book always has a week in it.
+#
+# Each event is "<when> <kind> [count | ok | red]":
+#   when   "-40m": that long before now (today's events, so they lead up to the live agents);
+#          "-3d@09:12": three local days ago at 09:12
+#   kind   start, files, commit, push, ci, wait, answer, fail, quiet, done, project
+#   count  for files and commit; ci takes "ok" (green) or "red"
+# Every name here is made up.
+status_dir = "agents"
+
+# ---- today: the agents walking the town right now (see agents/*.json)
+[[agent]]
+id = "lark"
+title = "Lark: tide clock"
+project = "tidebook"
+tool = "kitebot"
+plot = "tower"
+events = ["-8h start", "-7h10m files 2", "-6h30m fail", "-1h quiet"]
+
+[[agent]]
+id = "marten"
+title = "Marten: digest proofs"
+project = "tidebook"
+tool = "codex"
+plot = "library"
+events = ["-5h start", "-4h20m files 3", "-3h done"]
+
+[[agent]]
+id = "puffin"
+title = "Puffin: tide photos"
+project = "tidebook"
+tool = "codex"
+plot = "library"
+events = ["-1h10m start", "-50m files 20", "-30m files 21"]
+
+[[agent]]
+id = "heron"
+title = "Heron: moss index"
+project = "moss-engine"
+tool = "claude-code"
+plot = "workshop"
+events = ["-55m start", "-30m files 5", "-20m files 2", "-12m commit 1", "-6m done"]
+
+[[agent]]
+id = "kestrel"
+title = "Kestrel: gull counter"
+project = "moss-engine"
+tool = "codex"
+plot = "boathouse"
+events = ["-48m start", "-41m files 2", "-20m fail"]
+
+[[agent]]
+id = "wren"
+title = "Wren: tail ribbons"
+project = "paper-kite"
+tool = "claude-code"
+plot = "boathouse"
+events = ["-40m start", "-34m files 3", "-28m commit 1", "-21m files 3", "-17m commit 1",
+          "-12m push"]
+
+[[agent]]
+id = "otter"
+title = "Otter: ferry timetable"
+project = "moss-engine"
+tool = "codex"
+plot = "boathouse"
+events = ["-35m start", "-24m files 4", "-12m wait"]
+
+[[agent]]
+id = "gannet"
+title = "Gannet: ferry names"
+tool = "claude-code"
+plot = "lab"
+events = ["-15m start", "-8m files 1"]
+
+[[agent]]
+id = "wren-knots"
+title = "Knot check"
+project = "paper-kite"
+tool = "claude-code"
+plot = "boathouse"
+events = ["-9m start"]
+
+# ---- yesterday: a full day, and one agent still open at the close
+[[agent]]
+id = "wren-spars"
+title = "Wren: spar joints"
+project = "paper-kite"
+tool = "claude-code"
+plot = "boathouse"
+events = ["-1d@09:05 start", "-1d@09:40 files 5", "-1d@10:15 commit 1", "-1d@10:50 files 2",
+          "-1d@11:05 commit 1", "-1d@11:20 push", "-1d@11:31 ci ok", "-1d@11:40 done"]
+
+[[agent]]
+id = "otter-docks"
+title = "Otter: dock lights"
+project = "moss-engine"
+tool = "codex"
+plot = "boathouse"
+events = ["-1d@10:20 start", "-1d@11:10 files 6", "-1d@12:10 wait", "-1d@12:35 answer",
+          "-1d@13:20 files 3", "-1d@13:45 commit 1", "-1d@14:02 done"]
+
+[[agent]]
+id = "puffin-rocks"
+title = "Puffin: rock pool notes"
+project = "tidebook"
+tool = "codex"
+plot = "library"
+events = ["-1d@15:00 start", "-1d@15:40 files 30", "-1d@16:10 done"]
+
+[[agent]]
+id = "marten-proofs"
+title = "Marten: digest proofs"
+project = "tidebook"
+tool = "codex"
+plot = "library"
+events = ["-1d@22:40 start", "-1d@22:55 files 2", "-1d@23:10 fail"]
+
+# ---- two days ago: a quiet day
+[[agent]]
+id = "heron-moss"
+title = "Heron: moss samples"
+project = "moss-engine"
+tool = "claude-code"
+plot = "workshop"
+events = ["-2d@20:00 start", "-2d@20:25 files 4", "-2d@20:45 done"]
+
+# ---- three days ago: nobody worked
+
+# ---- four days ago: a red CI run, fixed the same morning
+[[agent]]
+id = "kestrel-gulls"
+title = "Kestrel: gull counter"
+project = "moss-engine"
+tool = "codex"
+plot = "boathouse"
+events = ["-4d@08:30 start", "-4d@08:50 files 6", "-4d@09:05 commit 1", "-4d@09:08 push",
+          "-4d@09:20 ci red", "-4d@09:40 files 2", "-4d@09:52 commit 1", "-4d@09:55 push",
+          "-4d@10:05 ci ok", "-4d@10:10 done"]
+
+[[agent]]
+id = "wren-tail"
+title = "Wren: tail length"
+project = "paper-kite"
+tool = "claude-code"
+plot = "boathouse"
+events = ["-4d@13:00 start", "-4d@13:25 files 2", "-4d@13:40 done"]
+
+[[agent]]
+id = "lark-tides"
+title = "Lark: tide tables"
+project = "tidebook"
+tool = "kitebot"
+plot = "tower"
+events = ["-4d@18:00 start", "-4d@18:45 files 3", "-4d@19:30 done"]
+
+# ---- five days ago: the ferry names contest
+[[agent]]
+id = "gannet-names"
+title = "Gannet: ferry names"
+tool = "claude-code"
+plot = "lab"
+events = ["-5d@10:00 start", "-5d@10:20 files 3", "-5d@10:40 wait", "-5d@11:05 answer",
+          "-5d@11:30 done"]
+
+[[agent]]
+id = "otter-sails"
+title = "Otter: sail plan"
+project = "moss-engine"
+tool = "codex"
+plot = "boathouse"
+events = ["-5d@14:00 start", "-5d@14:30 files 2", "-5d@15:00 done"]
+
+# ---- six days ago: a new project comes in
+[[agent]]
+id = "wren-sketch"
+title = "Wren: first sketch"
+project = "paper-kite"
+tool = "claude-code"
+plot = "boathouse"
+events = ["-6d@19:00 project", "-6d@19:00 start", "-6d@19:40 files 8", "-6d@20:30 commit 1",
+          "-6d@21:00 done"]
+
+[[agent]]
+id = "puffin-gulls"
+title = "Puffin: gull photos"
+project = "tidebook"
+tool = "codex"
+plot = "library"
+events = ["-6d@20:15 start", "-6d@20:30 files 12", "-6d@20:50 done"]

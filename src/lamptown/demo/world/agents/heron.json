@@ -2,14 +2,19 @@
   "spec": "agent-status/1",
   "id": "heron",
   "title": "Heron: moss index",
-  "agent": "heron",
+  "agent": "claude-code",
   "kind": "task",
   "state": "ok",
   "message": "Finished the moss index",
-  "updated": "{{-50m}}",
+  "started": "{{-55m}}",
+  "updated": "{{-6m}}",
   "stale_after": 1800,
   "progress": {
     "done": 7,
     "total": 7
-  }
+  },
+  "x-project": "moss-engine",
+  "x-plot": "workshop",
+  "x-files": 7,
+  "x-commits": 1
 }

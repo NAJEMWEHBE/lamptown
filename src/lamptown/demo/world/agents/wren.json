@@ -2,10 +2,11 @@
   "spec": "agent-status/1",
   "id": "wren",
   "title": "Wren: tail ribbons",
-  "agent": "wren",
+  "agent": "claude-code",
   "kind": "task",
   "state": "working",
   "message": "Cutting ribbons to length",
+  "started": "{{-40m}}",
   "updated": "{{-2m}}",
   "stale_after": 1800,
   "progress": {
@@ -17,5 +18,11 @@
       "label": "Notes",
       "href": "https://example.com/wren"
     }
-  ]
+  ],
+  "x-project": "paper-kite",
+  "x-plot": "boathouse",
+  "x-files": 6,
+  "x-commits": 2,
+  "x-pushed": true,
+  "x-ci": "running"
 }

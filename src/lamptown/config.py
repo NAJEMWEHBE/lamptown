@@ -418,8 +418,8 @@ def _live(where: str, raw: Any, base: Path) -> Live:
             raise _fail(where, key, f"key {bad[0]!r}: keys starting with '_' are reserved "
                         "for Lamptown")
         if "kind" not in r and "reader" not in r:
-            raise _fail(where, key, 'needs kind = "claude-code" (a reader\'s name) or '
-                        'reader = "./my_reader.py"')
+            raise _fail(where, key, 'needs kind = "claude_code", "codex" or "git" (a reader\'s '
+                        'name) or reader = "./my_reader.py"')
         if "kind" in r:
             kind = _str(where, f"{key}.kind", r["kind"])
             if not READER_KIND_RE.match(kind):

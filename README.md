@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/media/hero.gif" width="800" alt="Lamptown: a pixel-art night town by the sea. Six buildings with status lamps; the camera walks into the notes library, the boathouse and the lab, then back out.">
+  <img src="docs/media/hero.gif" width="800" alt="Lamptown: a pixel-art night town by the sea. Six buildings with status lamps, small lantern-carrying figures for the agents at work, and a lighthouse in the bay; the camera walks into the notes library, the boathouse and the lab, then back out.">
 </p>
 
 # Lamptown
@@ -21,9 +21,10 @@ pipx install lamptown
 lamptown demo
 ```
 
-`lamptown demo` builds a made-up town (five agents, three projects, four jobs, a notes vault, a
-skill shelf, a tool gate and a contest) and opens it in your browser. Nothing is read from your
-machine.
+`lamptown demo` builds a made-up town (nine agents, three projects, four jobs, a notes vault, a
+skill shelf, a tool gate and a contest), opens it in your browser and keeps it live until
+Ctrl+C: the agents walk the town and the lighthouse keeps a week of their history. Nothing is
+read from your machine.
 
 <!-- CHECK: `pipx install lamptown` works once the first release is on PyPI. -->
 Before the first release reaches PyPI, install from a checkout of this repository:
@@ -158,6 +159,32 @@ label = "Agents"
   dir = "~/.agent-status"
 ```
 
+## The live town
+
+<p align="center">
+  <img src="docs/media/live-town.png" width="800" alt="The live town: small figures with lanterns stand at the buildings their agents work in, the lighthouse holds an amber beam on the harbour for an agent waiting there, two boats are moored at the wharf, and one figure's card is pinned open: Puffin, working at the notes vault, 41 files.">
+</p>
+
+Add a `[live]` table to `lamptown.toml` and run `lamptown watch` (or the desktop app), and your
+agents walk the town as they work. Each one is a **Lamplighter** with a lantern, at the building
+it works in: working, sitting by the door when it needs you, stepping aside with a red lantern
+when it failed. The **lighthouse** sweeps its beam while anyone works and flashes when an agent
+starts waiting, then lights the path to that door. Each project at the harbour gets a **berth**,
+and inside the lighthouse the keeper's book keeps the last 7 days.
+
+```toml
+[live]
+
+[[live.reader]]
+kind = "claude_code"   # follows Claude Code's own session files: no hooks needed
+
+[[live.reader]]
+kind = "codex"         # and Codex's rollout logs
+```
+
+Only names leave your files: titles, project folder names, tools, states and counts. The whole
+story, every key and the troubleshooting table: [docs/live.md](docs/live.md).
+
 ## Your own town
 
 ```sh
@@ -183,8 +210,9 @@ also point `--config` or `$LAMPTOWN_CONFIG` at any file.
 ## Desktop app
 
 The desktop app shows the town in its own window and keeps it live: it rebuilds every 15 seconds
-while the window shows, and reloads only when the data changed. While it is minimised it stops
-rebuilding and drawing, and catches up the moment you bring it back.
+while the window shows and swaps in only what changed. With `[live]` on it runs the Watcher
+itself, and its window title counts what needs you ("2 need you - Lamptown"). While it is
+minimised it stops rebuilding and drawing, and catches up the moment you bring it back.
 
 ```sh
 pipx install "lamptown[app]"
@@ -207,9 +235,10 @@ Starting it a second time brings the open window to the front. Without the `[app
 
 | Command | Does |
 |---|---|
-| `lamptown demo [--state STATE] [--no-open] [--out DIR]` | Build the fictional demo town and open it. |
+| `lamptown demo [--state STATE] [--no-open] [--no-live] [--out DIR]` | Build the fictional demo town, open it and keep it live (Ctrl+C stops). |
 | `lamptown build [--config FILE] [--out DIR] [--now ISO] [-q]` | Run every source and write `town.html` and `town-details.html`. |
-| `lamptown open [--config FILE] [--out DIR]` | Build, then open the town in your browser. |
+| `lamptown open [--config FILE] [--out DIR] [--watch]` | Build, then open the town in your browser (`--watch`: then keep it live). |
+| `lamptown watch [--config FILE] [--out DIR] [--every SECONDS]` | Keep the town live: the Watcher every few seconds, a rebuild every 15 s ([docs/live.md](docs/live.md)). |
 | `lamptown app [--config FILE] [--poll SECONDS]` | The town in its own window, kept live. |
 | `lamptown shortcut [--dir DIR] [--config FILE] [--name NAME]` | A desktop shortcut or app-menu entry for the app. |
 | `lamptown status set \| run \| hook \| list` | Write and read `agent-status/1` files ([docs/status.md](docs/status.md)). |
@@ -248,6 +277,10 @@ Lamptown is built to sit on top of private work, so it is careful by design:
   or account details. Reply excerpts are opt-in (`--excerpts`): one short line, secrets masked.
 - **Private agents too.** A `status_dir` source with `private = true`, or with `private_dirs`,
   shows those sessions as "Private agent": no name, message or links.
+- **The live town keeps names only.** Its readers read Claude Code's, Codex's and git's own
+  files read-only, and keep a title, a project folder's name, a tool, a state, times and
+  counts. Never prompts, replies, file contents, paths, commit messages or author names
+  ([docs/live.md](docs/live.md#what-it-reads-and-what-it-keeps)).
 - **Links are filtered.** Only `https:`, `http:` and `file:` links reach the page, and all data is
   escaped before it is inlined. In the desktop app a `file:` link never runs anything: it shows
   the file in its folder; links to network shares are refused.
