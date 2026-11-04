@@ -126,7 +126,8 @@ def local_path(href: str, platform: str | None = None) -> PurePosixPath | PureWi
         if not win.is_absolute():
             raise Refused("not an absolute path")
         return win
-    if raw.startswith("//") or not raw.startswith("/"):
+    # "/\\host\share" is a UNC path written for Windows: refuse it here too, never guess
+    if raw.startswith("//") or not raw.startswith("/") or raw.lstrip("/").startswith("\\"):
         raise Refused("a network or relative path")
     return PurePosixPath(raw)
 
