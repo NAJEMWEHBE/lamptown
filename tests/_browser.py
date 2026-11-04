@@ -50,6 +50,8 @@ def headless(profile: Path, *flags: str) -> list[str]:
            f"--user-data-dir={profile}"]
     if _no_sandbox():
         cmd.append("--no-sandbox")
+    if sys.platform == "darwin":
+        cmd.append("--use-mock-keychain")  # a real keychain can block a headless run on a prompt
     return cmd + list(flags)
 
 
@@ -71,8 +73,8 @@ def _kill_tree(proc: subprocess.Popen) -> None:
 def dump_dom(cmd: list[str], timeout: float = TIMEOUT) -> str:
     """Run a headless command and return its stdout. A browser that doesn't finish in
     ``timeout`` seconds is killed (with its child processes) and the test fails."""
-    with tempfile.TemporaryFile() as out:
-        kwargs: dict = {"stdout": out, "stderr": subprocess.DEVNULL, "stdin": subprocess.DEVNULL}
+    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+        kwargs: dict = {"stdout": out, "stderr": err, "stdin": subprocess.DEVNULL}
         if sys.platform != "win32":
             kwargs["start_new_session"] = True  # its own process group, so it can be killed whole
         proc = subprocess.Popen(cmd, **kwargs)
@@ -80,7 +82,9 @@ def dump_dom(cmd: list[str], timeout: float = TIMEOUT) -> str:
             proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             _kill_tree(proc)
+            err.seek(0)
+            said = err.read().decode("utf-8", errors="replace")[-1500:]
             pytest.fail(f"the browser did not finish in {timeout:g} s and was stopped: "
-                        f"{Path(cmd[0]).name}")
+                        f"{Path(cmd[0]).name}\nits last words:\n{said}")
         out.seek(0)
         return out.read().decode("utf-8", errors="replace")

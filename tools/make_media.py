@@ -105,6 +105,8 @@ class Camera:
                f"--screenshot={png}", self.url + query + frag]
         if hasattr(os, "geteuid") and os.geteuid() == 0:  # CI containers run as root
             cmd.insert(1, "--no-sandbox")
+        if sys.platform == "darwin":  # a real keychain can block a headless run on a prompt
+            cmd.insert(1, "--use-mock-keychain")
         subprocess.run(cmd, capture_output=True, timeout=180, check=False)
         if not png.is_file():
             raise RuntimeError(f"Chrome made no screenshot for {key} ({query}{frag})")
