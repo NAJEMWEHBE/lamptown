@@ -278,3 +278,19 @@ def test_codex_ids_come_from_the_random_end_of_the_thread_id():
     assert codex.thread_id(a.replace("-", "")) == "codex-3e4f5a6b7c8d"
     assert codex.thread_id("not-a-uuid") == make_id("codex", "not-a-uuid")
     assert codex.thread_id(None, "kite") == "codex-kite"
+
+
+# --- W2-left: parallel Codex subagents never share an id ---
+def test_codex_threads_started_in_the_same_millisecond_get_their_own_ids():
+    # 10,000 UUIDv7 thread ids with one clock (as many subagents spawned at once): the id keeps
+    # 48 random bits, so a clash is about a 1 in 10 million chance here
+    import secrets
+
+    clock = "019e4b1c2d00"
+    ids = set()
+    for _ in range(10_000):
+        rest = f"{0x7000 | secrets.randbits(12):04x}{0x8000 | secrets.randbits(14):04x}"
+        h = clock + rest + f"{secrets.randbits(48):012x}"
+        ids.add(codex.thread_id(f"{h[:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:]}"))
+    assert len(ids) == 10_000
+# --- end W2-left ---

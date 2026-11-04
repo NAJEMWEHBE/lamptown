@@ -292,7 +292,9 @@ def test_a_live_file_that_goes_away_says_built_once_its_heartbeat_is_stale(tmp_p
     page, d1, _ = town(tmp_path)
     write_live(page.parent, live_payload("r1", at=iso_ago(12)))
     r = run(page, UNTIL + """
-      const on = await until(() => LIVE.on);
+      // (W2-left: the corner is read once the page has redrawn it, waited on with a cap: under
+      // load the state flips a frame before the corner shows it)
+      const on = await until(() => LIVE.on && SEEN.corner === 'LIVE');
       const first = SEEN.corner;
       LIVE.every = 100;   // the Watcher's file goes away: point the poll at a file that isn't there
       const real = liveScript;
@@ -300,10 +302,14 @@ def test_a_live_file_that_goes_away_says_built_once_its_heartbeat_is_stale(tmp_p
       lamptownPoll();
       await until(() => LIVE.miss >= 2 && !LIVE.busy);
       const missed = { on: LIVE.on, corner: SEEN.corner, miss: LIVE.miss };
-      const off = await until(() => !LIVE.on, 40000);
+      let age = null;   // the payload's age when LIVE went off
+      const off = await until(() => {
+        if (!LIVE.on && age === null) age = Date.now() - Date.parse(LIVE.payload.at);
+        return !LIVE.on; }, 40000);
+      await until(() => String(SEEN.corner).startsWith('BUILT '));
       quiet(); liveScript = real;
-      return { on, first, missed, off, corner: SEEN.corner,
-        age: Date.now() - Date.parse(LIVE.payload.at) };""", replace_data=js(with_rev(d1, "r1")),
+      return { on, first, missed, off, corner: SEEN.corner, age };""",
+            replace_data=js(with_rev(d1, "r1")),
             flags=("--virtual-time-budget=60000",))
     assert r["on"] is True and r["first"] == "LIVE"
     assert r["missed"]["miss"] >= 2 and r["missed"]["on"] is True

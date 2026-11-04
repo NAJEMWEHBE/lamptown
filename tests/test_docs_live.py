@@ -51,3 +51,14 @@ def test_the_apps_corner_says_what_live_md_says(tmp_path):
     flat = " ".join(app.split())
     assert "corner says **LIVE** while its Watcher feeds the page" in flat
     assert 'without `[live]` (or when the Watcher has stalled) it says "LIVE - UPDATED"' in flat
+
+
+# --- W2-left-fix: the git reader's status_dir default (review W2-left #4) ---
+def test_the_git_readers_status_dir_default_is_written_down():
+    # the live town now hands a git reader its own status folder unless the entry says otherwise
+    row = next(line for line in text("docs/config.md").splitlines() if line.startswith("| `git` |"))
+    assert "default: the live town's own `status_dir`" in row and "`false`" in row, row
+    head = " ".join(text("src/lamptown/status/readers/git.py").split('"""', 2)[1].split())
+    example = head.split("status_dir =", 1)[1].split("days =", 1)[0]
+    assert "default in the live town" in example and "false" in example, example
+# --- end W2-left-fix ---

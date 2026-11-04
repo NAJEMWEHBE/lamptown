@@ -11,15 +11,23 @@ What it reads (all read-only):
 
 * ``<root>/sessions/YYYY/MM/DD/rollout-*.jsonl``, the day folders of the last ``days`` local
   days, tailed incrementally (:mod:`lamptown.status.readers.tail`), the most recently changed
-  file first. A file seen for the first time is read from its start when it fits this tick's
-  per-file allowance; a bigger one starts that many bytes before its end (its current state
-  counts, old turns are skipped). Lines over 256 KB are never parsed as JSON: a regex reads
+  file first; and a session started before that and still written to (a long run, or one
+  resumed), whose file stays in its first day's folder: found every :data:`RESCAN` and when
+  the window moves, from the database's ``rollout_path`` of threads changed within ``days``
+  (only files in this root's day folders count), or, with no usable database, by walking the
+  older day folders for files changed within ``days``, :data:`OLD_STEP` folders a poll at
+  most (and never past the tick's deadline). A file
+  seen for the first time is read from its start when it fits this tick's per-file
+  allowance; a bigger one starts that many bytes before its end (its current state counts,
+  old turns are skipped). Lines over 256 KB are never parsed as JSON: a regex reads
   their time and record type from the first bytes.
 * ``<root>/state_5.sqlite``, opened with a ``mode=ro`` URI, only when it (or its ``-wal``)
   changed or a new session needs its title: point lookups by thread id (primary keys) and one
   ``updated_at_ms`` time-cursor query (indexed, ``LIMIT``), never ``count(*)``. A locked, busy,
   missing or unknown database is skipped and tried again next poll. Sessions with no row yet
-  are looked up again, the longest-waiting first, each time the database changes.
+  are looked up again, the longest-waiting first, each time the database changes. (W2-left-fix:
+  also, every :data:`RESCAN`, one ``updated_at_ms`` query, indexed, ``LIMIT``, for the
+  ``rollout_path`` of sessions started before the window, as above.)
 
 One rollout file is one session; its first line is ``session_meta`` (the thread ``id``,
 ``cwd``, ``timestamp``, ``source``). The record id is the hook adapter's,
@@ -68,6 +76,7 @@ import os
 import re
 import secrets
 import sqlite3
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -84,6 +93,15 @@ DISPLAY = "Codex"
 DB_NAME = "state_5.sqlite"
 DAYS = 7
 MAX_FILES = 500  # rollout files watched (most recently changed first)
+# --- W2-left: sessions started before the window ---
+RESCAN = timedelta(minutes=10)  # how often older day folders are searched for live sessions
+MAX_OLD_DAYS = 3660  # older day folders searched, at most (newest first)
+# --- end W2-left ---
+# --- W2-left-fix: a bounded older-day search ---
+OLD_ROWS = 2000  # rollout paths asked of the thread database per search
+OLD_STEP = 32  # without one: folders (day folders, or month folders to list) walked per poll
+OLD_SECONDS = 0.02  # and at most this long per poll (or until the tick's own deadline)
+# --- end W2-left-fix ---
 META_STEP = 8 * 1024  # the session_meta line is read in steps: this first, then
 META_HEAD = 64 * 1024  # these, up to
 META_MAX = 256 * 1024
@@ -158,6 +176,21 @@ def _unjson(raw: bytes) -> str:
     return value if isinstance(value, str) else ""
 
 
+# --- W2-left: sessions started before the window ---
+def _numbered(folder: Path | str, width: int) -> list[tuple[int, str]]:
+    """The sub-folders of ``folder`` named with ``width`` digits (a year, month or day)."""
+    try:
+        entries = list(os.scandir(folder))
+    except OSError:
+        return []
+    out = []
+    for entry in entries:
+        if len(entry.name) == width and entry.name.isdigit() and entry.is_dir():
+            out.append((int(entry.name), entry.path))
+    return out
+# --- end W2-left ---
+
+
 class CodexReader:
     """Codex sessions from rollout logs (see the module docstring)."""
 
@@ -167,13 +200,20 @@ class CodexReader:
         self.root = Path(os.path.expandvars(str(root))).expanduser() if root else default_root()
         self.days = max(1, min(int(days), 31)) if isinstance(days, int) else DAYS
         self._cwd: dict[str, str] = {}  # file key -> the session's folder (memory only)
+        self._older: list[Path] = []  # W2-left: live files in older day folders (memory only)
+        self._older_at: datetime | None = None  # when older day folders were last searched
+        self._older_days: set[tuple[int, int, int]] = set()  # the window's days then
+        self._walk: Any = None  # W2-left-fix: a folder walk in progress (a generator)
 
     # ------------------------------------------------------------ files
-    def _files(self, now: datetime) -> list[tuple[Path, os.stat_result]]:
+    def _files(self, now: datetime, budget: Budget | None = None
+               ) -> list[tuple[Path, os.stat_result]]:
         today = now.astimezone().date()
         out: list[tuple[Path, os.stat_result]] = []
+        recent: set[tuple[int, int, int]] = set()
         for back in range(-1, self.days):  # -1: tomorrow, for a clock or zone at odds
             day = today - timedelta(days=back)
+            recent.add((day.year, day.month, day.day))
             folder = self.root / "sessions" / f"{day.year:04d}" / f"{day.month:02d}" / \
                 f"{day.day:02d}"
             try:
@@ -188,8 +228,138 @@ class CodexReader:
                 except OSError:
                     continue
                 out.append((Path(entry.path), st))
+        # --- W2-left: sessions started before the window ---
+        # A rollout file stays in the day folder its session started in, so one still written
+        # (a long run, or a session resumed) is searched for outside the window: those changed
+        # within it, at most every RESCAN. (W2-left-fix: the thread database's rollout paths
+        # find them at once; with no usable database the older day folders are walked a few a
+        # poll, within the tick's deadline.)
+        cutoff = (now - timedelta(days=self.days)).timestamp()
+        if recent != self._older_days or (self._walk is None and (
+                self._older_at is None or not timedelta(0) <= now - self._older_at < RESCAN)):
+            self._older_at, self._older_days = now, recent  # (or the window moved: a day left)
+            self._older_search(recent, cutoff)
+        self._walk_on(budget)
+        keep, have = [], {path for path, _ in out}
+        for path in self._older:
+            if path in have:
+                continue
+            try:
+                st = path.stat()
+            except OSError:
+                continue
+            if st.st_mtime >= cutoff:
+                keep.append(path)
+                have.add(path)
+                out.append((path, st))
+        self._older = keep
+        # --- end W2-left ---
         out.sort(key=lambda item: item[1].st_mtime_ns, reverse=True)
         return out[:MAX_FILES]
+
+    # --- W2-left: sessions started before the window --- (W2-left-fix: bounded)
+    def _older_search(self, recent: set[tuple[int, int, int]], cutoff: float) -> None:
+        """Start a search for live rollout files outside the window: the thread database's
+        rollout paths when it has them, else a walk of the older day folders (:meth:`_walk_on`
+        takes a few steps a poll; what it finds joins ``_older`` as it goes)."""
+        found = self._older_from_db(recent, cutoff)
+        if found is not None:
+            self._older, self._walk = found, None
+        else:
+            self._walk = self._older_walk(recent, cutoff)
+
+    def _older_from_db(self, recent: set[tuple[int, int, int]], cutoff: float
+                       ) -> list[Path] | None:
+        """Rollout files outside the window changed since ``cutoff``, from ``state_5.sqlite``
+        (one indexed query, read-only). Only files in this root's day folders count. ``None``:
+        no usable database (missing, locked, or a schema without these columns)."""
+        path = self.root / DB_NAME
+        if not path.is_file():
+            return None
+        y, m, d = min(recent)
+        first_ms = _ms(datetime(y, m, d).astimezone())  # the window's first local day
+        try:
+            con = _connect(path.absolute().as_uri() + "?mode=ro")
+        except (sqlite3.Error, ValueError, OSError):
+            return None
+        try:
+            rows = _old_rows(con, int(cutoff * 1000), first_ms)
+        except sqlite3.Error:
+            return None
+        finally:
+            con.close()
+        base = os.path.normcase(os.path.abspath(self.root / "sessions")) + os.sep
+        out: list[Path] = []
+        for (raw,) in rows:
+            if not isinstance(raw, str) or not raw or "\0" in raw:
+                continue
+            file = Path(raw)
+            if not file.is_absolute() or not _NAME_RE.match(file.name) \
+                    or not os.path.normcase(os.path.abspath(file)).startswith(base):
+                continue
+            day = file.parts[-4:-1]
+            if len(day) != 3 or not all(x.isdigit() for x in day) \
+                    or tuple(int(x) for x in day) in recent:
+                continue  # not a day folder, or one the window lists anyway
+            try:
+                if file.stat().st_mtime >= cutoff:
+                    out.append(file)
+            except OSError:
+                continue
+            if len(out) >= MAX_FILES:
+                break
+        return out
+
+    def _older_walk(self, recent: set[tuple[int, int, int]], cutoff: float) -> Any:
+        """The walk without a database: a generator taking one folder a step (the year list,
+        a year's months, a month's days, or a day's rollout files), newest first; its return
+        value is everything it found (also put in ``_older`` as it goes)."""
+        found: list[Path] = []
+        days = 0
+        for year, ypath in sorted(_numbered(self.root / "sessions", 4), reverse=True):
+            yield
+            for month, mpath in sorted(_numbered(ypath, 2), reverse=True):
+                yield
+                for day, dpath in sorted(_numbered(mpath, 2), reverse=True):
+                    if (year, month, day) in recent:
+                        continue
+                    if days >= MAX_OLD_DAYS:
+                        return found
+                    days += 1
+                    yield
+                    try:
+                        entries = list(os.scandir(dpath))
+                    except OSError:
+                        continue
+                    for entry in entries:
+                        try:
+                            if _NAME_RE.match(entry.name) and entry.stat().st_mtime >= cutoff:
+                                found.append(Path(entry.path))
+                                self._older.append(Path(entry.path))
+                        except OSError:
+                            continue
+                        if len(found) >= MAX_FILES:
+                            return found
+        return found
+
+    def _walk_on(self, budget: Budget | None) -> None:
+        """A few steps of the walk in progress: at most OLD_STEP, OLD_SECONDS, and never past
+        the tick's own deadline."""
+        if self._walk is None:
+            return
+        began = time.monotonic()
+        for _ in range(OLD_STEP):
+            if budget is not None and budget.deadline is not None \
+                    and budget.clock() >= budget.deadline:
+                return
+            if time.monotonic() - began >= OLD_SECONDS:
+                return
+            try:
+                next(self._walk)
+            except StopIteration as done:
+                self._older, self._walk = list(done.value or []), None
+                return
+    # --- end W2-left ---
 
     def _meta(self, path: Path, budget: Budget) -> dict | None:
         """The session_meta facts: ``sid``, ``cwd``, ``start``, ``par`` (parent thread id),
@@ -257,7 +427,7 @@ class CodexReader:
             if isinstance(s, dict) and isinstance(s.get("sid"), str) and s.get("id") == \
                     _old_id(s["sid"]):
                 s["id"] = thread_id(s["sid"])
-        files = self._files(now)
+        files = self._files(now, spend)
         live = {cursor_key(p) for p, _ in files}
         forget(cursors, [p for p, _ in files])
         for key in [k for k in sess if k not in live]:
@@ -638,6 +808,25 @@ _SINCE = (f"SELECT id, {_TITLE}, agent_nickname, updated_at_ms, source FROM thre
           "WHERE (updated_at_ms, id) > (?, ?) ORDER BY updated_at_ms, id LIMIT ?",
           "SELECT id, NULL, NULL, updated_at * 1000, source FROM threads "
           "WHERE (updated_at * 1000, id) > (?, ?) ORDER BY updated_at, id LIMIT ?")
+
+
+# --- W2-left-fix: a bounded older-day search --- (sessions started before the window)
+_OLD = ("SELECT rollout_path FROM threads WHERE updated_at_ms >= ? AND created_at_ms < ? "
+        "ORDER BY updated_at_ms DESC LIMIT ?",
+        "SELECT rollout_path FROM threads WHERE updated_at_ms >= ? "
+        "ORDER BY updated_at_ms DESC LIMIT ?")
+
+
+def _old_rows(con: sqlite3.Connection, since_ms: int, first_ms: int) -> list:
+    """Rollout paths of threads changed since ``since_ms`` and made before ``first_ms`` (an
+    older schema without ``created_at_ms``: changed since, all of them)."""
+    try:
+        return con.execute(_OLD[0], (since_ms, first_ms, OLD_ROWS)).fetchall()
+    except sqlite3.OperationalError as exc:
+        if "created_at_ms" not in str(exc):
+            raise
+    return con.execute(_OLD[1], (since_ms, OLD_ROWS)).fetchall()
+# --- end W2-left-fix ---
 
 
 def _norm_text(text: str) -> str:

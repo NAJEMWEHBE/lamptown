@@ -27,6 +27,10 @@ The contract::
   Watcher then says so in ``TickResult.behind`` and gives the next tick a catch-up budget
   (``Budget.catch_up()``: 32 MB, 4 MB a file, a 200 ms reading deadline); the loops tick every
   second until no reader is behind. Readers without it are never "behind".
+* ``notes`` (optional attribute, L11): a list of short lines, safe to show (names only), the
+  reader sets during a poll ("gh is not logged in"). The Watcher adds them to
+  ``TickResult.errors`` after the poll, raised or not; the reader goes on working. Say each
+  problem once, when it starts (the app and ``lamptown watch`` also print each line once).
 * At most :data:`MAX_AGENTS` status changes and :data:`MAX_EVENTS` events per poll are taken;
   more is reported in ``TickResult.errors`` and dropped. A reader catching up stops early and
   goes on next poll (``tail`` does this through the budget).
@@ -88,11 +92,12 @@ CI_STATES = ("running", "green", "red")
 MAX_AGENTS = 500  # per reader and tick
 MAX_EVENTS = 5000
 
-# Built-in kinds: "module:factory", imported only when used. ci_gh arrives in a later ticket.
+# Built-in kinds: "module:factory", imported only when used.
 BUILTIN: dict[str, str] = {
     "claude_code": "lamptown.status.readers.claude_code:make_reader",
     "codex": "lamptown.status.readers.codex:make_reader",
     "git": "lamptown.status.readers.git:make_reader",
+    "ci_gh": "lamptown.status.readers.ci_gh:make_reader",  # --- live: L11 ci_gh ---
 }
 
 # What a reader may set on a record. ``None`` as a value removes an optional field.

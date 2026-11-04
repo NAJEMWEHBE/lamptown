@@ -61,9 +61,14 @@ const LAMPLIGHTERS = (() => {
       seats: [[299, 151], [308, 151], [277, 151], [303, 158], [312, 158], [281, 158]], out: [[256, 157], [263, 157], [259, 165], [252, 165]],
       hook: [336, 133], hang: [337, 151], more: [362, 151] },
     // the Harbour row alternates across the slip; L10 gives each project its own berth instead (api.berth); its waiting
-    // queue runs left along the shore
+    // queue runs left along the shore (W2-left: then on, up to the cap of 12, clear of the berths' shore spots and the
+    // overflow mooring: a second rank in front would stand on the wharf, and one behind the stools would hide the belt's
+    // crates. W2-left-fix: a seated figure's lantern sits low on its door side, so a rank 7 px behind puts lanterns on
+    // the faces in front: two seats on the grass between the bush and the belt, then one more row on the open shore
+    // between the trees left of the overflow mooring; tests/test_harbour_berths.py checks no face, tree or belt is hidden)
     boathouse: { join: [248, 150], spur: [[248, 194]], stand: [[229, 195], [184, 195], [236, 195], [177, 195], [243, 196], [170, 195]],
-      seats: [[221, 194], [159, 194], [152, 194], [145, 194], [138, 194], [131, 194]], out: [[248, 172], [251, 180], [245, 164], [248, 156]],
+      seats: [[221, 194], [159, 194], [152, 194], [145, 194], [138, 194], [131, 194],
+        [113, 190], [123, 178], [70, 194], [63, 194], [56, 194], [49, 194]], out: [[248, 172], [251, 180], [245, 164], [248, 156]],
       hook: [183, 171], hang: [184, 195], more: [262, 196] },
   };
   for (const k in PLACE) { const p = PLACE[k]; p.apron = p.spur.length ? p.spur[p.spur.length - 1] : p.join; }
@@ -209,7 +214,8 @@ const LAMPLIGHTERS = (() => {
 
   /* a new payload: which agents get a figure, which state each one wants */
   function sync(p, still) {
-    const agents = (p && Array.isArray(p.agents) ? p.agents : []).filter(a => a && typeof a === 'object' && typeof a.id === 'string' && STATES.has(a.state));
+    const agents = (p && Array.isArray(p.agents) ? p.agents : []).filter(a => a && typeof a === 'object' && typeof a.id === 'string' && STATES.has(a.state))
+      .filter(a => a.tool !== 'ci');   // --- live: L11 ci_gh --- a CI run is no agent: it flies as its berth's pennant (berths.js)
     const by = new Map(agents.map(a => [a.id, a]));
     const instant = S.first || still;
     S.first = false;
@@ -384,7 +390,7 @@ const LAMPLIGHTERS = (() => {
       quiet: 'GONE QUIET ' + mins + ' MIN AGO: NOT DONE', ok: 'DONE' }[a.state] || '';
   }
   function card(a, shown, plot, helpers) {   // helpers: the agent's helpers at work (a list)
-    const who = a.project ? String(a.project).toUpperCase() + ' / ' + toolName(a.tool) : toolName(a.tool);
+    const who = a.project ? projectShown(a.project) + ' / ' + toolName(a.tool) : toolName(a.tool);   // W2-left: as the berths spell it
     const l = [String(a.title || 'AN AGENT'), who, stateLine(a, shown, plot)], c = counts(a);
     if (c) l.push(c);
     if (helpers && helpers.length) {

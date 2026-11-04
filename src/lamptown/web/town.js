@@ -911,6 +911,15 @@ function banner() {
 const LIVE = { on: false, payload: null, rev: typeof D.rev === 'string' && D.rev ? D.rev : null, want: null, bad: null, every: 5000,
   slow: 30000, next: 0, miss: 0, ageT: 0, started: false, off: false, timer: 0, busy: null, seq: 0,
   polls: 0, fails: 0, loads: 0, swaps: 0 };
+// --- W2-left: one spelling for a project's name on screen ---
+/* a live project's name as the berths and the keeper's book show it: the payload's own `name` when the project is listed,
+   else the same rule as livetown._shown_name ("-" and "_" become spaces, upper case): "moss-engine" is MOSS ENGINE */
+function projectShown(id) {
+  const p = LIVE.payload, list = p && typeof p === 'object' && Array.isArray(p.projects) ? p.projects : [];
+  for (const q of list) if (q && q.id === id && typeof q.name === 'string' && q.name) return q.name.toUpperCase();
+  return String(id == null ? '' : id).replace(/[-_]/g, ' ').toUpperCase();
+}
+// --- end W2-left ---
 /* corner: LIVE while a Watcher feeds the page, else when the page was built; and the way into the details page */
 const CORNER = { det: 'DETAILS >' };
 function cornerBuilt() {

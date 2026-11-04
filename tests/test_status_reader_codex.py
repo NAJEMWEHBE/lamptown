@@ -494,9 +494,17 @@ def test_two_sessions_with_the_same_id_start_get_two_records(root):
     assert ids == {"codex-000000000001", "codex-000000000002"}
 
 
+def _touch(path, when):
+    os.utime(path, (when.timestamp(), when.timestamp()))
+
+
 def test_only_the_last_days_are_watched(root):
-    Session(root, 40, start=T0 - timedelta(days=10)).started()
-    Session(root, 41).started()
+    old = Session(root, 40, start=T0 - timedelta(days=10))
+    old.started()
+    _touch(old.path, old.t)  # (W2-left) not written since: an old, finished session
+    new = Session(root, 41)
+    new.started()
+    _touch(new.path, new.t)
     reader, state = CodexReader(root=root), {}
     assert {a["id"] for a in poll(reader, state).agents} == {aid(41)}
     later = NOW + timedelta(days=9)
@@ -749,3 +757,134 @@ def test_title_lookups_reach_every_session_while_the_database_keeps_changing(roo
         titles.update({a["id"]: a["title"] for a in poll(reader, state).agents})
     con.close()
     assert {k: titles.get(k) for k in want} == want
+
+
+# --- W2-left: a session started before the window and still running ---
+def test_a_session_started_before_the_window_and_still_running_is_read(root):
+    # its rollout file stays in the day folder it started in (a long run, or one resumed)
+    old = Session(root, 42, start=T0 - timedelta(days=10))
+    old.t = NOW - timedelta(minutes=5)
+    old.started()
+    _touch(old.path, NOW - timedelta(minutes=5))
+    gone = Session(root, 43, start=T0 - timedelta(days=12))
+    gone.started()
+    _touch(gone.path, gone.t)  # finished long ago: still never opened
+    reader, state = CodexReader(root=root), {}
+    b = poll(reader, state)
+    assert [a["id"] for a in b.agents] == [aid(42)]
+    assert one(b)["state"] == "working"
+    # it stays watched while it is written; once quiet past the window it is let go
+    later = NOW + timedelta(days=8)
+    assert poll(reader, state, now=later).agents == []
+    assert state["files"] == {}
+
+
+def test_older_day_folders_are_searched_only_now_and_then(root, monkeypatch):
+    calls = []
+    real = codex_mod.CodexReader._older_search  # (W2-left-fix: was _older_files)
+    monkeypatch.setattr(codex_mod.CodexReader, "_older_search",
+                        lambda self, *a: calls.append(1) or real(self, *a))
+    reader, state = CodexReader(root=root), {}
+    for s in range(0, 600, 3):  # ten minutes of polls, every 3 s
+        poll(reader, state, now=NOW + timedelta(seconds=s))
+    assert len(calls) == 1
+    poll(reader, state, now=NOW + codex_mod.RESCAN)
+    assert len(calls) == 2
+# --- end W2-left ---
+
+
+# --- W2-left-fix: the older-day search is bounded (review W2-left #5) ---
+def _empty_days(root, n, before):
+    for back in range(n):
+        d = (before - timedelta(days=back)).astimezone().date()
+        (root / "sessions" / f"{d:%Y}" / f"{d:%m}" / f"{d:%d}").mkdir(parents=True, exist_ok=True)
+
+
+def _old_live(root, n, days):
+    old = Session(root, n, start=T0 - timedelta(days=days))
+    old.t = NOW - timedelta(minutes=5)
+    old.started()
+    _touch(old.path, NOW - timedelta(minutes=5))
+    return old
+
+
+def _older_scans(root, monkeypatch):
+    """The day folders outside the window that the reader lists (os.scandir calls)."""
+    recent = {str(root / "sessions" / f"{d:%Y}" / f"{d:%m}" / f"{d:%d}")
+              for d in ((NOW - timedelta(days=b)).astimezone().date() for b in range(-1, 7))}
+    seen, real = [], os.scandir
+
+    def scan(path):
+        p = str(path)
+        if p.startswith(str(root)) and len(os.path.relpath(p, root).split(os.sep)) == 4 \
+                and p not in recent:
+            seen.append(p)
+        return real(path)
+
+    monkeypatch.setattr(codex_mod.os, "scandir", scan)
+    return seen
+
+
+def test_without_a_database_older_days_are_walked_a_few_folders_a_poll(root, monkeypatch):
+    # it used to list and stat every older day folder in one tick, outside the tick's budget
+    _empty_days(root, 300, NOW - timedelta(days=8))
+    _old_live(root, 42, days=300)  # in the oldest folder: found last
+    seen = _older_scans(root, monkeypatch)
+    reader, state = CodexReader(root=root), {}
+    polls, found, most = 0, [], 0
+    while not found and polls < 400:  # (a very slow runner may take one step a poll)
+        seen.clear()
+        found = poll(reader, state, now=NOW + timedelta(seconds=3 * polls)).agents
+        most, polls = max(most, len(seen)), polls + 1
+    assert [a["id"] for a in found] == [aid(42)]
+    assert 0 < most <= codex_mod.OLD_STEP
+    assert polls >= 300 // codex_mod.OLD_STEP  # spread over many polls, never all at once
+
+
+def test_a_tick_past_its_deadline_walks_no_older_day(root, monkeypatch):
+    _empty_days(root, 40, NOW - timedelta(days=8))
+    seen = _older_scans(root, monkeypatch)
+    reader, state = CodexReader(root=root), {}
+    poll(reader, state, budget=Budget(deadline=0.0, clock=lambda: 1.0))
+    assert seen == []
+    poll(reader, state, now=NOW + timedelta(seconds=3))
+    assert seen  # the next tick on time goes on
+
+
+def test_the_thread_database_finds_old_live_sessions_without_a_walk(root, tmp_path, monkeypatch):
+    _empty_days(root, 300, NOW - timedelta(days=8))
+    old = _old_live(root, 42, days=150)
+    stray = tmp_path / "elsewhere" / old.path.name.replace(old.sid, sid(43))
+    stray.parent.mkdir()
+    stray.write_bytes(old.path.read_bytes().replace(old.sid.encode(), sid(43).encode()))
+    con = make_db(root)
+    con.execute("ALTER TABLE threads ADD COLUMN created_at_ms INTEGER")
+    ms = int(NOW.timestamp() * 1000) - 300_000
+    for tid, path, made in ((old.sid, old.path, T0 - timedelta(days=150)),
+                            (sid(43), stray, T0 - timedelta(days=150))):  # not under sessions/
+        con.execute("INSERT INTO threads (id, rollout_path, title, source, updated_at,"
+                    " updated_at_ms, created_at_ms) VALUES (?, ?, '', 'exec', ?, ?, ?)",
+                    (tid, str(path), ms // 1000, ms, int(made.timestamp() * 1000)))
+    con.commit()
+    con.close()
+    seen = _older_scans(root, monkeypatch)
+    reader, state = CodexReader(root=root), {}
+    assert [a["id"] for a in poll(reader, state).agents] == [aid(42)]  # at once
+    assert seen == []  # no folder walk
+
+
+def test_an_older_database_without_created_at_still_finds_them(root, monkeypatch):
+    _empty_days(root, 30, NOW - timedelta(days=8))
+    old = _old_live(root, 42, days=20)
+    con = make_db(root)  # (no created_at_ms column)
+    ms = int(NOW.timestamp() * 1000) - 300_000
+    con.execute("INSERT INTO threads (id, rollout_path, title, source, updated_at,"
+                " updated_at_ms) VALUES (?, ?, '', 'exec', ?, ?)",
+                (old.sid, str(old.path), ms // 1000, ms))
+    con.commit()
+    con.close()
+    seen = _older_scans(root, monkeypatch)
+    reader, state = CodexReader(root=root), {}
+    assert [a["id"] for a in poll(reader, state).agents] == [aid(42)]
+    assert seen == []
+# --- end W2-left-fix ---

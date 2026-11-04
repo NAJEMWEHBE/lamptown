@@ -75,12 +75,14 @@ The Watcher reads, read-only:
 | `kind` | Reads | Options |
 |---|---|---|
 | `claude_code` | `~/.claude/sessions/` and the session logs under `~/.claude/projects/` | `root`, `on_stop`, `days`, `titles` ([status.md](status.md#reading-claude-codes-own-files-no-hooks)) |
-| `codex` | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` and the titles in `~/.codex/state_5.sqlite` | `root` (else `$CODEX_HOME`, else `~/.codex`), `days` |
+| `codex` | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` and the titles in `~/.codex/state_5.sqlite` (also the rollout files' paths of sessions started before `days` and still going, to find them; used in memory only) | `root` (else `$CODEX_HOME`, else `~/.codex`), `days` |
 | `git` | the reflogs of a repository (`.git/logs/`): commits and pushes, with no `git` process | `repos`, `status_dir`, `days` |
+| `ci_gh` | optional, off unless you add it: a pushed repository's CI runs, from `gh run list` ([below](#github-ci-runs-ci_gh)) | `repos`, `status_dir`, `gh`, `every`, `timeout`, `hosts` |
 
-  The `git` reader counts commits and pushes on the agent working in that repository when you
-  give it the status folder too (`status_dir = "~/.agent-status"`: it does not take the live
-  one by itself). A reader of your own is `reader = "./my_reader.py"` or a package registering a
+  The `git` reader also watches the repositories the live agents work in, and counts their
+  commits and pushes on those agents: by default it reads the Watcher's own status folder for
+  them (`status_dir = "..."` names another one; `status_dir = false` keeps it to `repos`, as
+  events only). A reader of your own is `reader = "./my_reader.py"` or a package registering a
   `lamptown.readers` entry point; the contract is in `src/lamptown/status/readers/__init__.py`.
 
 What it writes: the status files (one per agent, the same ids the hooks use, so a hook and a
@@ -91,6 +93,19 @@ reader share one record), and one event log line per thing that happened, in
 *name*, a tool's name, a state, a time and counts (files changed, commits, pushes, CI). Never
 message text, prompts, replies, tool input, file contents, file paths, commit messages or
 author names. A changed file is counted by a salted hash, kept only in the Watcher's saved state.
+
+A path inside a title is cut to its final name. Once a title holds the start of a path (a drive
+such as `d:/` or `d:\`, `~/`, a UNC share `\\server` or `//server/`, any `scheme://` URL such as
+`file://` or `vscode-remote://`, or a system root such as `/Users/`, `/home/`, `/mnt/`, `/srv/`,
+`/tmp/`, `/Volumes/` or a Git Bash drive `/d/`), everything from there up to the path's last `/`
+or `\` goes. Folder names may hold spaces, so the path counts as going on to the end of the title,
+a quote or backtick, or a `, ` right after a file name. A title that goes on past a path can lose
+words this way (`Fix c:/temp and the save/load test` shows as `Fix load test`): showing too
+little is the safe side. A user name is never shown, even as the last part (`see /home/you` shows
+as `see ~`). One limit: a path with none of those starts (`/work/My Project/x.py`) is only cut
+over names without spaces, because `/api/users endpoint` could be a title's own words. That one
+shows as `My Project/x.py`.
+
 Claude Code's session title is written by Claude Code from your first message, so it can carry
 your words: `titles = "folder"` on that reader names sessions by their project folder instead.
 
@@ -98,6 +113,63 @@ your words: `titles = "folder"` on that reader names sessions by their project f
 `status_dir` source's `private_dirs`) shows as "Private agent": no name, no project, no berth, a
 hashed id. An agent started in your home folder or at a drive root has no project name (the
 folder's name there would be your login name).
+
+**Folders named by date.** A tool that makes one folder per chat often names it by the date and
+the chat's first words (`2026-03-14-plan-the-launch`). Such a folder never shows those words: it
+is named by its parent folder (all the chats share one berth), or by the date alone when the
+parent is a root or your home folder. To give them a name of your own, add a group:
+
+```toml
+[[live.group]]
+dir = "~/notes/chats"   # every agent working in or under this folder
+name = "chats"          # shows under this project
+```
+
+The most specific group wins, and a private folder still wins over a group. Details in
+[config.md](config.md#live).
+
+<!-- live: L11 ci_gh -->
+### GitHub CI runs (`ci_gh`)
+
+The one reader that goes past your own files: it asks GitHub, through the GitHub CLI, how the CI
+of a project you just pushed is doing. It is off until you add it:
+
+```toml
+[[live.reader]]
+kind = "ci_gh"          # needs gh (cli.github.com), logged in with `gh auth login`
+```
+
+- **When it asks.** Only for a repository with a push in the last hour (read from the push
+  lines of its reflogs, as the `git` reader does, with no `git` process) to a remote on GitHub,
+  at most once every 120 s per repository (`every`, 120 or more), one call at a time, each with a
+  `timeout` (20 s). A run still going is followed until it ends; a finished result is checked
+  once more, then nothing until the next push. Which repositories: `repos`, plus the folders of
+  the live agents in the Watcher's status folder (`status_dir`, as for `git`).
+- **What it runs.** `gh run list -R <owner>/<repo> --limit 20 --json databaseId,headSha,status,conclusion,workflowName,createdAt,updatedAt`:
+  read-only, a fixed argument list, no shell, no console window, on a background thread (a slow
+  network never holds up the town). `gh = "..."` names another `gh`; `hosts` adds GitHub
+  Enterprise hosts (default `["github.com"]`).
+- **What reaches the town.** One record per repository: the project folder's name, the
+  workflow's name and the result. Never logs, commit messages, branch names, URLs, the owner's or
+  any user's name, or `gh`'s own error text. Its only saved state is the runs it last saw going
+  (the record's id, when, and the repository's folder), so a restarted town picks them up again.
+- **How it reads.** A CI run is no agent: no Lamplighter walks for it and the lighthouse doesn't
+  count it. It is the pennant on its project's boat at the harbour (amber running, green passed,
+  red failed; a project with only a CI run gets its berth too), a line in the berth's hover
+  ("CI TESTS: RED"), and its own line in the keeper's book (IN, CI GREEN or CI RED, DONE or
+  FAILED; a red run is on the closing slip). Of the pushed commit's runs, the newest per
+  workflow count; cancelled and skipped ones don't. A red result stays until a later push's
+  CI changes it, or it ages out (`expire_after`).
+- **When it can't.** `gh` missing, not logged in, offline, GitHub's rate limit, a call that
+  timed out, a folder whose remote is not on GitHub: it says so once (in `lamptown watch`'s
+  output and the app's log), waits (5 to 15 minutes) and tries again; the rest of the town goes
+  on. If `gh` stops answering mid-run (asleep, offline), the run keeps its last known amber
+  pennant and is asked about again once `gh` answers; a run never confirmed again goes quiet
+  after 6 hours (`quiet_after`), never FAILED: CI that was not seen to fail never reads as failed.
+  (With `quiet_after = 0` or above 6 hours it ages to failed, like any silent record.)
+  It only runs `gh` from an absolute path: a named one, or one found on `PATH` (never the
+  current folder, never a relative `PATH` entry).
+<!-- end L11 -->
 
 ## How each state reads in town
 
@@ -119,7 +191,8 @@ folder's name there would be your login name).
   it to pin the card; click anywhere else (or press Escape) to let it go.
 - **Crowds.** At most 12 figures are drawn; an agent waiting for you or failed is never left out.
   Each building's figures not drawn are one "+N" tag.
-- **The sign.** The lighthouse's sign counts the waits ("2 AGENTS WAIT"), and the town's
+- **The sign.** The lighthouse's sign counts the waits on two lines ("2 AGENTS" / "WAIT"; else the
+  failures, "FAILED"; past 999 it says "999+"), and the town's
   "N NEEDS YOU" sign counts them with every other need.
 - **Berths.** One boat per project with an agent at the harbour (a project with no agents at all
   gets one too; a project whose agents all work elsewhere gets none). Its agents stand on the
@@ -194,6 +267,7 @@ any silent file ("Stopped responding", then gone quiet, then left out after 7 da
 | "live reader 'x' can't start" | The `kind` is unknown (the built-ins are `claude_code`, `codex` and `git`) or a reader file failed to load. The other readers still run. |
 | An agent shows in the wrong building | Add a `[[live.place]]` with its folder and the plot it should walk to. |
 | An agent has no berth | Its agents all work at another building, or it is private, or it started in your home folder. |
+| Many chats share one berth, or a berth is named by a date | Their folders are named by date (`2026-03-14-...`): they show as the parent folder (or the date), never the words after it. A `[[live.group]]` names them as you like. |
 | A Codex session shows twice after upgrading | The old one is a 0.1 hook's file; see [Upgrading from 0.1](#upgrading-from-01). |
 | A waiting Claude Code session reads as working | Without hooks, a Bash or MCP tool waiting for permission looks the same as a long one. Install the [Claude Code hook](adapters/claude-code.md) too: the reader and the hook share one record. |
 | The figures stand still and the corner says LIVE | Nothing changed: the live town moves only when an agent does. |

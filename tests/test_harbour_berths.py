@@ -614,3 +614,109 @@ def test_the_room_draws_lamplighters_with_live_js_own_painter(tmp_path):
       return { calls, same: tools.every(t => BERTHS.coatOf(t) === LAMPLIGHTERS.coatOf(t)),
         fallback: tools.every(t => BERTHS.ownCoat(t) === LAMPLIGHTERS.coatOf(t)) };""")
     assert r["calls"] > 0 and r["same"] and r["fallback"]
+
+
+# --- W2-left: 7+ agents waiting at the Harbour ---
+def test_every_waiting_seat_up_to_the_cap_keeps_clear_of_the_berths(tmp_path):
+    # past the sixth seat, waiting figures used to queue in a second rank on the wharf, over
+    # the berths' own spots
+    r = probe(tmp_path, APART + """
+      const P = LAMPLIGHTERS.PLACE.boathouse, pts = [];
+      BERTHS.BERTH_SPOTS.forEach((l, s) =>
+        l.forEach((p, i) => pts.push(['berth' + s + ':' + i, p])));
+      BERTHS.OVER_SPOTS.forEach((p, i) => pts.push(['over:' + i, p]));
+      BERTHS.VISIT_SPOTS.forEach((p, i) => pts.push(['visit:' + i, p]));
+      P.out.forEach((p, i) => pts.push(['out:' + i, p]));
+      for (let i = 0; i < LAMPLIGHTERS.CAP; i++)
+        pts.push(['seat:' + i, LAMPLIGHTERS.spotIn(P.seats, i)]);
+      const seats = pts.filter(p => p[0].startsWith('seat:')).map(p => p[1]);
+      return { bad: clashes(pts), seats, deck: BERTHS.SHORE };""")
+    assert r["bad"] == [], r["bad"]
+    assert len({tuple(s) for s in r["seats"]}) == len(r["seats"]) >= 12
+    assert all(s[1] <= r["deck"] for s in r["seats"])  # on the shore, never on the wharf
+
+
+def test_seven_nine_and_twelve_waiting_never_share_a_spot(tmp_path):
+    names = ", ".join(f"'{n}'" for n in NAMES)
+    r = probe(tmp_path, APART + f"""
+      const names = [{names}], out = {{}};
+      for (const w of [7, 9, 12]) {{
+        const ag = [];
+        for (let i = 0; i < w; i++)
+          ag.push(A('q' + w + '-' + i, names[i % 8], 'waiting', {{ since: ago(2 + i) }}));
+        for (let i = 0; i < 12 - w; i++) ag.push(A('w' + w + '-' + i, names[i % 8]));
+        feed(ag, names);
+        await until(() => (SEEN.agents || []).length === 12
+          && SEEN.agents.filter(a => a.mode === 'sit').length === w
+          && SEEN.agents.every(a => a.id.includes(w + '-') && a.mode !== 'walk'), 8000);
+        await wait(100);
+        const figs = SEEN.agents.map(a => [a.id, [a.x, a.y], a.mode]);
+        out[w] = {{ figs, bad: clashes(figs), sit: figs.filter(f => f[2] === 'sit').length }};
+      }}
+      return out;""", query="?live=0&t=300")
+    for w in ("7", "9", "12"):
+        assert r[w]["sit"] == int(w), r[w]
+        assert r[w]["bad"] == [], (w, r[w]["bad"])
+        assert len({tuple(f[1]) for f in r[w]["figs"]}) == 12
+# --- end W2-left ---
+
+
+# --- W2-left-fix: no waiting figure hides another (review finding 3) ---
+def _seated(x, y, face):
+    """Pixel boxes [x0, y0, x1, y1] (inclusive, no outline) of a seated figure, as live.js's
+    drawSeated paints it at feet (x, y), facing right (face 1) or left (-1), any slump: its head
+    (hat and face), its body, the whole figure, its lantern on the step and the bright middle of
+    the lantern's glow."""
+    boxes = {"head": (x - 3, y - 13, x + 3, y - 8), "body": (x - 3, y - 13, x + 3, y),
+             "fig": (x - 3, y - 13, x + 6, y), "lamp": (x + 4, y - 5, x + 6, y - 1),
+             "glow": (x + 2, y - 5, x + 8, y + 1)}
+    if face < 0:  # the painter mirrors the figure about its feet
+        boxes = {k: (2 * x - b[2], b[1], 2 * x - b[0], b[3]) for k, b in boxes.items()}
+    return boxes
+
+
+def _hit(a, b):
+    return a[0] <= b[2] and b[0] <= a[2] and a[1] <= b[3] and b[1] <= a[3]
+
+
+def _hidden(seats, door, trees, belt):
+    face = {s: 1 if s[0] <= door else -1 for s in seats}  # as live.js's arrive()
+    bad = []
+    for i, (ax, ay) in enumerate(seats):
+        a = _seated(ax, ay, face[ax, ay])
+        for j, (bx, by) in enumerate(seats):
+            b = _seated(bx, by, face[bx, by])
+            if i != j and (_hit(a["lamp"], b["head"]) or _hit(a["glow"], b["head"])):
+                bad.append(("lantern on a face", i, j))
+            if ay < by and _hit(a["head"], b["body"]):  # b is drawn over a
+                bad.append(("face covered", i, j))
+        for tx, ty, tr in trees:
+            if _hit(a["fig"], (tx - tr - 1, ty - tr - 1, tx + tr + 1, ty + tr + 1)):
+                bad.append(("on a tree", i, (tx, ty)))
+        for (x0, y0), (x1, y1) in zip(belt, belt[1:], strict=False):
+            seg = (min(x0, x1) - 3, min(y0, y1) - 3, max(x0, x1) + 4, max(y0, y1) + 5)
+            if _hit(a["fig"], seg):
+                bad.append(("on the belt", i, (x0, y0)))
+    return bad
+
+
+def test_waiting_figures_never_hide_a_face_a_tree_or_the_belt(tmp_path):
+    # review W2-left #3: with 10-12 waiting, back-row lanterns sat on front-row faces, a front
+    # seat covered the middle of a row, and a figure stood on the bush
+    r = probe(tmp_path, """
+      const P = LAMPLIGHTERS.PLACE.boathouse, seats = [];
+      for (let i = 0; i < LAMPLIGHTERS.CAP; i++) seats.push(LAMPLIGHTERS.spotIn(P.seats, i));
+      return { seats, door: PLOT.boathouse.door, trees: TREES, belt: BELTS.C.path.pts };""")
+    seats = [tuple(s) for s in r["seats"]]
+    assert len(seats) == 12
+    assert _hidden(seats, r["door"][0], r["trees"], r["belt"]) == []
+
+
+def test_the_overlap_check_sees_what_the_old_seats_did():
+    # the old 7th-12th seats (W2-left, before this fix), as the review's screenshot showed them
+    old = [(221, 194), (159, 194), (152, 194), (145, 194), (138, 194), (131, 194),
+           (124, 179), (117, 179), (110, 179), (121, 172), (114, 172), (113, 186)]
+    bad = _hidden(old, 204, [(110, 166, 4)], [(108, 132), (134, 132), (134, 172), (166, 172)])
+    kinds = {k for k, *_ in bad}
+    assert {"lantern on a face", "on a tree"} <= kinds
+# --- end W2-left-fix ---

@@ -308,10 +308,9 @@ def test_w2_w8_name_only_stays_fast_on_new_hostile_titles(text):
     ("/run/media/sam/Work Drive/secret-client/x.md", "x.md"),
     ("/media/sam/Work Drive/secret-client/x.md", "x.md"),
     ("see /media/sam/Work Drive", "see ~"),
-    # 2. a forward-slash drive path no longer swallows the rest of an ordinary title ...
-    ("Fix c:/temp handling and the save/load test", "Fix temp handling and the save/load test"),
-    ("Use D:/ for builds, then tidy src/a.ts and lib/b.ts",
-     "Use for builds, then tidy src/a.ts and lib/b.ts"),
+    # 2. (W2-left-fix2: a title after a drive path keeps no words before a later "/") ...
+    ("Fix c:/temp handling and the save/load test", "Fix load test"),  # W2-left-fix2: over-cut
+    ("Use D:/ for builds, then tidy src/a.ts and lib/b.ts", "Use b.ts"),  # W2-left-fix2: over-cut
     # 2. ... but still cuts real folder names with spaces, sync folders too
     ("d:/Program Files (x86)/Secret Tool/x.exe", "x.exe"),
     ("d:/Microsoft Visual Studio 2022/secret app/x.sln", "x.sln"),
@@ -345,3 +344,205 @@ def test_w1fix2_name_only_stays_fast_on_hostile_titles(text):
     # about 2 ms here; a pattern that backtracks badly takes 50 ms or more on 4 KB, so a slow
     # CI runner gets room without hiding one
     assert best < 0.02
+
+
+# --- W2-left: folder names of five words or more ---
+@pytest.mark.parametrize(("text", "expected"), [
+    # a drive path whose folder has 5+ words is cut whole when a path goes on after it ...
+    ("Edit d:/one two three four five/kite/main.py", "Edit main.py"),
+    ("Edit d:/Client Acme Secret Project Alpha/main.py", "Edit main.py"),
+    ("Edit d:/a b c d e f g h/x.py now", "Edit x.py now"),
+    ("cd d:/Client Acme Secret Project Alpha/kite", "cd kite"),
+    ("Open C:/Users/you/My Five Word Folder Name/x.py", "Open x.py"),
+    ("d:/Work/Acme - Client Big Secret Plan Two/x.md, then load", "x.md, then load"),
+    # ... so is a home or ~ path whose folders hold spaces
+    ("Edit /Users/you/My Project/x.py", "Edit x.py"),
+    ("Edit /home/you/one two three four five/kite/x.py", "Edit x.py"),
+    ("Edit ~/My Project/x.py", "Edit x.py"),
+    ("Edit ~/Client Acme Secret Project Alpha/x.py", "Edit x.py"),
+    # ... while an ordinary title after a drive or root path keeps its words
+    ("Fix c:/temp handling and the save/load test", "Fix load test"),  # W2-left-fix2: over-cut
+    ("Add /api/users endpoint and save/load tests", "Add users endpoint and save/load tests"),
+    ("Route /home page and /users list", "Route /home page and /users list"),
+    ("Fix km/h, I/O and TCP/IP", "Fix km/h, I/O and TCP/IP"),
+])
+def test_w2left_long_folder_names_never_stay_in_titles(text, expected):
+    assert ev.name_only(text, 200) == expected
+
+
+@pytest.mark.parametrize("text", [
+    "D:/" + "a b c d e " * 800, "D:/" + "a b c d e/" * 400, "d:/" + "a - b c d e f " * 400,
+    "~/" + "a b c d e f/" * 300, "~/" + "a " * 2000, "/Users/you/" + "a b c d e " * 700,
+    "/home/you/~/" + "a b/" * 1000,
+])
+def test_w2left_long_folder_names_stay_fast_on_hostile_titles(text):
+    import time
+
+    best = 1.0
+    for _ in range(3):
+        start = time.perf_counter()
+        ev.name_only(text, 200)
+        best = min(best, time.perf_counter() - start)
+    assert best < 0.02
+# --- end W2-left ---
+
+
+# --- W2-left-fix: review findings 1, 2 and 6 ---
+BS = "\\"  # a backslash (spelled out, so no test line reads as a real drive path)
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    # 1. a 5+ word folder after a drive, a home or ~ is cut whenever a separator follows it
+    ("Edit d:/Client Acme Secret Project Alpha/notes on it.txt", "Edit notes on it.txt"),
+    ("edit d:/Client Acme Secret Project Alpha/Makefile then test", "edit Makefile then test"),
+    ("Edit d:/Client Acme Secret Project Alpha/README and more", "Edit README and more"),
+    # (a path that ends in a separator shows its last part, as "cd d:/kite/ now" does)
+    ("Open d:/Client Acme Secret Project Alpha/ now", "Open Client Acme Secret Project Alpha now"),
+    ("home /Users/you/Client Acme Secret Project Alpha/notes on it.txt", "home notes on it.txt"),
+    ("tilde ~/Client Acme Secret Project Alpha/notes on it.txt", "tilde notes on it.txt"),
+    ("Edit d:/Big Client - Acme Secret Project Alpha Two/notes on it.txt", "Edit notes on it.txt"),
+    # 2. the other spellings of a drive root keep no folder name with spaces either
+    ("file:///d:/My Project/src/x.py", "x.py"),
+    ("url file:///d:/Client Acme Secret Project Alpha/src/x.py", "url x.py"),
+    ("Open vscode://file/d:/My Project/src/x.py now", "Open x.py now"),
+    ("//server/share/My Project/src/x.py", "x.py"),
+    ("unc //server/share/Client Acme Secret Project Alpha/src/x.py", "unc x.py"),
+    ("/mnt/d/My Project/src/x.py", "x.py"),
+    ("wsl /mnt/d/Client Acme Secret Project Alpha/src/x.py", "wsl x.py"),
+    ("/cygdrive/d/My Project/src/x.py", "x.py"),
+    ("/d/My Project/src/x.py", "x.py"),
+    ("gitbash /d/Client Acme Secret Project Alpha/src/x.py", "gitbash x.py"),
+    (f"d:{BS}My Project/src/x.py", "x.py"),
+    (f"mixed d:{BS}Client Acme Secret Project Alpha/src/x.py", "mixed x.py"),
+    (f"Edit d:{BS}Work{BS}My Project/src/x.py now", "Edit x.py now"),
+    # ... without cutting ordinary titles
+    ("Add /api/users endpoint and save/load tests", "Add users endpoint and save/load tests"),
+    ("Fix /home page layout for the mobile and desktop/tablet views",
+     "Fix /home page layout for the mobile and desktop/tablet views"),
+    (r"C:\Users\you there\secret app\x.py, then save/load", "x.py, then save/load"),
+    # 6. (W2-left-fix2: words after a drive or a home stay only up to no later "/")
+    ("Fix c:/temp handling and the save/load", "Fix load"),  # W2-left-fix2: over-cut
+    ("Fix c:/temp handling and the save/load.", "Fix load."),  # W2-left-fix2: over-cut
+    ("Fix c:/temp handling and the save/load test", "Fix load test"),  # W2-left-fix2: over-cut
+    ("Fix c:/temp handling and the I/O code", "Fix O code"),  # W2-left-fix2: over-cut
+    ("Read /Users/you then fix km/h and I/O", "Read O"),  # W2-left-fix2: over-cut
+    ("Fix ~/ path handling in the save/load code", "Fix load code"),  # W2-left-fix2: over-cut
+    # ... but a home name is never kept, and words that look like a folder go
+    ("Read /Users/You There then fix km/h and I/O", "Read O"),
+    ("Edit d:/Client Acme Secret Project Alpha/x.py", "Edit x.py"),
+    ("Edit d:/client acme secret project alpha/notes on it.txt", "Edit notes on it.txt"),
+])
+def test_w2leftfix_drive_folders_go_and_ordinary_words_stay(text, expected):
+    assert ev.name_only(text, 200) == expected
+
+
+@pytest.mark.parametrize("text", [
+    "c:/" * 1400, "c:/a " * 800, "c:/a b c d e " * 300, "c:/a b c d e/x " * 250,
+    "d:/" + "a b c d e/" * 400 + " x", "d:/" + "a - " * 1300, "d:/" + "a b c d - " * 400,
+    "d:/" + "a - b - c - d - e/ " * 200, "~/" * 2000, "~/" + "a b c d e/x " * 300,
+    "/home/you/" + "a b c d e/ " * 360, "/Users/you/" * 400, "d:/" + "a." * 2000,
+    "d:/" + "aaaaa " * 600 + "/", "d:/" + "a b c d e" + "/" * 4000,
+    # the title guard's own worst cases: many small words, function words, pairs
+    "d:/" + "a " * 2000, "d:/" + "and the " * 500 + "x/", "d:/x " + "and " * 1000 + "km/h.",
+    "d:/" + "the a/b " * 500, "/Users/you " + "then " * 800 + "km/h", "/Users/" + "a " * 2000,
+    "file:///" + "d:/" * 1300, "file:///d:/" + "a b c d e/" * 400, "//a/b/" * 600,
+    "//s/" + "a b c d e/" * 400, "/mnt/d/" * 600, "/mnt/d/" + "a b c d e/" * 400, "/d/" * 1300,
+    "/d/" + "a b c d e/" * 400, "d:\\" + "a b c d e/" * 400, "d:\\" + "a " * 2000 + "/",
+    f"d:{BS}x{BS}" + "a, " * 1300 + "/", "\\\\" + "a\\" * 1000 + "b c/" * 500,
+])
+def test_w2leftfix_name_only_stays_fast_on_hostile_titles(text):
+    import time
+
+    best = 1.0
+    for _ in range(3):
+        start = time.perf_counter()
+        ev.name_only(text, 200)
+        best = min(best, time.perf_counter() - start)
+    assert best < 0.02
+# --- end W2-left-fix ---
+
+
+# --- W2-left-fix2: one structural rule (a path start, then its run's last separator) ---
+@pytest.mark.parametrize(("text", "expected"), [
+    # finding 1: a doubled separator ends no folder name
+    ("Edit d:/Client Secret//x.py", "Edit x.py"),
+    ("Edit d:/a//Client Secret/x.py", "Edit x.py"),
+    ("Edit ~/Client Secret//x.py", "Edit x.py"),
+    ("Edit /home/you/Client Secret//x.py", "Edit x.py"),
+    ("Edit /mnt/d//Client Secret/x.py", "Edit x.py"),
+    ("Edit file:///d:/Client Secret//x.py", "Edit x.py"),
+    ("Edit d:/Client Acme Secret Project Alpha//x.py", "Edit x.py"),
+    (f"Edit d:{BS}{BS}Client Secret{BS}{BS}x.py", "Edit x.py"),
+    # finding 2: file and remote URLs without a drive
+    ("Open file:///home/you/Client Secret/x.py", "Open x.py"),
+    ("Open file:///Users/you/Client Secret/x.py", "Open x.py"),
+    ("Open file:///mnt/d/Client Secret/x.py", "Open x.py"),
+    ("Open file://server/share/Client Secret/x.py", "Open x.py"),
+    ("Open vscode-remote://wsl+Ubuntu/home/you/Client Secret/x.py", "Open x.py"),
+    ("Open vscode-remote://ssh-remote+box/home/you/Client Secret/x.py", "Open x.py"),
+    ("Open https://intranet/Client Secret/plan", "Open plan"),
+    # finding 3: a 5+ word lowercase folder with a function word, before a short last part
+    ("Open d:/notes for the acme merger deal/todo", "Open todo"),
+    ("Open d:/acme merger plans of the client/src", "Open src"),
+    ("Open d:/old/notes for the acme merger deal/todo", "Open todo"),
+    ("Open ~/notes for the acme merger deal/todo", "Open todo"),
+    ("Open /home/you/notes for the acme merger deal/todo", "Open todo"),
+    ("Open /mnt/d/notes for the acme merger deal/todo", "Open todo"),
+    (f"Open d:{BS}x{BS}notes for the acme merger deal/todo", "Open todo"),
+    ("Open d:/work for the acme bank ACME/HR", "Open HR"),
+    # finding 4: no part of a home folder's user name, whatever follows it
+    ("Read /Users/you there then fix km/h", "Read h"),
+    ("Read /Users/you there then fix it", "Read ~"),
+    (f"Read C:{BS}Users{BS}you there then fix it", "Read ~"),
+    ("Read /home/you there/ then fix it", "Read ~ then fix it"),
+    ("see /media/sam/Work Drive then go", "see ~"),
+    # finding 5: other root folders, and a share name with a space
+    ("Edit /srv/Client Secret/x.py", "Edit x.py"),
+    ("Edit /opt/Client Secret/x.py", "Edit x.py"),
+    ("Edit /tmp/Client Secret/x.py", "Edit x.py"),
+    ("Edit /private/var/folders/Client Secret/x.py", "Edit x.py"),
+    ("Edit /mnt/wsl/Client Secret/x.py", "Edit x.py"),
+    ("Edit /root/Client Secret/x.py", "Edit x.py"),
+    ("Edit /var/Client Secret/x.py", "Edit x.py"),
+    ("Edit //server/Client Secret/x.py", "Edit x.py"),
+    ("Edit /Volumes/Client Secret/x.py", "Edit x.py"),
+    # the run stops at a quote or after a file name and ", "; a run ending in "/" keeps its folder
+    ('open "/srv/Client Secret/x.py" and km/h', 'open "x.py" and km/h'),
+    ("Edit `~/Client Secret/x.py` then I/O", "Edit `x.py` then I/O"),
+    ("Edit /srv/Client Secret/x.py, then save/load", "Edit x.py, then save/load"),
+    ("cd d:/kite/ now", "cd kite now"),
+    ("cd /home/you/ now", "cd ~ now"),
+    # titles with no path start stay as they are
+    ("Add /api/users endpoint", "Add users endpoint"),
+    ("Fix km/h, I/O and TCP/IP in save/load", "Fix km/h, I/O and TCP/IP in save/load"),
+    ("Route /home page and /users list", "Route /home page and /users list"),
+    ("Remove // TODO comments and a / b", "Remove // TODO comments and a / b"),
+    ("Edit app/home/page.tsx and src/media/a.ts", "Edit app/home/page.tsx and src/media/a.ts"),
+    ("~2/3 of tests pass", "~2/3 of tests pass"),
+    # the limit, documented: a root path with no start keeps a folder name with spaces
+    ("Edit /work/Client Secret/x.py", "Edit Client Secret/x.py"),
+])
+def test_w2leftfix2_a_path_start_cuts_its_whole_run(text, expected):
+    out = ev.name_only(text, 200)
+    assert out == expected
+    assert "Secret" not in out or "/work/" in text
+    assert "there" not in out and "merger" not in out
+
+
+@pytest.mark.parametrize("text", [
+    "c:/a " * 4000, "a+" * 20000 + "://", "//a" * 20000, "/home/" * 10000, "x.py, " * 10000,
+    "file:///" + "a b//" * 10000, "/srv/" + "a b c " * 10000, "~/" * 30000, "\\\\" * 30000,
+    "d:/" + "a" * 60000, "d:/a" + "/" * 60000 + "b", "/a/b " * 12000, 'c:/a"' * 12000,
+    "/media/x/" * 7000, "a.bcdefghij, " * 5000, "vscode-remote://" * 4000,
+], ids=lambda text: f"{len(text)}:{text[:12]!r}")  # a 64 KB id breaks PYTEST_CURRENT_TEST
+def test_w2leftfix2_name_only_stays_fast_on_hostile_titles(text):
+    import time
+
+    assert 4096 <= len(text) <= 65536
+    best = 1.0
+    for _ in range(3):
+        start = time.perf_counter()
+        ev.name_only(text, 200)
+        best = min(best, time.perf_counter() - start)
+    assert best < 0.02
+# --- end W2-left-fix2 ---

@@ -20,7 +20,7 @@ The live town: your agents walk the town as they work. See [docs/live.md](docs/l
 ### Added
 
 - **`[live]`** in `lamptown.toml` switches the live town on: `enabled`, `poll`, `history_days`,
-  `private_dirs`, `status_dir`, `[[live.reader]]` and `[[live.place]]`
+  `private_dirs`, `status_dir`, `[[live.reader]]`, `[[live.place]]` and `[[live.group]]`
   ([docs/config.md](docs/config.md#live)).
 - **`lamptown watch`** and **`lamptown open --watch`**: run the Watcher every few seconds and
   rebuild every 15 s, writing `town-live.js`, `town-data.js` and `town-history.js` next to
@@ -33,6 +33,11 @@ The live town: your agents walk the town as they work. See [docs/live.md](docs/l
   subagents, questions and likely permission prompts, API errors, changed-file counts), `codex`
   (rollout logs and thread titles) and `git` (commits and pushes from reflogs, counted on the
   agent working there). Your own: `reader = "./mine.py"` or the `lamptown.readers` entry point.
+- **`ci_gh` reader** (optional, off by default): a pushed project's GitHub CI runs through
+  `gh run list` (read-only, only for repositories pushed in the last hour, at most every 120 s
+  each, on a background thread). A run flies as the pennant on its project's boat and is its own
+  line in the keeper's book; no figure walks for it. Skips cleanly, with one note, when `gh` is
+  missing, not logged in or offline. Readers may now say such things through a `notes` list.
 - **Lamplighters**: one figure with a lantern per live agent, at the building it works in.
   Waiting agents sit by the door, failed ones step aside with a red lantern, quiet ones stand
   dark with a "?", done ones hang their lantern on the hook for 15 minutes. Subagents follow as
@@ -60,6 +65,11 @@ The live town: your agents walk the town as they work. See [docs/live.md](docs/l
   `TASKS.md` can't be read), and the live berths along its floor.
 - A session started in your home folder or at a drive root never shows the folder's name (your
   login name) as its title or project.
+- A folder named by date and words (`2026-03-14-plan-the-launch`, as tools make per chat) never
+  shows the words: it is named by its parent folder, or the date alone; `[[live.group]]` gives
+  every folder under one `dir` a project name of your own ([docs/config.md](docs/config.md#live)).
+- The lighthouse's sign hangs on two lines ("2 AGENTS" / "FAILED") so it never runs off the map's
+  edge, up to "999+ AGENTS".
 
 ## 0.1.0
 

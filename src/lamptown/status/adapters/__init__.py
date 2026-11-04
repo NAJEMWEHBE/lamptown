@@ -92,12 +92,31 @@ def folder_path(path: Any) -> str:
 
 
 def folder_name(path: Any) -> str:
-    """Last part of a folder path from any OS (``""`` if none)."""
+    """Last part of a folder path from any OS (``""`` if none). A folder whose name starts with
+    a date (``2026-03-14-plan-the-launch``, :data:`DATED`) never shows the words after it: tools
+    make such folders per chat and write the chat's first words into them. It shows as its
+    parent folder's name instead (one name for all of them), or the date alone when there is no
+    parent to name (a bare name, or a parent that is the home folder or a root)."""
     if not isinstance(path, str) or not path.strip():
         return ""
     text = path.strip().rstrip("/\\")
     pure = PureWindowsPath(text) if ("\\" in text or text[1:2] == ":") else PurePosixPath(text)
-    return pure.name
+    # --- ab: date-named folders ---
+    dated = DATED.match(pure.name)
+    if not dated:
+        return pure.name
+    from lamptown.status.events import home_or_root  # events imports this module
+
+    parent = str(pure.parent)
+    if pure.parent.name and parent != text and not home_or_root(parent):
+        return folder_name(parent)  # a dated parent is named the same way
+    return dated.group(1)
+    # --- end ab ---
+
+
+# --- ab: date-named folders --- a date, then a separator and more: the words are never shown
+DATED = re.compile(r"^(\d{4}-\d{2}-\d{2})[-_ .T].")
+# --- end ab ---
 
 
 # --- L5-fix: home folder ---

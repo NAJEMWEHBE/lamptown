@@ -46,6 +46,11 @@ const BERTHS = (() => {
   const rightSide = s => s < RIGHT;
   const harbour = a => !(typeof a.plot === 'string' && PLOTS.has(a.plot) && a.plot !== 'boathouse');
   const atWork = a => a.state === 'working' || a.state === 'quiet';
+  // --- live: L11 ci_gh --- a CI record: "CI" plus its workflow's name ("CI", "CI TESTS")
+  const isCi = a => a.tool === 'ci';
+  const CI_WORD = { running: 'RUNNING', green: 'GREEN', red: 'RED' };
+  const ciName = a => { const t = String(a.title || '').toUpperCase().trim(); return !t ? 'CI' : /^CI\b/.test(t) ? t : 'CI ' + t; };
+  // --- end L11 ---
 
   /* where agents stand (feet), absolute pixels. No two spots hide each other, nor the Harbour's waiting seats (y 194,
      x 131..159 and the chair at 221) or its failed spots on the spur (tests/test_harbour_berths.py checks it): side by side
@@ -86,7 +91,7 @@ const BERTHS = (() => {
     const p = fresh();
     if (p === S.payload) return;
     S.payload = p;
-    if (!p) { S.list = []; S.over = []; S.agents = new Map(); S.stand.clear(); S.sail.clear(); return; }   // stale: nothing drawn; berths remembered
+    if (!p) { S.list = []; S.over = []; S.agents = new Map(); S.ci = new Map(); S.stand.clear(); S.sail.clear(); return; }   // stale: nothing drawn; berths remembered (L11: S.ci)
     const now = performance.now();
     const agents = (Array.isArray(p.agents) ? p.agents : []).filter(a => a && typeof a === 'object' && typeof a.id === 'string' && STATES.has(a.state));
     const ids = new Set();   // a project listed twice: its first entry
@@ -97,7 +102,10 @@ const BERTHS = (() => {
     for (const a of agents) if (typeof a.project === 'string' && a.project) { if (!byProj.has(a.project)) byProj.set(a.project, []); byProj.get(a.project).push(a); }
     const wants = projects.filter(q => !byProj.has(q.id) || byProj.get(q.id).some(harbour));
     const live = new Set(wants.map(q => q.id));
-    S.agents = new Map(wants.map(q => [q.id, (byProj.get(q.id) || []).filter(harbour)]));
+    // --- live: L11 ci_gh --- a CI record (tool "ci", the ci_gh reader) is no agent: no figure, no count; its pennant and hover line
+    S.ci = new Map(wants.map(q => [q.id, (byProj.get(q.id) || []).filter(isCi)]));
+    S.agents = new Map(wants.map(q => [q.id, (byProj.get(q.id) || []).filter(a => harbour(a) && !isCi(a))]));
+    // --- end L11 ---
     for (const q of wants) { S.seen.set(q.id, now); S.names.set(q.id, q.name); }
     for (const [id, t] of S.seen) if (now - t > GRACE_MS) { S.seen.delete(id); S.slot.delete(id); S.names.delete(id); S.paint.delete(id); }
     // who needs a berth: the overflow first (the oldest there first), then newcomers in the payload's order
@@ -145,6 +153,8 @@ const BERTHS = (() => {
     const list = S.agents.get(id) || [], f = { working: 0, waiting: 0, error: 0, quiet: 0, ok: 0, files: 0, commits: 0, pushed: false, ci: null };
     for (const a of list) { f[a.state]++; f.files += a.files | 0; f.commits += a.commits | 0; if (a.pushed) f.pushed = true;
       if (a.ci === 'red' || (a.ci === 'running' && f.ci !== 'red') || (a.ci === 'green' && !f.ci)) f.ci = a.ci; }
+    for (const a of (S.ci && S.ci.get(id)) || []) {   // --- live: L11 ci_gh --- the project's CI runs: the pennant only
+      if (a.ci === 'red' || (a.ci === 'running' && f.ci !== 'red') || (a.ci === 'green' && !f.ci)) f.ci = a.ci; }
     return f;
   }
   function tipOf(id) {
@@ -152,10 +162,12 @@ const BERTHS = (() => {
     const out = [name + ': ITS BERTH AT THE HARBOUR', list.length ? plural(list.length, 'AGENT') + ' ON THIS PROJECT' : 'NO AGENT ON IT NOW'];
     for (const a of list.slice(0, 4)) out.push(String(a.title || 'AN AGENT') + ': ' + WORD[a.state]);
     if (list.length > 4) out.push('AND ' + (list.length - 4) + ' MORE');
+    const runs = (S.ci && S.ci.get(id)) || [];   // --- live: L11 ci_gh --- each CI run by its workflow's name
+    for (const a of runs.slice(0, 2)) out.push(ciName(a) + ': ' + (CI_WORD[a.ci] || WORD[a.state]));
     const c = [];
     if (f.commits) c.push(plural(f.commits, 'COMMIT'));
     if (f.pushed) c.push('PUSHED: SAIL UP');
-    if (f.ci) c.push('CI ' + f.ci.toUpperCase());
+    if (f.ci && !runs.length) c.push('CI ' + f.ci.toUpperCase());
     if (c.length) out.push(c.join(', '));
     return out;
   }
@@ -198,11 +210,21 @@ const BERTHS = (() => {
     sprite(BOAT_PX, x, y - 6, { o: OL, g: paint, h: '#7a5236', t: '#4e3222', k: '#6a4630' });
     R(x + 2, y - 5, 10, 1, mixHex(paint, '#ffffff', 0.35));   // light on the near gunwale
     R(x + 1, y + 1, 18, 1, 'rgba(160,200,240,0.16)');          // a still line of water along her side
+    rig(x, y, f);
+  }
+  function rig(x, y, f) {   // the mast, the sail (pushed), the CI pennant
     if (!f || !(f.pushed || f.ci)) return;
     R(x + 9, y - 14, 1, 11, '#c8b088');   // the mast, stepped in the middle
     if (f.pushed) for (let j = 0; j < 7; j++) { const w = j < 4 ? j + 1 : 7 - j; R(x + 10, y - 13 + j, w, 1, j % 3 === 2 ? '#d8d2c0' : '#f4f0e4'); }
     if (f.ci) { R(x + 5, y - 15, 4, 2, CI_COL[f.ci]); P(x + 4, y - 15, CI_COL[f.ci]); }
   }
+  // --- live: L11 ci_gh --- a moored boat lies in front of the wharf, so its rig stands in front of the figures on it
+  // (drawn again in the scene layer, after live.js's figures: the pennant of a running CI is never hidden by a cart)
+  function rigs(still) {
+    const gone = away(performance.now(), still);
+    for (const b of S.list) if (!gone.has(b.id)) rig(SLOTS[b.slot] + 5, BOAT, facts(b.id));
+  }
+  // --- end L11 ---
   function sea(t, still) {   // the wharf, bollards and moored boats: under the buildings and the figures
     sync();
     const now = performance.now();
@@ -240,6 +262,7 @@ const BERTHS = (() => {
   }
   function scene(t, still) {   // the launch, over the slipway and the water (one boat after another); boats sailing up
     sync();
+    rigs(still);   // --- live: L11 ci_gh ---
     if (still || !running) { S.queue.length = 0; S.launch = S.launchAt = null; S.sail.clear(); return; }   // a still scene: the boats are simply moored
     const now = performance.now();
     for (const id of [...S.sail.keys()]) { const q = sailPos(id, now); if (q) boat(q.x, BOAT, id, null); }

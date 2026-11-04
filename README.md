@@ -268,7 +268,9 @@ Lamptown is built to sit on top of private work, so it is careful by design:
   write, move or delete anything in a source.
 - **No network, no telemetry.** Lamptown sends nothing anywhere. The town page loads no outside
   scripts, fonts or images. The desktop app talks only to itself, on `127.0.0.1` with a random
-  token, so a second launch can bring the first window to the front.
+  token, so a second launch can bring the first window to the front. (The one exception is
+  opt-in: the `ci_gh` live reader asks GitHub, through your `gh`, for a pushed project's CI
+  result.)
 - **Private projects stay closed.** A project marked `private = true`, or inside a folder listed in
   `private_dirs`, is never opened, listed or read; only whether its folder exists is checked.
 - **Hooks keep secrets out.** A status file written by a hook holds the lamp state, a fixed

@@ -234,7 +234,8 @@ def test_one_wait_beam_reaches_its_door(tmp_path):
     s = r["s"]
     assert s["reached"] == "gate" and s["target"] == "gate" and s["targets"] == ["gate"]
     assert abs(s["angle"] - r["ang"]) < 1e-6 and s["count"] == 1 and r["sign"] == "1 AGENT WAITS"
-    assert r["tip"][0] == "TEST ROOM: 1 AGENT WAITS" and r["tip"][1] == "AGENT B (PAPER-KITE)"
+    # the door tip spells a project as the berths and the book do
+    assert r["tip"][0] == "TEST ROOM: 1 AGENT WAITS" and r["tip"][1] == "AGENT B (PAPER KITE)"
 
 
 def test_the_lit_way_walks_the_footpaths(tmp_path):

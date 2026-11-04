@@ -60,8 +60,11 @@ LIGHTHOUSE = "lighthouse"
 TOP_KEYS = {"version", "town", "building", "live"}
 TOWN_KEYS = {"title", "latitude", "longitude", "out"}
 BUILDING_KEYS = {"id", "type", "label", "plot", "enabled", "room_js", "source"}
-LIVE_KEYS = {"enabled", "poll", "history_days", "private_dirs", "status_dir", "reader", "place"}
+LIVE_KEYS = {"enabled", "poll", "history_days", "private_dirs", "status_dir", "reader", "place",
+             "group"}  # ab: group
 PLACE_KEYS = {"dir", "plot"}
+GROUP_KEYS = {"dir", "name"}  # ab: [[live.group]]
+GROUP_NAME_MAX = 40  # ab: a group's name fits a berth's plate
 READER_KIND_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 POLL_RANGE = (1.0, 60.0)  # seconds between live ticks
 HISTORY_RANGE = (1, 31)  # days the handover book keeps
@@ -106,6 +109,16 @@ class Town:
     out: str | None = None
 
 
+# --- ab: [[live.group]] ---
+@dataclass(frozen=True)
+class Group:
+    """One ``[[live.group]]``: live work in or under ``dir`` shows under the project ``name``."""
+
+    dir: str  # absolute (a glob is cut to its static prefix when matched)
+    name: str
+
+
+# --- end ab ---
 @dataclass(frozen=True)
 class Place:
     """One ``[[live.place]]``: live work in or under ``dir`` walks to ``plot``."""
@@ -125,6 +138,7 @@ class Live:
     status_dir: str | None = None  # absolute; None: see livetown.live_status_dir
     readers: tuple[dict[str, Any], ...] = ()  # {"kind"?, "reader"? (absolute), options...}
     places: tuple[Place, ...] = ()
+    groups: tuple[Group, ...] = ()  # ab: [[live.group]]
 
 
 @dataclass(frozen=True)
@@ -418,8 +432,8 @@ def _live(where: str, raw: Any, base: Path) -> Live:
             raise _fail(where, key, f"key {bad[0]!r}: keys starting with '_' are reserved "
                         "for Lamptown")
         if "kind" not in r and "reader" not in r:
-            raise _fail(where, key, 'needs kind = "claude_code", "codex" or "git" (a reader\'s '
-                        'name) or reader = "./my_reader.py"')
+            raise _fail(where, key, 'needs kind = "claude_code", "codex", "git" or "ci_gh" (a '
+                        'reader\'s name) or reader = "./my_reader.py"')  # L11: ci_gh
         if "kind" in r:
             kind = _str(where, f"{key}.kind", r["kind"])
             if not READER_KIND_RE.match(kind):
@@ -449,7 +463,42 @@ def _live(where: str, raw: Any, base: Path) -> Live:
         places.append(Place(dir=str(resolve_folder(_str(where, f"{key}.dir", p["dir"]), base)),
                             plot=plot))
     return Live(enabled=enabled, poll=float(poll), history_days=days, private_dirs=private,
-                status_dir=status_dir, readers=tuple(readers), places=tuple(places))
+                status_dir=status_dir, readers=tuple(readers), places=tuple(places),
+                groups=_groups(where, raw, base))  # ab: [[live.group]]
+
+
+# --- ab: [[live.group]] ---
+def _groups(where: str, raw: dict, base: Path) -> tuple[Group, ...]:
+    """``[[live.group]]``: folders whose work shows under one project name (docs/config.md)."""
+    groups_raw = raw.get("group", [])
+    if not isinstance(groups_raw, list) or not all(isinstance(g, dict) for g in groups_raw):
+        raise _fail(where, "live.group", "must be an array of tables: [[live.group]]")
+    out = []
+    for i, g in enumerate(groups_raw, 1):
+        key = f"live.group #{i}"
+        _unknown(where, key, g, GROUP_KEYS)
+        if "dir" not in g or "name" not in g:
+            raise _fail(where, key, 'needs dir = "..." and name = "..." (work in or under dir '
+                        "shows under that project name)")
+        name = " ".join(_str(where, f"{key}.name", g["name"]).split())
+        if not name or len(name) > GROUP_NAME_MAX or "/" in name or "\\" in name \
+                or name.startswith("~"):
+            raise _fail(where, f"{key}.name", f"{name!r} must be a name of 1 to {GROUP_NAME_MAX} "
+                        'characters, not a path (for example "chats")')
+        folder = resolve_folder(_str(where, f"{key}.dir", g["dir"]), base)
+        fixed: list[str] = []  # the part before the first wildcard
+        for part in folder.parts:
+            if re.search(r"[*?\[]", part):
+                break
+            fixed.append(part)
+        home = Path(os.path.expanduser("~"))
+        if len(fixed) <= 1 or Path(*fixed) == home or Path(*fixed) in home.parents:
+            raise _fail(where, f"{key}.dir", "is a root or the home folder (or above it), which "
+                        'holds every project: name the folder the grouped ones are in, for example '
+                        '"~/notes/daily"')
+        out.append(Group(dir=str(folder), name=name))
+    return tuple(out)
+# --- end ab ---
 
 
 def _source(where: str, key: str, s: dict[str, Any], base: Path) -> Source:

@@ -5,15 +5,18 @@ Built-in kind ``git``::
     [[live.reader]]
     kind = "git"
     repos = ["~/code/paper-kite", "~/code/harbour"]   # the folders to watch
-    status_dir = "~/.agent-status"   # optional: also watch live agents' folders, and count
-                                     # their commits and pushes on their records
+    status_dir = "~/.agent-status"   # optional (default in the live town: the Watcher's own
+                                     # status folder; false: none): also watch the live agents'
+                                     # folders, and count their commits and pushes on their records
     days = 7                         # optional: older reflog lines are skipped
 
 Which folders: every ``repos`` entry, plus, when ``status_dir`` is given, the ``x-folder`` of
 every live agent record there (``working`` or ``waiting``, or changed in the last 30 minutes).
 The reader contract hands a reader no list of folders, so the Watcher's own folder has to come
-in through ``status_dir``. A folder may be a sub-folder of its repository: its parents are
-searched for ``.git`` (at most :data:`UP` levels, ``repos`` entries included).
+in through ``status_dir``: the live town passes it when the entry names none
+(``livetown.reader_entry``; ``status_dir = false`` turns that off). A folder may be a
+sub-folder of its repository: its parents are searched for ``.git`` (at most :data:`UP`
+levels, ``repos`` entries included).
 
 What it reads (read-only, tailed incrementally like every reader):
 
@@ -461,6 +464,11 @@ def _record(doc: dict) -> dict | None:
         return None
     if doc.get("kind") == "project":
         return None
+    # --- live: L11 ci_gh --- a CI run's record (tool "ci") names the repository and is
+    # updated at every check, but no commit or push is ever its own
+    if doc.get("agent") == "ci" or sid.startswith("ci-gh-"):
+        return None
+    # --- end L11 ci_gh ---
     since = parse_time(doc.get("started")) if isinstance(doc.get("started"), str) else None
     commits = doc.get("x-commits")
     return {"id": sid, "folder": os.path.normpath(folder), "state": state, "updated": updated,

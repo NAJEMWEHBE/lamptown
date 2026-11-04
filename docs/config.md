@@ -356,6 +356,10 @@ kind = "claude_code"              # a built-in reader, or reader = "./my_reader.
 [[live.place]]
 dir = "~/work/ideas"              # work in or under this folder (a glob: from its fixed part)
 plot = "lab"                      # walks to this plot
+
+[[live.group]]
+dir = "~/notes/chats"             # work in or under this folder (a glob: from its fixed part)
+name = "chats"                    # shows under this one project name
 ```
 
 | Key | Type | Default | Meaning |
@@ -367,6 +371,7 @@ plot = "lab"                      # walks to this plot
 | `status_dir` | path | see above | The status folder the live town watches. A `status_dir` source with no `dir` reads it too. |
 | `[[live.reader]]` | array of tables | none | `kind = "<name>"` or `reader = "./file.py"`; every other key goes to the reader as an option (path keys are resolved as for sources). |
 | `[[live.place]]` | array of tables | none | `dir` and `plot` (one of the six plots). |
+| `[[live.group]]` | array of tables | none | `dir` and `name` (1 to 40 characters, not a path): every agent working in or under `dir` (its folder, or its `x-project` written as a path) shows under the project `name`, one berth for all of them. The most specific group wins; a private folder still wins over a group. `dir` may not be a root or your home folder (or above it). See below. |
 
 The built-in readers (each one's options are in [live.md](live.md#what-it-reads-and-what-it-keeps)):
 
@@ -374,10 +379,22 @@ The built-in readers (each one's options are in [live.md](live.md#what-it-reads-
 |---|---|---|
 | `claude_code` | Claude Code's session files and logs, no hooks needed | `root` (`~/.claude`), `on_stop` (`"ok"` or `"waiting"`), `days` (7), `titles` (`"session"` or `"folder"`) |
 | `codex` | Codex's rollout logs and thread titles, no hooks needed | `root` (`$CODEX_HOME`, else `~/.codex`), `days` (7) |
-| `git` | commits and pushes from repository reflogs | `repos` (a list of folders), `status_dir` (count them on the agents in this status folder), `days` (7) |
+| `git` | commits and pushes from repository reflogs | `repos` (a list of folders), `status_dir` (also watch the folders of the agents in this status folder and count their commits and pushes on them; default: the live town's own `status_dir`; `false`: `repos` only, as events), `days` (7) |
+| `ci_gh` | optional: a pushed repository's GitHub CI runs, through the GitHub CLI (`gh run list`; the only reader that goes online, see [live.md](live.md#github-ci-runs-ci_gh)) | `repos`, `status_dir` (as for `git`; default: the live town's own), `gh` (`"gh"`), `every` (120, at least 120 s per repository), `timeout` (20 s, 5 to 60), `hosts` (`["github.com"]`) |
 
-`~`, `$VARS` and config-relative paths work in `private_dirs`, `status_dir` and
-`[[live.place]] dir`, exactly as in a `status_dir` source's `private_dirs`.
+`~`, `$VARS` and config-relative paths work in `private_dirs`, `status_dir`,
+`[[live.place]] dir` and `[[live.group]] dir`, exactly as in a `status_dir` source's
+`private_dirs`.
+
+**Folders named by date.** Some tools make one folder per chat or task and name it by the date
+followed by the chat's first words (`~/notes/chats/2026-03-14-plan-the-launch`). A folder whose
+name starts with a date (`YYYY-MM-DD` and then `-`, `_`, a space, `.` or `T`) never shows the
+words after it: it shows as its parent folder's name (`chats`), so all of them share one berth.
+With no parent to name (a bare name, or a parent that is a root or your home folder) it shows as
+the date alone (`2026-03-14`). The words never reach the page, the status files' titles or the
+book. Why the parent and not "untitled": the parent is a folder you or the tool chose, it groups
+the chats the way the tool already does, and it says where they live. A `[[live.group]]` for
+that parent names them however you like instead.
 
 A silent agent ages as the `status_dir` source that reads the live status folder says
 (its `stale_after`, `quiet_after` and `expire_after`; else their defaults), so the harbour room

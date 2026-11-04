@@ -470,3 +470,30 @@ def test_a_real_watcher_with_a_reader_behind_speeds_the_feed_up(town, tmp_path):
         feed.watcher.readers[0].behind = False
         feed.tick(b.rev)
         assert not feed.behind and feed.every == 3.0
+
+
+# --- W2-left: the git reader watches the live status folder by default ---
+@pytest.mark.parametrize(("extra", "want"), [
+    ("", "status"),  # no status_dir: the Watcher's own folder
+    ('status_dir = "other"\n', "other"),  # one given: that one
+    ("status_dir = false\n", None),  # false turns it off: events only
+])
+def test_a_git_reader_gets_the_watchers_status_folder_unless_told(town, tmp_path, extra, want):
+    from lamptown.livefeed import Builder
+
+    town.write_text(CONFIG.replace("[[building]]", '[[live.reader]]\nkind = "git"\n' + extra
+                                   + "\n[[building]]"), encoding="utf-8")
+    made: list = []
+    feed = LiveFeed(make_watcher=lambda readers, **opts: made.append(readers)
+                    or Watcher(readers=readers, **opts))
+    b = Builder(str(town), str(tmp_path / "out"), print, on_config=feed.configure)
+    with feed:
+        assert b() is not None
+        feed.tick(b.rev)
+    (git,) = made[0]
+    got = git.status_dir
+    if want is None:
+        assert got is None
+    else:
+        assert Path(got).name == want
+# --- end W2-left ---

@@ -238,7 +238,7 @@ def test_a_click_pins_a_names_only_card_and_no_toast(tmp_path):
       return { card: SEEN.agentCard, room: RS.id, panel, toasts,
         coats: SEEN.agents.map(a => [a.tool, a.coat]) };""")
     assert r["card"][0] == "Approve the plan"
-    assert r["card"][1] == "PAPER-KITE / CODEX"
+    assert r["card"][1] == "PAPER KITE / CODEX"  # W2-left: as the berths and the book spell it
     assert r["card"][2].startswith("WAITING FOR YOU")
     assert r["card"][3] == "14 FILES, 2 COMMITS, PUSHED, CI GREEN"
     assert r["room"] is None and r["panel"] is True  # the click was the figure's, not the room's
@@ -513,3 +513,27 @@ def test_the_harbour_bubble_rests_while_live_is_on(tmp_path):
     assert r["off"] == {"harbour": True, "lab": True}  # live off: the town's own bubble
     assert r["live"] is True and r["on"] == {"harbour": False, "lab": True}
     assert r["lamps"]["boathouse"] == "amber"  # the lamp stays
+
+
+# --- W2-left: one spelling for a project's name on screen ---
+def test_the_card_spells_a_project_as_the_berths_do(tmp_path):
+    # the card said MOSS-ENGINE where the berths and the keeper's book say MOSS ENGINE
+    r = probe(tmp_path, """
+      const one = (id, project) => A(id, 'working', 'gate', { project });
+      lamptownLive({ spec: 'lamptown-live/1', at: new Date().toISOString(), rev: '',
+        need: 0, more: 0,
+        agents: [one('m1', 'moss-engine'), one('t1', 'tide_api')],
+        projects: [{ id: 'moss-engine', name: 'MOSS ENGINE', berth: 0, new: false }] });
+      await until(() => (SEEN.agents || []).length === 2);
+      const cardOf = async id => {
+        const f = fig(id), c = document.getElementById('c').getBoundingClientRect();
+        const cx = c.left + (f.x + 0.5) * c.width / 400;
+        const cy = c.top + (f.y - 5 + 0.5) * c.height / 225;
+        document.elementFromPoint(cx, cy).dispatchEvent(
+          new MouseEvent('click', { bubbles: true, clientX: cx, clientY: cy }));
+        await until(() => SEEN.agentCard && SEEN.agentCard[0] === 'Agent ' + id);
+        return SEEN.agentCard; };
+      return { m1: await cardOf('m1'), t1: await cardOf('t1') };""")
+    assert r["m1"][1] == "MOSS ENGINE / CODEX"  # listed: the payload's own name
+    assert r["t1"][1] == "TIDE API / CODEX"  # not listed: the same rule
+# --- end W2-left ---

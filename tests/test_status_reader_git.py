@@ -279,6 +279,33 @@ def test_commits_and_pushes_count_on_the_live_agent_in_that_folder(tmp_path):
     assert_private(b.events, b.agents, state)
 
 
+def test_a_ci_record_is_never_credited_with_commits_or_pushes(tmp_path):
+    # --- live: L11 ci_gh --- the ci_gh reader's record names the repository's folder and is
+    # updated at every check, often more recently than the agent: it is no agent
+    status = tmp_path / "status"
+    repo = FakeRepo(tmp_path / "work")
+    sid = _agent(status, repo.root, started=at(10))  # updated a minute ago
+    ci = "ci-gh-0123456789"
+    update_status(ci, status, now=NOW - timedelta(seconds=10), title="Tests", state="working",
+                  agent="ci", kind="job", started=iso(at(0)),
+                  **{"x-folder": str(repo.root), "x-ci": "running"})
+    repo.head(f"commit: {SUBJECT}", at(11))
+    repo.push("main", at(13))
+    b = poll(GitReader(status_dir=str(status)), {})
+    assert [(e["k"], e["id"]) for e in b.events] == [("commit", sid), ("push", sid)]
+    assert [c["id"] for c in b.agents] == [sid]
+    # with only the CI record in the folder: it names no folder to watch, and gets nothing
+    alone = tmp_path / "status-ci-only"
+    update_status(ci, alone, now=NOW - timedelta(seconds=10), title="Tests", state="working",
+                  agent="ci", kind="job", started=iso(at(0)), **{"x-folder": str(repo.root)})
+    b = poll(GitReader(status_dir=str(alone)), {})
+    assert b.events == [] and b.agents == []
+    # a configured repository is still read: its events are credited to no one
+    b = poll(GitReader(repos=[str(repo.root)], status_dir=str(alone)), {})
+    assert [e["k"] for e in b.events] == ["commit", "push"]
+    assert all(e["id"] != ci for e in b.events) and b.agents == []
+
+
 def test_the_watcher_writes_the_counts_and_one_event_each(tmp_path):
     status = tmp_path / "status"
     repo = FakeRepo(tmp_path / "work")

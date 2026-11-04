@@ -36,11 +36,13 @@ Security fixes go into the newest release. Lamptown is young, so please update b
   password masked. `lamptown status run` keeps the command line and the last stderr lines.
 - **Your agents' own logs, with `[live]` on** (`lamptown watch`, `open --watch`, the app), only
   through the readers you list, read-only: Claude Code's `~/.claude/sessions/` and session logs
-  under `~/.claude/projects/`, Codex's `~/.codex/sessions/` and the titles in
-  `~/.codex/state_5.sqlite`, and repositories' reflogs (`.git/logs/`). From them it keeps a
-  title, a project folder's name, a tool's name, a state, times and counts; never prompts,
-  replies, tool input, file contents, paths, commit messages or author names. Agents in a
-  `private_dirs` folder become "Private agent". See
+  under `~/.claude/projects/`, Codex's `~/.codex/sessions/` and the titles (and, in memory
+  only, the session files' paths) in `~/.codex/state_5.sqlite`, and repositories' reflogs
+  (`.git/logs/`). From them it keeps a title, a project folder's name, a tool's name, a state,
+  times and counts; never prompts, replies, tool input, file contents, paths, commit messages or
+  author names. A path inside a title is cut to its final name from any drive, home, UNC, URL
+  or system-root start on; a path with no such start (`/work/My Project/x.py`) is cut only over
+  names without spaces. Agents in a `private_dirs` folder become "Private agent". See
   [docs/live.md](docs/live.md#what-it-reads-and-what-it-keeps).
 
 ## What Lamptown writes
@@ -65,6 +67,11 @@ contests you have unblinded.
 
 Lamptown makes **no network connections** and sends **no telemetry**. The town page is one
 self-contained file: it loads no outside scripts, fonts or images.
+
+The one exception is a reader you switch on yourself: `[[live.reader]] kind = "ci_gh"` runs the
+GitHub CLI (`gh run list`, read-only, with `gh`'s own login) to ask GitHub how a project you just
+pushed is doing. It is off unless configured, and only the workflow's name and result reach the
+town ([docs/live.md](docs/live.md#github-ci-runs-ci_gh)).
 
 The one socket is local: the desktop app listens on `127.0.0.1` (never a public interface) on a
 random port, so a second launch can ask the first window to come to the front. A request without

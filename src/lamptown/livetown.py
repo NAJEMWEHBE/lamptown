@@ -87,6 +87,7 @@ MAX_DAY_AGENTS = 300
 MAX_DAY_EVENTS = 4000
 STATE_ORDER = ("waiting", "error", "working", "quiet", "ok")
 CI_STATES = ("running", "green", "red")
+CI_TOOL = "ci"  # --- live: L11 ci_gh --- the tool of CI records (a pennant at the berth, no agent)
 COUNTED = ("files", "commit")  # history kinds that carry a count
 GLOB_EVERY = 60.0  # seconds: a glob with a wildcard folder is looked at again at most this often
 MAX_GLOB_HITS = 500  # files one such glob may turn into folder rules
@@ -265,6 +266,38 @@ def plot_map(cfg: Config) -> PlotMap:
     return PlotMap(rules, globs)
 
 
+# --- ab: [[live.group]] ---
+@dataclass(frozen=True)
+class GroupMap:
+    """The fixed project name a record shows under (``[[live.group]]``): the most specific
+    group holding ``folder`` (``x-folder``), or ``project`` (``x-project``) when that is a
+    path; ``""`` when none does. Compared as text, like ``private_dirs``."""
+
+    groups: tuple[tuple[str, str], ...] = ()  # (normalised root, name)
+
+    def __call__(self, folder: Any, project: Any = None) -> str:
+        best_root, best = "", ""
+        for path in (folder, project if path_like(project) else None):
+            if not isinstance(path, str) or not path.strip():
+                continue
+            for root, name in self.groups:
+                if len(root) > len(best_root) and _under(path, [root]):
+                    best_root, best = root, name
+        return best
+
+
+def group_map(cfg: Config) -> GroupMap:
+    """``[[live.group]]`` as a :class:`GroupMap` (a glob counts from its fixed part, as for
+    ``[[live.place]]``; a root or the home folder would hold every project and is skipped)."""
+    out: list[tuple[str, str]] = []
+    for g in cfg.live.groups:
+        root = _norm(static_prefix(g.dir))
+        if root and not _too_broad(root):
+            out.append((root, g.name))
+    return GroupMap(tuple(out))
+# --- end ab ---
+
+
 # ----------------------------------------------------------------------------- status folder
 def _status_sources(cfg: Config):
     for b in cfg.buildings:
@@ -350,6 +383,7 @@ class LiveContext:
     stale_after: int = DEFAULT_STALE_AFTER
     quiet_after: int = DEFAULT_QUIET_AFTER
     expire_after: int = DEFAULT_EXPIRE_AFTER
+    group_for: GroupMap = field(default_factory=GroupMap)  # ab: [[live.group]]
 
     def private(self, folder: Any, project: Any = None) -> bool:
         """In or under a private folder: the status folder, ``folder`` (``x-folder``), or
@@ -365,15 +399,34 @@ def context(cfg: Config) -> LiveContext:
     dirs = private_dirs(cfg)
     roots = _private_roots({"private_dirs": dirs, "_config_dir": str(cfg.base_dir)})
     return LiveContext(status_dir=live_status_dir(cfg), roots=roots, plot_for=plot_map(cfg),
-                       history_days=cfg.live.history_days, **ageing(cfg))
+                       history_days=cfg.live.history_days, **ageing(cfg),
+                       group_for=group_map(cfg))  # ab: [[live.group]]
 
 
 def watcher_options(cfg: Config) -> dict[str, Any]:
     """Keyword arguments for ``Watcher(readers=..., **watcher_options(cfg))``: the same status
-    folder text, private folders, plot rules and ageing (:func:`ageing`) the build uses."""
+    folder text, private folders, plot rules, project groups and ageing (:func:`ageing`) the
+    build uses."""
     return {"status_dir": str(live_status_dir(cfg)), "private_dirs": private_dirs(cfg),
             "config_dir": str(cfg.base_dir), "plot_for": plot_map(cfg),
+            "project_for": group_map(cfg),  # ab: [[live.group]]
             "keep_days": cfg.live.history_days, **ageing(cfg)}
+
+
+# --- W2-left: the git reader watches the live status folder by default ---
+def reader_entry(cfg: Config, entry: Mapping[str, Any]) -> dict[str, Any]:
+    """A ``[[live.reader]]`` entry as the Watcher starts it. A ``git`` reader with no
+    ``status_dir`` gets the Watcher's own status folder, so it counts commits and pushes on the
+    live agents' records (``status_dir = false``: the given ``repos`` only, as events)."""
+    out = dict(entry)
+    if out.get("kind") == "git" and "status_dir" not in out:
+        out["status_dir"] = str(live_status_dir(cfg))
+    # --- live: L11 ci_gh --- (it watches the live agents' folders for pushes the same way)
+    if out.get("kind") == "ci_gh" and "status_dir" not in out:
+        out["status_dir"] = str(live_status_dir(cfg))
+    # --- end L11 ---
+    return out
+# --- end W2-left ---
 
 
 def read_records(status_dir: str | os.PathLike, cache: dict | None = None) -> list[dict]:
@@ -463,9 +516,11 @@ def effective(doc: Mapping[str, Any], now: datetime, *,
     return "", None
 
 
-def _project_of(doc: Mapping[str, Any]) -> str:
-    """Never the login name of an agent started in the home folder (events.project_of)."""
-    return project_of(doc.get("x-project"), doc.get("x-folder"))
+def _project_of(doc: Mapping[str, Any], ctx: LiveContext | None = None) -> str:
+    """Never the login name of an agent started in the home folder (events.project_of). A
+    folder in a ``[[live.group]]`` shows under that group's name (ab)."""
+    group = ctx.group_for(doc.get("x-folder"), doc.get("x-project")) if ctx else ""  # ab
+    return group or project_of(doc.get("x-project"), doc.get("x-folder"))
 
 
 def _shown_name(name: str) -> str:
@@ -487,7 +542,7 @@ def live_payload(records: Iterable[Mapping[str, Any]], cfg: Config, now: datetim
         private = ctx.private(doc.get("x-folder"), doc.get("x-project"))
         updated = parse_time(doc.get("updated"))
         if doc.get("kind") == "project":  # a berth, not an agent (as in the Watcher)
-            name = "" if private else _project_of(doc) or project_of(doc.get("title"), None)
+            name = "" if private else _project_of(doc, ctx) or project_of(doc.get("title"), None)
             fresh = not ctx.expire_after or (
                 updated is not None and now - updated <= timedelta(seconds=ctx.expire_after))
             if name and updated and fresh:
@@ -511,7 +566,7 @@ def live_payload(records: Iterable[Mapping[str, Any]], cfg: Config, now: datetim
     agents = []
     for r in rows:
         doc, private = r["doc"], r["private"]
-        project = "" if private else _project_of(doc)
+        project = "" if private else _project_of(doc, ctx)
         if project:
             projects[project] = min(projects.get(project, r["since"]), r["since"])
         parent = doc.get("x-parent")
@@ -671,7 +726,8 @@ KIND_WORDS = {"start": "working", "files": "working", "commit": "working", "push
 
 def lighthouse_part(live: Mapping[str, Any], details: str) -> dict[str, Any]:
     """``parts.lighthouse``: the live town's own place (not one of the six plots)."""
-    agents = live.get("agents") or []
+    # --- live: L11 ci_gh --- CI runs (tool "ci") are their berth's pennant, not the lighthouse's
+    agents = [a for a in live.get("agents") or [] if a.get("tool") != CI_TOOL]
     need = int(live.get("need") or 0)
     states = {a.get("state") for a in agents}
     if need:

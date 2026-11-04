@@ -41,48 +41,43 @@ MAX_COUNT = 10**9
 LIMITS = {"title": 120, "project": 80, "tool": 64, "plot": 32}
 DAY_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})\.jsonl$")
 _PLOT_RE = re.compile(r"[^a-z0-9_-]+")
-# Paths inside a text. A path starts after anything but a letter, digit, "_", ".", "~" or "-"
-# (so in brackets, quotes, backticks or after "=" too, but "save/load" is no path).
+# --- W2-left-fix2: paths in a text, one structural rule ---
+# A path START is a drive ("x:/", "x:\"), a home ("~/", "~name/"), a UNC root ("\\", "//host/"),
+# any URL ("file://", "vscode-remote://", "https://"), or a root folder that only a path has:
+# /Users/, /home/, /root/, /mnt/, /cygdrive/, a Git Bash drive (/d/), /srv/, /opt/, /tmp/, /var/,
+# /private/, /Volumes/, /media/, /run/, /export/, /System/, /usr/, /etc/, /Library/,
+# /Applications/, /workspaces/ (in any case). A drive, "~" or URL starts after anything but a
+# letter, digit, "_", ".", "~" or "-" (so in brackets, quotes, backticks or after "=" too, but
+# "save/load" is no path); a root folder after anything but a letter or digit ("x~/home/...").
+_START_RE = re.compile(
+    r"(?<![\w.+~-])[A-Za-z][A-Za-z0-9+.-]*:[\\/]{2}"
+    r"|(?<![\w.~-])(?:[A-Za-z]:[\\/]|~(?:[A-Za-z][\w.-]*)?[\\/])"
+    r"|(?<![^\W_])(?:\\\\|//(?=[^\s\\/]+[\\/])"
+    r"|/(?:users|home|root|mnt|cygdrive|srv|opt|tmp|var|private|volumes|media|run|export|system"
+    r"|usr|etc|library|applications|workspaces?|[a-z])[\\/])",
+    re.IGNORECASE)
+# From its start, a path RUNS to the first character no name holds in a title (" < > | or a
+# backtick), or to ", " or "; " right after a file name with an extension ("...x.py, then
+# save/load"), else to the end of the text. Its names may hold spaces, so where it ends inside
+# the run is unclear: everything from the start through the run's LAST separator goes (doubled
+# ones too), and only the final name stays ("Edit d:/My Project//src/x.py now" gives "Edit x.py
+# now"). Cutting too much is the safe failure; too little leaks: a title that goes on past a
+# path loses its words up to the last "/" ("Fix c:/temp and the save/load test" gives "Fix load
+# test"). A run that ends in a separator keeps its last folder ("cd d:/kite/ now": "cd kite now").
+_HARD_RE = re.compile(r'["<>|`]')
+_SEPS_RE = re.compile(r"[\\/]+")
+_CLAUSE_RE = re.compile(r"[^\s\\/.]\.(?=[A-Za-z0-9]{0,7}[A-Za-z])[A-Za-z0-9]{1,8}[,;](?=\s|$)")
+# A home folder's user name, and the user and label of a removable drive (/media/<user>/<label>),
+# are never shown: when one would be the final name, the whole rest of the run becomes "~" (it
+# may hold spaces: "see /home/you there" gives "see ~").
+_HOMES = frozenset({"users", "home", "volumes", "media", "documents and settings"})
+# A root path with no start above ("/work/kite/x.py", "/api/users endpoint") is cut to its last
+# part too, but only over names without spaces: its words may be a title's. Two parts or more
+# ("/code-review" and "\n" are a slash command and an escape). It starts at the first separator
+# of a run, so a long run is scanned once.
 _LEAD = r"(?<![\w.~-])"
 _TAIL = r"(?:[^\s\\/]+[\\/]+)*[^\s\\/]*"  # name/name/.../last (no spaces)
-# 00. Before any other pattern: the user name of a home folder (Users, home, Volumes, also
-#     behind a drive, a mount, a UNC host, /var, /export or /System/Volumes/Data) and the user
-#     and label of a removable drive (/media/<user>/<label>, /run/media/...) become "~". A name
-#     may hold spaces, so it runs to the next separator of either kind, a quote or the end of
-#     the text; then the other patterns see no space in it and cut the path whole, whatever
-#     separators or URL wrap it ("c:\\Users\\you there/x.py", "file:///c:/Users/you there/x").
-#     The name is never shown, even as the last part ("see /home/you" gives "see ~").
-_NAMEPART = r'[^\\/"<>|?*`]*'
-_HOMENAME_RE = re.compile(
-    r"((?<![^\W_])(?:[A-Za-z]:|(?:\\\\|//)[^\\/\s]+(?:[\\/][^\\/\s]+)?|/mnt/[a-z]|/cygdrive/[a-z]"
-    r"|/[a-z]|/var|/export|/system/volumes/data)?[\\/]"
-    r"(?:users|home|volumes|(?P<media>(?:run[\\/]+)?media))[\\/]+)" + _NAMEPART
-    + r"(?(media)(?:(?P<sep>[\\/]+)" + _NAMEPART + r")?)", re.IGNORECASE)
-# 0. A URL: file:// and the rest.
-_URL_RE = re.compile(_LEAD + r"[A-Za-z][A-Za-z0-9+.-]*:/{2,}" + _TAIL)
-# 1. A Windows drive or UNC path written with backslashes. Its names may hold spaces, so it
-#    runs to the last backslash of the text (cutting too much is safe; too little leaks).
-_WIN_RE = re.compile(_LEAD + r"(?:[A-Za-z]:\\|\\\\)(?:[^\\]*\\)*" + _TAIL)
-# 2. A drive path written with forward slashes ("d:/My Projects/x.py", as Git Bash and Node print
-#    it): its names may hold spaces too. A name is up to four words ("Program Files (x86)",
-#    "Microsoft Visual Studio 2022"), or more joined by " - " (a OneDrive or SharePoint folder:
-#    "OneDrive - Acme Holdings Group Inc"), so a title such as "Fix c:/temp handling and the
-#    save/load test" keeps its words. A word holds no character a Windows name can't (" < > |
-#    ? * or a backtick) and doesn't start with "-", so " - " reads one way only.
-_DWORD = r'[^\s\\/"<>|?*`-][^\s\\/"<>|?*`]*'
-_DNAME = f"{_DWORD}(?: {_DWORD}){{0,3}}"
-_DRIVE_RE = re.compile(_LEAD + rf"[A-Za-z]:/(?:{_DNAME}(?: - {_DNAME})*[\\/])*" + _TAIL)
-# 3. A home folder or a volume (/Users/<name>, /home/<name>, /Volumes/<name>), also behind a
-#    mount (/mnt/c/Users, /c/Users, /cygdrive/c/Users): the name may hold spaces, so it runs to
-#    the next separator. Only a letter or digit before it makes it relative ("app/home/x").
-#    (One separator before "users": a long run of slashes must not be scanned again and again.)
-_HOME_RE = re.compile(r"(?<![^\W_])(?:/mnt/[a-z]|/cygdrive/[a-z]|/[a-z])?[\\/]"
-                      r"(?:users|home|volumes)[\\/]+[^\\/]*?[\\/]+" + _TAIL, re.IGNORECASE)
-# 4. Any other absolute path: X:/, ~/, ~name/, \\, or a root path of two parts or more
-#    ("/work/kite"). One part alone is a slash command or an escape ("/code-review", "\n").
-#    A root path starts at the first separator of a run, so a long run is scanned once.
-_PATH_RE = re.compile(_LEAD + r"(?:[A-Za-z]:[\\/]|~(?:[A-Za-z][\w.-]*)?[\\/]"
-                              r"|(?<![\\/])[\\/]+[^\s\\/]+[\\/])" + _TAIL)
+_PATH_RE = re.compile(_LEAD + r"(?<![\\/])[\\/]+[^\s\\/]+[\\/]" + _TAIL)
 
 
 # ---------------------------------------------------------------- names only
@@ -100,29 +95,59 @@ def _last_part(match: re.Match) -> str:
     return found if not found.strip("\\/") else ""  # a lone "/" in "a / b" stays
 
 
-def _no_home_name(match: re.Match) -> str:
-    sep = match.group("sep")
-    return match.group(1) + "~" + (sep + "~" if sep else "")
+def _is_home_name(folders: list[str]) -> bool:
+    """The name after ``folders`` is a user name or a drive label (``/home/<name>``,
+    ``C:\\Users\\<name>``, ``/media/<user>/<label>``)."""
+    return bool(folders) and (folders[-1].casefold() in _HOMES
+                              or (len(folders) > 1 and folders[-2].casefold() == "media"))
+
+
+def _cut_run(text: str, start: re.Match, last: int, end: int) -> tuple[str, int]:
+    """What stands for ``text[start.start():last + 1]`` (the run through its last separator),
+    and where the text goes on."""
+    head = text[start.start():last + 1]
+    folders = [p for p in _SEPS_RE.split(head[:-1]) if p]  # the last one is cut off
+    after = text[last + 1:end]
+    if after and not after[0].isspace():  # a final name follows the separator
+        return ("~", end) if _is_home_name(folders) else ("", last + 1)
+    # the run ends in a separator: its last folder is the final name (but not the root itself)
+    if len(head.rstrip("\\/")) <= start.end() - start.start():
+        return ("~" if head.startswith("~") else ""), last + 1
+    return ("~" if _is_home_name(folders[:-1]) else folders[-1]), last + 1
+
+
+def _cut_paths(text: str) -> str:
+    out, pos = [], 0
+    while (start := _START_RE.search(text, pos)) is not None:
+        hard = _HARD_RE.search(text, start.end())
+        end = hard.start() if hard else len(text)
+        clause = _CLAUSE_RE.search(text, start.end(), end)
+        if clause:
+            end = clause.end() - 1
+        last = max(text.rfind("/", start.start(), end), text.rfind("\\", start.start(), end))
+        kept, pos_next = _cut_run(text, start, last, end)
+        out += [text[pos:start.start()], kept]
+        pos = pos_next
+    out.append(text[pos:])
+    return "".join(out)
 
 
 def name_only(text: Any, limit: int) -> str:
-    """One line of ``text`` with every full path cut to its last part, at most ``limit`` chars.
+    """One line of ``text`` with every path cut to its final name, at most ``limit`` chars.
 
     ``"Edit /work/paper-kite/src/main.py"`` becomes ``"Edit main.py"``; ``"C:\\Users\\you\\kite"``
     becomes ``"kite"``; so do paths in brackets or quotes, after ``=``, UNC paths and URLs.
-    A home folder's user name is never kept: ``"see /home/you"`` becomes ``"see ~"``.
-    Relative fragments such as ``"save/load"`` stay. Lone surrogates become ``?``."""
+    A path with a start (a drive, ``~``, a home or other system root, UNC, a URL) is cut
+    through the last separator of its run, so a folder name with spaces never stays; a title
+    that goes on past it may lose words. A home folder's user name is never kept: ``"see
+    /home/you"`` becomes ``"see ~"``. Relative fragments such as ``"save/load"`` stay. Lone
+    surrogates become ``?``."""
     flat = scrub(one_line(text, 4096))
     if not flat:
         return ""
-    for _ in range(3):  # a home inside a volume ("/Volumes/Data/Users/<name>") takes two passes
-        cut = _HOMENAME_RE.sub(_no_home_name, flat)
-        if cut == flat:
-            break
-        flat = cut
-    for pattern in (_URL_RE, _WIN_RE, _DRIVE_RE, _HOME_RE, _PATH_RE):
-        flat = pattern.sub(_last_part, flat)
+    flat = _PATH_RE.sub(_last_part, _cut_paths(flat))
     return one_line(flat, limit)
+# --- end W2-left-fix2 ---
 
 
 def project_name(value: Any) -> str:

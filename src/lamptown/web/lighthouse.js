@@ -135,7 +135,8 @@ const LH = (() => {
     // no payload yet (or a stale one): forget what was known, so the next fresh payload judges its waits by their age
     if (!p) { S.known = S.knownFail = null; S.waits = []; S.fails = []; S.targets = []; S.working = 0; S.mode = 'idle'; S.on = null; S.reach.clear(); return; }
     const first = S.known === null;
-    const agents = Array.isArray(p.agents) ? p.agents.filter(a => a && typeof a === 'object') : [];
+    // --- live: L11 ci_gh --- a CI run (tool "ci") is no agent: its berth's pennant carries it, not the lighthouse
+    const agents = Array.isArray(p.agents) ? p.agents.filter(a => a && typeof a === 'object' && a.tool !== 'ci') : [];
     const pick = st => agents.filter(a => a.state === st && typeof a.plot === 'string' && STEP[a.plot]);
     S.waits = pick('waiting'); S.fails = pick('error'); S.working = agents.filter(a => a.state === 'working').length;
     // one door per building, in a steady order: waits before failures, then the longest waiting, then the town's plot order
@@ -289,15 +290,20 @@ const LH = (() => {
     let sign = '';
     if (nw || nf) {
       sign = nw ? waitWords(nw) : failWords(nf);
-      const s = fitText(sign, W - CX - 15), w = textW(s) + 8, x = Math.max(CX + 6, Math.min(CX + 9, W - 1 - w)), y = 180;
+      // --- live: ab sign fit --- two short lines ("2 AGENTS" / "FAILED"): one line didn't fit the 60-odd pixels between
+      // the tower and the map's edge ("2 AGENTS FAILE."); the widest two-line sign ("999+ AGENTS") is under 50
+      const n = nw || nf, lines = [(n > 999 ? '999+' : n) + (n === 1 ? ' AGENT' : ' AGENTS'), nw ? (n === 1 ? 'WAITS' : 'WAIT') : 'FAILED'].map(l => fitText(l, W - CX - 17));
+      const w = Math.max(...lines.map(textW)) + 8, x = Math.max(CX + 6, Math.min(CX + 9, W - 1 - w)), y = 180, h = 15;
       R(CX + 7, 177, Math.max(1, x + 3 - CX - 7), 1, '#20233a'); P(x + 2, 178, '#5a6078'); P(x + 2, 179, '#5a6078'); P(x + w - 3, 178, '#5a6078'); P(x + w - 3, 179, '#5a6078');
       R(x + 1, 177, w - 3, 1, '#20233a');
-      R(x, y, w, 9, OL); R(x + 1, y + 1, w - 2, 7, nw ? '#2a1a24' : '#2a1420'); R(x + 1, y + 1, w - 2, 1, nw ? '#4a2e30' : '#5a2430');
-      textL(s, x + 4, y + 2, nw ? '#ffd59a' : '#ff9a9a');
-      tipBox([x, y, w, 9], [sign, nw ? 'THE LIGHT RUNS UP THE PATHS TO EACH DOOR WHERE ONE WAITS FOR YOU' : 'THE RED LIGHT RUNS UP THE PATHS TO EACH DOOR WHERE ONE FAILED']);
+      R(x, y, w, h, OL); R(x + 1, y + 1, w - 2, h - 2, nw ? '#2a1a24' : '#2a1420'); R(x + 1, y + 1, w - 2, 1, nw ? '#4a2e30' : '#5a2430');
+      lines.forEach((l, i) => textL(l, x + Math.floor((w - textW(l)) / 2), y + 2 + i * 6, nw ? '#ffd59a' : '#ff9a9a'));
+      S.signBox = [x, y, w, h]; S.signLines = lines;
+      // --- end ab sign fit ---
+      tipBox([x, y, w, h], [sign, nw ? 'THE LIGHT RUNS UP THE PATHS TO EACH DOOR WHERE ONE WAITS FOR YOU' : 'THE RED LIGHT RUNS UP THE PATHS TO EACH DOOR WHERE ONE FAILED']);
     }
     // tooltips: the lighthouse, and the pool of light at each lit door
-    const tg = target(), names = list => list.map(a => (String(a.title || 'AN AGENT') + (a.project ? ' (' + a.project + ')' : '')).toUpperCase());
+    const tg = target(), names = list => list.map(a => (String(a.title || 'AN AGENT') + (a.project ? ' (' + projectShown(a.project) + ')' : '')).toUpperCase());   // W2-left
     for (const x of S.targets) if (S.lit.includes(x.plot)) {
       const [px, py] = STEP[x.plot];
       tipBox([px - 7, py - 3, 15, 7], [nameOn(x.plot) + ': ' + (x.kind === 'wait' ? waitWords(x.agents.length) : failWords(x.agents.length))].concat(names(x.agents).slice(0, 4)));
@@ -310,6 +316,7 @@ const LH = (() => {
     const hold = S.phase === 'hold';
     SEEN.lighthouse = { shown: true, mode: S.mode, phase: S.phase, target: tg && hold ? tg.plot : null, reached: tg && S.lit.includes(tg.plot) ? tg.plot : null,
       lit: S.lit.slice(), targets: S.targets.map(x => x.plot), kind: tg ? tg.kind : null, color: L.r, count: nw, failed: nf, sign,
+      signBox: sign ? S.signBox.slice() : null, signLines: sign ? S.signLines.slice() : [],   // ab sign fit
       flashing: !!L.flash, newAt: S.flashAt, bells: S.bells, rang: S.rang, angle: S.ang, working: S.working, reach: tg ? S.reach.get(tg.plot) || 0 : 0,
       palette: sky.phase === 'day' ? 'day' : 'night' };
   }

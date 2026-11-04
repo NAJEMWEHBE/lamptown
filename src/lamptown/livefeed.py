@@ -267,7 +267,7 @@ class LiveFeed:
         readers = []
         for entry in cfg.live.readers:
             try:
-                readers.append(make_reader(entry))
+                readers.append(make_reader(livetown.reader_entry(cfg, entry)))  # W2-left
             except Exception as e:  # one broken reader must not stop the others
                 name = entry.get("kind") or Path(str(entry.get("reader", "?"))).name
                 self._say(f"live reader {name!r} can't start: {type(e).__name__}: {e}")

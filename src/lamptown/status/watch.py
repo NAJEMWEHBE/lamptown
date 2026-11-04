@@ -202,6 +202,18 @@ def state_kind(old: str | None, new: str) -> str | None:
     return STATE_EVENT.get(new)
 
 
+# --- live: L11 ci_gh ---
+def reader_notes(reader: Any) -> list[str]:
+    """A reader's ``notes`` (optional attribute) from its last poll, as ``TickResult.errors``
+    lines: at most 10, each cut to 200 characters."""
+    notes = getattr(reader, "notes", None)
+    if not isinstance(notes, list | tuple):
+        return []
+    name = getattr(reader, "name", "?")
+    return [f"reader {name}: {n}"[:200] for n in notes[:10] if isinstance(n, str) and n]
+# --- end L11 ---
+
+
 # ---------------------------------------------------------------- the folder lock
 def _lock_fd(fd: int) -> None:
     """Take an exclusive, non-blocking lock on ``fd`` (raises ``OSError`` when it's taken).
@@ -247,10 +259,13 @@ class Watcher:
         keep_days: int = 7,
         heartbeat: int = HEARTBEAT,
         tz: tzinfo | None = None,
+        project_for: Callable[[Any, Any], str] | None = None,  # ab: [[live.group]]
     ) -> None:
         self.dir = default_dir(status_dir)
         self.readers = list(readers)
         self.plot_for = plot_for
+        # ab: (folder, project) -> a fixed project name ("" for none): livetown.GroupMap
+        self.project_for = project_for
         self.private_roots = _private_roots({"private_dirs": [str(p) for p in private_dirs],
                                              "_config_dir": str(config_dir or ".")})
         self.stale_after = stale_after
@@ -419,6 +434,7 @@ class Watcher:
         reader_events: list[Mapping[str, Any]] = []
         for reader in readers:
             batch = self._poll(reader, state, now, result, budget)
+            result.errors.extend(reader_notes(reader))  # --- live: L11 ci_gh ---
             if batch is None:
                 continue
             agents, found = list(batch.agents), list(batch.events)
@@ -571,12 +587,25 @@ class Watcher:
             plot = default_plot(doc)
         return plot if isinstance(plot, str) else default_plot(doc)
 
+    # --- ab: [[live.group]] ---
+    def _project_group(self, folder: Any, project: Any) -> str:
+        """The ``[[live.group]]`` name for this folder (``""``: none, or a broken mapping)."""
+        if self.project_for is None:
+            return ""
+        try:
+            name = self.project_for(folder, project)
+        except Exception:
+            return ""
+        return name if isinstance(name, str) else ""
+    # --- end ab ---
+
     def _entry(self, doc: dict, sig: list[int], result: TickResult) -> dict:
         # --- L3-fix: home folder --- (and an x-project path counts like a folder for privacy)
         x_project = doc.get("x-project")
         private = self._private(doc.get("x-folder")) or (
             event_log.path_like(x_project) and self._private(x_project))
-        project = event_log.project_of(x_project, doc.get("x-folder"))
+        project = (self._project_group(doc.get("x-folder"), x_project)  # ab: [[live.group]]
+                   or event_log.project_of(x_project, doc.get("x-folder")))
         # --- end L3-fix ---
         title = name_only(doc["title"], event_log.LIMITS["title"])
         return {  # a private record keeps no name here either: this snapshot is saved to disk
@@ -756,7 +785,8 @@ class Watcher:
             private = True  # no record and no folder: it can't be checked, so it is hidden
         # --- L3-fix: home folder ---
         if doc.get("project") or folder:
-            doc["project"] = event_log.project_of(doc.get("project"), folder)
+            doc["project"] = (self._project_group(folder, doc.get("project"))  # ab: [[live.group]]
+                              or event_log.project_of(doc.get("project"), folder))
         # --- end L3-fix ---
         doc.pop("folder", None)
         if private:
