@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [{"command": "lamptown status hook cursor", "timeout": 10}],
+    "beforeSubmitPrompt": [{"command": "lamptown status hook cursor", "timeout": 10}],
+    "postToolUse": [{"command": "lamptown status hook cursor", "timeout": 10}],
+    "stop": [{"command": "lamptown status hook cursor", "timeout": 10}],
+    "sessionEnd": [{"command": "lamptown status hook cursor", "timeout": 10}]
+  }
+}

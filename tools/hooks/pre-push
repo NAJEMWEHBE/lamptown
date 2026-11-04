@@ -1,0 +1,17 @@
+#!/bin/sh
+# Lamptown pre-push hook: run the privacy gate over every commit, file name and file
+# this push would send that the remote does not have yet.
+#
+# With pre-commit, `pre-commit install` already sets this up (see .pre-commit-config.yaml).
+# Without pre-commit, copy this file to .git/hooks/pre-push and make it executable.
+#
+# git passes the remote name as $1 and one "<local ref> <sha> <remote ref> <sha>" line
+# per ref on stdin; the gate reads both.
+root=$(git rev-parse --show-toplevel) || exit 2
+for py in python3 python py; do
+  if "$py" -c 'import sys; sys.exit(sys.version_info < (3, 11))' >/dev/null 2>&1; then
+    exec "$py" "$root/tools/privacy_gate.py" --root "$root" --pre-push "$1"
+  fi
+done
+echo "pre-push: Python 3.11+ not found, so the privacy gate could not run" >&2
+exit 1

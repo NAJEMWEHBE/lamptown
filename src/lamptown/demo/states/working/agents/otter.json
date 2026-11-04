@@ -1,0 +1,11 @@
+{
+  "spec": "agent-status/1",
+  "id": "otter",
+  "title": "Otter: ferry timetable",
+  "agent": "otter",
+  "kind": "task",
+  "state": "working",
+  "message": "Drafting the ferry timetable",
+  "updated": "{{-4m}}",
+  "stale_after": 1800
+}

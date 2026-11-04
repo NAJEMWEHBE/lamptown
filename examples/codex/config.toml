@@ -1,0 +1,31 @@
+# Paste into ~/.codex/config.toml (notify only works in the user-level file).
+
+# Simplest: Codex runs this after every finished turn, with one JSON argument.
+notify = ["lamptown", "status", "hook", "codex"]
+
+# Richer, optional: Codex hooks also show "working" and permission requests.
+# Codex asks you to review and trust new hooks with /hooks before they run.
+[[hooks.SessionStart]]
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = "lamptown status hook codex"
+
+[[hooks.UserPromptSubmit]]
+[[hooks.UserPromptSubmit.hooks]]
+type = "command"
+command = "lamptown status hook codex"
+
+[[hooks.PermissionRequest]]
+[[hooks.PermissionRequest.hooks]]
+type = "command"
+command = "lamptown status hook codex"
+
+[[hooks.PostToolUse]]
+[[hooks.PostToolUse.hooks]]
+type = "command"
+command = "lamptown status hook codex"
+
+[[hooks.SessionEnd]]
+[[hooks.SessionEnd.hooks]]
+type = "command"
+command = "lamptown status hook codex"

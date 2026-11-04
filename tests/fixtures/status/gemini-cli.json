@@ -1,0 +1,41 @@
+{
+ "provider": "gemini-cli",
+ "source": "Payload shapes from https://github.com/google-gemini/gemini-cli/blob/main/docs/hooks/reference.md (checked 2026-11-04). Fictional content.",
+ "cases": [
+  {
+   "name": "session start",
+   "payload": {"session_id": "gem-7d1e2f3a4b5c6d7e", "transcript_path": "/home/you/.gemini/tmp/chat.json", "cwd": "/home/you/code/moss-engine", "hook_event_name": "SessionStart", "timestamp": "2026-11-04T09:00:00.000Z", "source": "startup"},
+   "expect": {"id": "gemini-cli-gem-7d1e2f3a", "title": "moss-engine", "state": "ok", "message": "Session started", "started": true}
+  },
+  {
+   "name": "before agent",
+   "payload": {"session_id": "gem-7d1e2f3a4b5c6d7e", "cwd": "/home/you/code/moss-engine", "hook_event_name": "BeforeAgent", "timestamp": "2026-11-04T09:00:05.000Z", "prompt": "Profile the moss growth loop"},
+   "expect": {"state": "working", "message": "Working", "absent": ["growth loop"]}
+  },
+  {
+   "name": "before tool",
+   "payload": {"session_id": "gem-7d1e2f3a4b5c6d7e", "cwd": "/home/you/code/moss-engine", "hook_event_name": "BeforeTool", "timestamp": "2026-11-04T09:00:06.000Z", "tool_name": "run_shell_command", "tool_input": {"command": "cargo bench"}},
+   "expect": {"state": "working", "message": "Using run_shell_command", "absent": ["cargo bench"]}
+  },
+  {
+   "name": "notification",
+   "payload": {"session_id": "gem-7d1e2f3a4b5c6d7e", "cwd": "/home/you/code/moss-engine", "hook_event_name": "Notification", "timestamp": "2026-11-04T09:00:07.000Z", "notification_type": "ToolPermission", "message": "Allow run_shell_command?", "details": {}},
+   "expect": {"state": "waiting", "message": "Needs your permission", "needs": 1}
+  },
+  {
+   "name": "after agent",
+   "payload": {"session_id": "gem-7d1e2f3a4b5c6d7e", "cwd": "/home/you/code/moss-engine", "hook_event_name": "AfterAgent", "timestamp": "2026-11-04T09:03:00.000Z", "prompt": "Profile the moss growth loop", "prompt_response": "The loop spends most time in neighbour lookup.", "stop_hook_active": false},
+   "expect": {"state": "ok", "message": "Turn finished", "needs": 0, "absent": ["neighbour lookup"]}
+  },
+  {
+   "name": "before model is ignored",
+   "payload": {"session_id": "gem-7d1e2f3a4b5c6d7e", "cwd": "/home/you/code/moss-engine", "hook_event_name": "BeforeModel", "timestamp": "2026-11-04T09:00:05.500Z"},
+   "expect": {"ignored": true}
+  },
+  {
+   "name": "session end",
+   "payload": {"session_id": "gem-7d1e2f3a4b5c6d7e", "cwd": "/home/you/code/moss-engine", "hook_event_name": "SessionEnd", "timestamp": "2026-11-04T09:10:00.000Z", "reason": "exit"},
+   "expect": {"state": "ok", "message": "Session ended"}
+  }
+ ]
+}

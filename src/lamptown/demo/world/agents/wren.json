@@ -1,0 +1,21 @@
+{
+  "spec": "agent-status/1",
+  "id": "wren",
+  "title": "Wren: tail ribbons",
+  "agent": "wren",
+  "kind": "task",
+  "state": "working",
+  "message": "Cutting ribbons to length",
+  "updated": "{{-2m}}",
+  "stale_after": 1800,
+  "progress": {
+    "done": 3,
+    "total": 8
+  },
+  "links": [
+    {
+      "label": "Notes",
+      "href": "https://example.com/wren"
+    }
+  ]
+}

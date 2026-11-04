@@ -1,0 +1,8 @@
+{
+  "tool": "kite-knots",
+  "verdict": "safe",
+  "risk": 8,
+  "flags": 0,
+  "scanned_at": "{{-20d}}",
+  "scanner": "tidewatch-scan"
+}

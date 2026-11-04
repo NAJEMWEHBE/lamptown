@@ -1,0 +1,304 @@
+name: CI
+
+# Every push to main and every pull request:
+#   privacy   the privacy gate over the tree and the full history (deny-list from a repo secret)
+#   secrets   gitleaks over the full history
+#   lint      ruff
+#   test      core tests on Windows, macOS and Linux x Python 3.11 and 3.13 (from the built package)
+#   browser   headless-Chrome room and town tests (Python 3.13, each OS)
+#   app       desktop app tests with a fake window, then a real-window smoke test (Python 3.13,
+#             each OS; Linux runs under Xvfb, macOS is non-blocking for now)
+#   ci-ok     one check that is green only when all of the above are (for branch protection)
+# Actions are pinned by commit SHA; the version is in the comment next to each one.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  RUFF_VERSION: "0.17.3"
+  PYTEST_VERSION: "9.2.0"
+  PYYAML_VERSION: "6.0.3"
+
+jobs:
+  privacy:
+    name: privacy gate (tree + history)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0  # the gate scans the full history
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.13"
+
+      # The deny-list lives only in the repo secret LAMPTOWN_DENYLIST. It is written to the
+      # runner's temp dir (outside the checkout, owner-only permissions) and never printed.
+      # Pull requests from forks (and Dependabot) get no secrets, so they skip only the
+      # deny-list check; every other gate check still runs. Anywhere else a missing secret is
+      # an error, so a misconfigured repo can't pass without the check.
+      - name: Load the deny-list from the repo secret
+        shell: python
+        env:
+          DENYLIST: ${{ secrets.LAMPTOWN_DENYLIST }}
+          NO_SECRETS_EXPECTED: >-
+            ${{ (github.event_name == 'pull_request'
+                 && github.event.pull_request.head.repo.full_name != github.repository)
+                || github.actor == 'dependabot[bot]' }}
+        run: |
+          import os
+          import pathlib
+          import sys
+
+          text = os.environ.get("DENYLIST", "")
+          if text.strip():
+              path = pathlib.Path(os.environ["RUNNER_TEMP"]) / "lamptown-denylist.txt"
+              fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+              with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+                  f.write(text.replace("\r\n", "\n").rstrip("\n") + "\n")
+              with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
+                  env.write(f"LAMPTOWN_DENYLIST={path}\n")
+                  env.write("GATE_DENYLIST_FLAG=--require-denylist\n")
+              print("deny-list loaded")
+          elif os.environ.get("NO_SECRETS_EXPECTED", "").strip() == "true":
+              print("::notice title=Privacy gate::No LAMPTOWN_DENYLIST secret on a fork or "
+                    "Dependabot pull request: the deny-list check is skipped; all other "
+                    "checks run.")
+          else:
+              print("::error title=Privacy gate::The LAMPTOWN_DENYLIST repo secret is missing "
+                    "or empty. Add it in Settings > Secrets and variables > Actions.")
+              sys.exit(1)
+
+      - name: Privacy gate (tree + full history)
+        run: python tools/privacy_gate.py --history ${GATE_DENYLIST_FLAG:+"$GATE_DENYLIST_FLAG"}
+
+  secrets:
+    name: gitleaks (full history)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install pinned gitleaks
+        env:
+          GITLEAKS_VERSION: "8.30.1"
+          GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+        run: |
+          cd "$RUNNER_TEMP"
+          tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSfL -o "$tarball" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${tarball}"
+          echo "${GITLEAKS_SHA256}  ${tarball}" | sha256sum -c -
+          tar -xzf "$tarball" gitleaks
+
+      - name: Scan history for secrets
+        run: '"$RUNNER_TEMP/gitleaks" git --redact --verbose --exit-code 1 .'
+
+  lint:
+    name: ruff
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.13"
+
+      - name: Install ruff
+        run: python -m pip install "ruff==${RUFF_VERSION}"
+
+      - name: Lint
+        run: ruff check --output-format=github .
+
+  test:
+    name: test (${{ matrix.os }}, Python ${{ matrix.python }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.11", "3.13"]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: ${{ matrix.python }}
+
+      # A regular (not editable) install: the tests then run against the built package, so a
+      # file missing from the package data fails here instead of on a user's machine.
+      - name: Install the package and the test tools
+        run: python -m pip install . "pytest==${PYTEST_VERSION}" "pyyaml==${PYYAML_VERSION}"
+
+      - name: Core tests (no browser, no desktop window)
+        run: python -m pytest -m "not browser and not app"
+
+      - name: Command-line smoke test (version, init, doctor)
+        run: |
+          lamptown --version
+          smoke="$RUNNER_TEMP/lamptown-smoke"
+          lamptown init --dir "$smoke" --no-detect --title "CI town"
+          lamptown doctor --config "$smoke/lamptown.toml" --status-dir "$smoke/lamps"
+          lamptown build --config "$smoke/lamptown.toml" --out "$smoke/out"
+          test -s "$smoke/out/town.html"
+
+  browser:
+    name: browser (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      LAMPTOWN_REQUIRE_BROWSER: "1"  # a missing browser fails the job instead of skipping
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.13"
+
+      - name: Install headless Chrome
+        id: chrome
+        uses: browser-actions/setup-chrome@48ad923757ca74d66703209fe939badbdf80f2f4  # v2.2.0
+        with:
+          chrome-version: stable
+          install-dependencies: ${{ runner.os == 'Linux' }}
+
+      - name: Install the package and the test tools
+        run: python -m pip install . "pytest==${PYTEST_VERSION}"
+
+      - name: Browser tests
+        env:
+          CHROME: ${{ steps.chrome.outputs.chrome-path }}
+        run: python -m pytest -m browser
+
+  app:
+    name: app (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # Linux is pinned so the system package names below stay valid.
+        os: [ubuntu-24.04, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.13"
+
+      - name: Choose a folder for the smoke-test screenshots
+        run: echo "LAMPTOWN_SHOT_DIR=$RUNNER_TEMP/app-shots" >> "$GITHUB_ENV"
+
+      # pywebview's GTK backend: WebKitGTK and PyGObject (built against the system's
+      # girepository), plus Xvfb and a small window manager so the window can be minimised.
+      - name: Install the Linux GUI stack
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb xauth openbox \
+            gir1.2-gtk-3.0 gir1.2-webkit2-4.1 \
+            libgirepository-2.0-dev libcairo2-dev pkg-config python3-dev
+          {
+            echo "PYWEBVIEW_GUI=gtk"
+            echo "WEBKIT_DISABLE_COMPOSITING_MODE=1"
+            echo "WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1"
+            echo "LIBGL_ALWAYS_SOFTWARE=1"
+          } >> "$GITHUB_ENV"
+
+      - name: Install the package with the [app] extra
+        run: |
+          python -m pip install ".[app]" "pytest==${PYTEST_VERSION}"
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            python -m pip install pycairo PyGObject
+          fi
+
+      - name: App tests (fake window)
+        run: python -m pytest -m app --ignore=tests/test_app_window.py
+
+      # The real-window smoke test must run, not skip: a skip would look green.
+      - name: Real-window smoke test
+        if: runner.os != 'macOS'
+        run: |
+          mkdir -p "$LAMPTOWN_SHOT_DIR"
+          run=(python -m pytest tests/test_app_window.py -rs -v)
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            run=(xvfb-run -a -s "-screen 0 1600x1000x24" sh -c 'openbox & sleep 1; exec "$@"' _ "${run[@]}")
+          fi
+          set -o pipefail
+          "${run[@]}" 2>&1 | tee "$RUNNER_TEMP/smoke.txt"
+          if grep -q "SKIPPED" "$RUNNER_TEMP/smoke.txt"; then
+            echo "::error title=App smoke::the real-window test was skipped"
+            exit 1
+          fi
+
+      - name: Real-window smoke test (macOS, non-blocking for now)
+        if: runner.os == 'macOS'
+        continue-on-error: true
+        env:
+          LAMPTOWN_APP_SMOKE: "1"
+        run: |
+          mkdir -p "$LAMPTOWN_SHOT_DIR"
+          python -m pytest tests/test_app_window.py -rs -v
+
+      - name: Keep the smoke-test screenshots
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: app-shots-${{ matrix.os }}
+          path: ${{ env.LAMPTOWN_SHOT_DIR }}
+          if-no-files-found: ignore
+          retention-days: 7
+
+  ci-ok:
+    name: ci-ok
+    if: always()
+    needs: [privacy, secrets, lint, test, browser, app]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every job passed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "results: $RESULTS"
+          for r in $RESULTS; do
+            if [ "$r" != "success" ]; then
+              echo "::error title=CI::a required job did not pass ($r)"
+              exit 1
+            fi
+          done

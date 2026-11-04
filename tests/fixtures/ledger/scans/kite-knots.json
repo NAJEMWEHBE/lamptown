@@ -1,0 +1,12 @@
+{
+  "skill": {
+    "name": "kite-knots",
+    "scanned_at": "2026-03-01T10:00:00+00:00"
+  },
+  "risk_assessment": {
+    "recommendation": "SAFE",
+    "score": 8,
+    "severity": "LOW"
+  },
+  "issues": []
+}

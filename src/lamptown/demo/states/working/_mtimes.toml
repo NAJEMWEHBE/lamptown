@@ -1,0 +1,4 @@
+default = "-2d"
+
+[files]
+"vault/field-notes/heron-at-dawn.md" = "-10m"

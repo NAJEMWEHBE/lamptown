@@ -1,0 +1,74 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lamptown"
+dynamic = ["version"]
+description = "A pixel-art town whose lamps show the live state of your AI agents, jobs and projects."
+readme = { file = "README.md", content-type = "text/markdown" }
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Lamptown contributors" }]
+keywords = ["ai-agents", "dashboard", "status", "pixel-art"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Monitoring",
+]
+# The core uses the standard library only: keep this list empty.
+dependencies = []
+
+[project.optional-dependencies]
+app = ["pywebview>=5"]
+dev = ["pytest>=8", "ruff>=0.15", "pre-commit>=4"]
+media = ["pillow>=10"]  # only for tools/make_media.py (README images)
+
+[project.scripts]
+lamptown = "lamptown.cli:main"
+
+# Third-party collectors register under the entry-point group "lamptown.collectors"
+# and custom rooms under "lamptown.rooms" (see docs/collectors.md and docs/rooms.md).
+
+[tool.setuptools.dynamic]
+version = { attr = "lamptown.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# Non-Python files the package reads at run time (town template, kit, room scripts, JSON schemas).
+[tool.setuptools.package-data]
+lamptown = [
+    "web/*.html",
+    "web/*.js",
+    "web/rooms/*.js",
+    "schemas/rooms/*.json",
+    "status/*.json",
+    "demo/world/**/*",
+    "demo/states/**/*",
+    "app/assets/*",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["src", "tools", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "PL"]
+ignore = [
+    "PLR0911", "PLR0912", "PLR0913", "PLR0915", "PLR2004",
+    "PLC0415",  # local imports keep tools/ scripts importable without the package
+]

@@ -1,0 +1,48 @@
+{
+  "contest": "lamptown-contest/1",
+  "title": "Lantern route",
+  "date": "2026-03-05",
+  "entries": [
+    {
+      "code": "R1",
+      "name": "Harbour Loop"
+    },
+    {
+      "code": "R2",
+      "name": "Hill Steps"
+    },
+    {
+      "code": "R3",
+      "name": "Market Lane"
+    },
+    {
+      "code": "R4",
+      "name": "River Walk",
+      "control": true
+    },
+    {
+      "code": "R5",
+      "name": "Old Wall"
+    }
+  ],
+  "judges": {
+    "expected": 2
+  },
+  "rankings": {
+    "A": [
+      "R2",
+      "R1",
+      "R4",
+      "R3",
+      "R5"
+    ],
+    "B": [
+      "R1",
+      "R2",
+      "R3",
+      "R5",
+      "R4"
+    ]
+  },
+  "revealed": true
+}

@@ -1,0 +1,8 @@
+{
+  "tool": "paper-fold",
+  "verdict": "caution",
+  "risk": 28,
+  "flags": 2,
+  "scanned_at": "{{-1h}}",
+  "scanner": "tidewatch-scan"
+}

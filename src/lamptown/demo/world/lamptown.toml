@@ -1,0 +1,110 @@
+# The Lamptown demo world: every name, file and number here is made up.
+# `lamptown demo` copies this folder, turns the {{...}} time tokens into times relative to now,
+# builds the town and opens it. Every source below reads the files next to this one.
+version = 1
+
+[town]
+title = "Lamptown demo"
+
+# ---- the clock tower: four scheduled jobs, one log folder each
+[[building]]
+id = "jobs"
+type = "jobs"
+label = "Night jobs"
+  [[building.source]]
+  kind = "log_glob"
+  name = "Kite photo backup"
+  short = "BACKUP"
+  glob = "jobs/backup/*.log"
+  done = 'Done:\s*(.+)$'
+  fail = '\b[1-9][0-9]* failed\b'
+  schedule = "daily 02:30"
+  [[building.source]]
+  kind = "log_glob"
+  name = "Inbox sorter"
+  short = "SORTER"
+  glob = "jobs/sorter/*.log"
+  done = 'Done:\s*(.+)$'
+  needs = '([0-9]+ ideas? to look at)'
+  schedule = "hourly :05"
+  feeds = "notes"
+  [[building.source]]
+  kind = "log_glob"
+  name = "Moss Engine build"
+  short = "BUILD"
+  glob = "jobs/build/*.log"
+  done = 'Done:\s*(.+)$'
+  fail = '\bFAILED\b'
+  schedule = "daily 04:00"
+  [[building.source]]
+  kind = "log_glob"
+  name = "Tidebook digest"
+  short = "DIGEST"
+  glob = "jobs/digest/*.log"
+  done = 'Done:\s*(.+)$'
+  schedule = "weekly {{-2d:dow}} 07:00"
+
+# ---- the domed library: a vault of 40 notes with an inbox and daily reviews
+[[building]]
+id = "notes"
+type = "vault"
+label = "Notes vault"
+  [[building.source]]
+  kind = "markdown_vault"
+  path = "vault"
+  inbox = "inbox/*.md"
+  dropped = "inbox/dropped"
+  kept = "inbox/kept"
+  reviews = "reviews/*.md"
+  schedule = "daily {{-1h:hm}}"
+  run_hours = 3
+  exclude = ["templates"]
+  labels = { field-notes = "FIELD", kites = "KITES", moss = "MOSS", recipes = "RECIPES", tides = "TIDES" }
+
+# ---- the gatehouse: scans and your calls for the tools on their way in
+[[building]]
+id = "gate"
+type = "ledger"
+label = "Tool gate"
+  [[building.source]]
+  kind = "scan_glob"
+  glob = "gate/scans/*.json"
+  installed_dir = "gate/installed"
+  decisions_file = "gate/decisions.json"
+  scanning_minutes = 10
+
+# ---- the lab: one blind contest
+[[building]]
+id = "contest"
+type = "contest"
+label = "Idea contest"
+  [[building.source]]
+  kind = "contest_json"
+  glob = "contests/*.json"
+
+# ---- the workshop: the skill shelf and its staging bench
+[[building]]
+id = "skills"
+type = "shelf"
+label = "Skill shelf"
+  [[building.source]]
+  kind = "skill_dirs"
+  dirs = ["shelf/skills"]
+  staging_dir = "shelf/staging"
+
+# ---- the boathouse: three projects and five agents writing agent-status/1 files
+[[building]]
+id = "harbour"
+type = "harbour"
+label = "Harbour"
+  [[building.source]]
+  kind = "projects"
+  busy_minutes = 30
+  projects = [
+    { name = "Paper Kite", path = "projects/paper-kite", status = "active" },
+    { name = "Moss Engine", path = "projects/moss-engine", status = "active" },
+    { name = "Tidebook", path = "projects/tidebook", status = "paused", since = "{{-12d:date}}", note = "Resting until the spring tides." },
+  ]
+  [[building.source]]
+  kind = "status_dir"
+  dir = "agents"

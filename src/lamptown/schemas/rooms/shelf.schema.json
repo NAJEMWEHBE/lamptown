@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lamptown.invalid/schemas/rooms/shelf.schema.json",
+  "title": "Lamptown room: shelf (skills and plugins)",
+  "description": "Skills or plugins. One tool on the workshop shelves per installed row; rows being built or staged ride belt B.",
+  "type": "object",
+  "required": [
+    "state"
+  ],
+  "properties": {
+    "state": {
+      "$ref": "#/$defs/state"
+    },
+    "label": {
+      "type": "string",
+      "maxLength": 120
+    },
+    "error": {
+      "type": "string",
+      "maxLength": 300
+    },
+    "num": {
+      "type": [
+        "string",
+        "integer"
+      ],
+      "description": "Optional: the number on the building's name plate."
+    },
+    "updated": {
+      "$ref": "#/$defs/time"
+    },
+    "needs": {
+      "type": "array",
+      "maxItems": 500,
+      "items": {
+        "$ref": "#/$defs/need"
+      }
+    },
+    "rows": {
+      "type": "array",
+      "maxItems": 2000,
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "state"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 120
+          },
+          "short": {
+            "type": "string",
+            "maxLength": 120
+          },
+          "line": {
+            "type": "string",
+            "maxLength": 300
+          },
+          "state": {
+            "$ref": "#/$defs/state"
+          },
+          "stage": {
+            "type": "string",
+            "enum": [
+              "installed",
+              "staged",
+              "building",
+              "broken"
+            ]
+          },
+          "href": {
+            "type": "string",
+            "maxLength": 2048
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "state": {
+      "type": "string",
+      "enum": [
+        "ok",
+        "waiting",
+        "working",
+        "error",
+        "missing"
+      ]
+    },
+    "time": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time",
+      "description": "Absolute ISO 8601 time with an offset; the page writes 'in 3 h' itself."
+    },
+    "need": {
+      "type": "object",
+      "required": [
+        "text"
+      ],
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "href": {
+          "type": "string",
+          "maxLength": 2048
+        }
+      }
+    },
+    "link": {
+      "type": "object",
+      "required": [
+        "href"
+      ],
+      "properties": {
+        "label": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "href": {
+          "type": "string",
+          "maxLength": 2048
+        }
+      }
+    }
+  }
+}

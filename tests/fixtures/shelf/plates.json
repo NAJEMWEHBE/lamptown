@@ -1,0 +1,8 @@
+{
+  "_comment": "fictional plate overrides",
+  "lantern-check": "LAMPS",
+  "paper-fold": {
+    "short": "BOAT",
+    "line": "A paper boat from one sheet"
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "_note": "Made-up calls for the Lamptown demo.",
+  "tools": {
+    "kite-knots": {
+      "call": "install",
+      "date": "{{-19d:date}}",
+      "origin": "third-party",
+      "note": "Read every flag; all fine",
+      "source": "https://example.com/kite-knots"
+    },
+    "rope-ladder": {
+      "call": "install",
+      "date": "{{-14d:date}}",
+      "origin": "third-party",
+      "note": "Two flags, both about network calls we expect"
+    },
+    "gull-counter": {
+      "call": "skip",
+      "date": "{{-8d:date}}",
+      "origin": "third-party",
+      "note": "Too many flags"
+    },
+    "tide-clock": {
+      "call": "park",
+      "date": "{{-3d:date}}",
+      "origin": "third-party",
+      "note": "Fine, but not needed yet"
+    },
+    "lantern-check": {
+      "call": "install",
+      "date": "{{-6d:date}}",
+      "origin": "own",
+      "note": "Built here; scan it before it ships"
+    }
+  }
+}

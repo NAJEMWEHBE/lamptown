@@ -1,0 +1,20 @@
+# File times (offsets from now) for the copied world; the last matching pattern wins.
+# Patterns are matched against the template path (before time tokens are filled in).
+default = "-2d"
+
+[files]
+"jobs/backup/backup-{{-30h}}.log" = "-30h"
+"jobs/backup/backup-{{-6h}}.log" = "-6h"
+"jobs/sorter/sorter-{{-1h}}.log" = "-62m"
+"jobs/sorter/sorter-{{0}}.log" = "-3m"
+"jobs/build/build-{{-8h}}.log" = "-8h"
+"jobs/digest/digest-{{-2d}}.log" = "-2d"
+"vault/inbox/*" = "-20h"
+"vault/reviews/{{0}}.md" = "-40m"
+"gate/scans/*" = "-3d"
+"gate/scans/paper-fold.json" = "-2m"
+"gate/decisions.json" = "-3d"
+"contests/*" = "-50m"
+"projects/paper-kite/*" = "-6m"
+"projects/moss-engine/*" = "-1d"
+"agents/*" = "-1m"

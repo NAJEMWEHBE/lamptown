@@ -1,0 +1,25 @@
+{
+  "skill": {
+    "name": "tide-reader",
+    "scanned_at": "2026-03-03T08:00:00+00:00"
+  },
+  "risk_assessment": {
+    "recommendation": "CAUTION",
+    "score": 41,
+    "severity": "MEDIUM"
+  },
+  "issues": [
+    {
+      "id": "FAKE-0",
+      "line": 1
+    },
+    {
+      "id": "FAKE-1",
+      "line": 4
+    },
+    {
+      "id": "FAKE-2",
+      "line": 7
+    }
+  ]
+}

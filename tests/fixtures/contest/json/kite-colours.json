@@ -1,0 +1,71 @@
+{
+  "contest": "lamptown-contest/1",
+  "title": "Kite colours",
+  "date": "2026-02-20",
+  "updated": "2026-02-21T09:00:00+00:00",
+  "entries": [
+    {
+      "code": "K01",
+      "name": "Ember Red"
+    },
+    {
+      "code": "K02",
+      "name": "Sea Glass",
+      "built": "builds/K02"
+    },
+    {
+      "code": "K03",
+      "name": "Dusk Violet",
+      "built": "https://example.invalid/dusk"
+    },
+    {
+      "code": "K04",
+      "name": "Mustard"
+    },
+    {
+      "code": "K05",
+      "name": "Fog White",
+      "control": true
+    },
+    {
+      "code": "K06",
+      "name": "Night Teal"
+    }
+  ],
+  "judges": {
+    "expected": 2
+  },
+  "rankings": {
+    "A": [
+      "K03",
+      "K02",
+      "K01",
+      "K05",
+      "K06",
+      "K04"
+    ],
+    "B": [
+      "K02",
+      "K03",
+      "K05",
+      "K01",
+      "K04",
+      "K06"
+    ]
+  },
+  "scores": {
+    "K02": 9,
+    "K03": 7,
+    "K01": 4,
+    "K05": 2
+  },
+  "scores_of": 12,
+  "finalists": [
+    "K02",
+    "K03"
+  ],
+  "wild": "K06",
+  "revealed": true,
+  "pick": "K03",
+  "pick_note": "Reads best against a grey sky."
+}

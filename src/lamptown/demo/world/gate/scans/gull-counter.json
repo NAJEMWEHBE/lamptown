@@ -1,0 +1,8 @@
+{
+  "tool": "gull-counter",
+  "verdict": "block",
+  "risk": 81,
+  "flags": 6,
+  "scanned_at": "{{-9d}}",
+  "scanner": "tidewatch-scan"
+}

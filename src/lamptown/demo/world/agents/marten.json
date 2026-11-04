@@ -1,0 +1,11 @@
+{
+  "spec": "agent-status/1",
+  "id": "marten",
+  "title": "Marten: digest proofs",
+  "agent": "marten",
+  "kind": "task",
+  "state": "ok",
+  "message": "Idle, all proofs read",
+  "updated": "{{-3h}}",
+  "stale_after": 1800
+}

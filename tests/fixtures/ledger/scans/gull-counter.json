@@ -1,0 +1,11 @@
+{
+  "tool": "gull-counter",
+  "verdict": "caution",
+  "risk": 45,
+  "flags": [
+    "reads the clipboard",
+    "opens a socket"
+  ],
+  "scanned_at": "2026-03-10T12:15:00+01:00",
+  "scanner": "Sample Scanner"
+}

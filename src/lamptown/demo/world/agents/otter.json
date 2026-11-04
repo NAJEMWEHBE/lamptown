@@ -1,0 +1,17 @@
+{
+  "spec": "agent-status/1",
+  "id": "otter",
+  "title": "Otter: ferry timetable",
+  "agent": "otter",
+  "kind": "task",
+  "state": "waiting",
+  "message": "Asks you to approve the plan",
+  "updated": "{{-12m}}",
+  "stale_after": 1800,
+  "needs_you": [
+    {
+      "text": "Approve the ferry timetable plan",
+      "href": "https://example.com/otter"
+    }
+  ]
+}

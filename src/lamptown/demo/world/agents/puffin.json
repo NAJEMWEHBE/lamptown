@@ -1,0 +1,15 @@
+{
+  "spec": "agent-status/1",
+  "id": "puffin",
+  "title": "Puffin: tide photos",
+  "agent": "puffin",
+  "kind": "task",
+  "state": "working",
+  "message": "Sorting the tide photos",
+  "updated": "{{-1m}}",
+  "stale_after": 1800,
+  "progress": {
+    "done": 41,
+    "total": 120
+  }
+}

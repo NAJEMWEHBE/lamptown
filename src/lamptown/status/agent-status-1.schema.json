@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agent-status:1",
+  "title": "agent-status/1",
+  "description": "One small JSON file that says what one AI agent, task, job or project is doing right now. Readers accept any agent-status/1.x file and ignore fields they do not know; extensions use keys that start with x-.",
+  "type": "object",
+  "required": ["spec", "id", "title", "state", "updated"],
+  "properties": {
+    "spec": {
+      "description": "Standard and version. Writers put agent-status/1; readers accept agent-status/1 and any agent-status/1.x.",
+      "type": "string",
+      "pattern": "^agent-status/1(\\.[0-9]+)*$"
+    },
+    "id": {
+      "description": "Stable identifier, also the file name (<id>.json). Letters, digits, dot, dash, underscore; starts with a letter or digit.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "title": {
+      "description": "Short human name for the agent or task.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "state": {
+      "description": "ok = fine or finished; waiting = needs a person; working = running now; error = failed.",
+      "enum": ["ok", "waiting", "working", "error"]
+    },
+    "updated": {
+      "description": "When this file was last written: RFC 3339 date-time with an offset.",
+      "$ref": "#/$defs/datetime"
+    },
+    "kind": {
+      "description": "What this file describes. Default task.",
+      "enum": ["task", "job", "project"]
+    },
+    "agent": {
+      "description": "Which tool or provider writes this file, for example claude-code, codex, gemini-cli, cursor, cron.",
+      "type": "string",
+      "maxLength": 64
+    },
+    "message": {
+      "description": "One line about what is happening now.",
+      "type": "string",
+      "maxLength": 500
+    },
+    "needs_you": {
+      "description": "Things a person must do. An empty list or no key means nothing.",
+      "type": "array",
+      "maxItems": 20,
+      "items": {"$ref": "#/$defs/need"}
+    },
+    "progress": {
+      "description": "Steps done out of total. done must not be larger than total.",
+      "type": "object",
+      "required": ["done", "total"],
+      "properties": {
+        "done": {"type": "integer", "minimum": 0},
+        "total": {"type": "integer", "minimum": 0}
+      }
+    },
+    "stale_after": {
+      "description": "Seconds after updated when a working file reads as error (stopped responding). 0 or null: never. Readers default to 1800.",
+      "type": ["integer", "null"],
+      "minimum": 0
+    },
+    "started": {
+      "description": "When the current run or session started.",
+      "$ref": "#/$defs/datetime"
+    },
+    "next_run": {
+      "description": "For kind job: when the next run is due.",
+      "$ref": "#/$defs/datetime"
+    },
+    "links": {
+      "description": "Related links. Only https, http and file links.",
+      "type": "array",
+      "maxItems": 20,
+      "items": {"$ref": "#/$defs/link"}
+    }
+  },
+  "patternProperties": {
+    "^x-": {"description": "Extension fields. Readers ignore the ones they do not know."}
+  },
+  "$defs": {
+    "datetime": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$"
+    },
+    "href": {
+      "type": "string",
+      "maxLength": 2048,
+      "pattern": "^(https?|file):"
+    },
+    "need": {
+      "type": "object",
+      "required": ["text"],
+      "properties": {
+        "text": {"type": "string", "minLength": 1, "maxLength": 300},
+        "href": {"$ref": "#/$defs/href"}
+      }
+    },
+    "link": {
+      "type": "object",
+      "required": ["label", "href"],
+      "properties": {
+        "label": {"type": "string", "minLength": 1, "maxLength": 100},
+        "href": {"$ref": "#/$defs/href"}
+      }
+    }
+  }
+}

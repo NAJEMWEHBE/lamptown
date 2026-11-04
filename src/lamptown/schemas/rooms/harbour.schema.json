@@ -1,0 +1,246 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lamptown.invalid/schemas/rooms/harbour.schema.json",
+  "title": "Lamptown room: harbour (projects and agents)",
+  "description": "Projects and agents, one berth per row: active rows on a slip (a hull planked progress.done / progress.total), paused rows moored under a tarp, closed rows as boards on the wall. At most 10 berth units (active = 2, paused = 1), then a '+N' bay; 20 wall boards, then '+N'.",
+  "type": "object",
+  "required": [
+    "state"
+  ],
+  "properties": {
+    "state": {
+      "$ref": "#/$defs/state"
+    },
+    "label": {
+      "type": "string",
+      "maxLength": 120
+    },
+    "error": {
+      "type": "string",
+      "maxLength": 300
+    },
+    "num": {
+      "type": [
+        "string",
+        "integer"
+      ],
+      "description": "Optional: the number on the building's name plate."
+    },
+    "updated": {
+      "$ref": "#/$defs/time"
+    },
+    "needs": {
+      "type": "array",
+      "maxItems": 500,
+      "items": {
+        "$ref": "#/$defs/need"
+      }
+    },
+    "rows": {
+      "type": "array",
+      "maxItems": 2000,
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "state"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 120
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 120
+          },
+          "status": {
+            "type": "string",
+            "maxLength": 120,
+            "description": "The project's stage: active, paused or closed (also parked, done, archived). Rows without one (agent berths) count as active."
+          },
+          "state": {
+            "$ref": "#/$defs/state"
+          },
+          "progress": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "done": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "total": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          },
+          "needs": {
+            "type": [
+              "array",
+              "integer"
+            ],
+            "items": {
+              "$ref": "#/$defs/need"
+            }
+          },
+          "busy": {
+            "type": "boolean"
+          },
+          "updated": {
+            "$ref": "#/$defs/time"
+          },
+          "links": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+              "$ref": "#/$defs/link"
+            }
+          },
+          "message": {
+            "type": "string",
+            "maxLength": 300,
+            "description": "What the agent or project says now (agent-status 'message')."
+          },
+          "why": {
+            "type": "string",
+            "maxLength": 40,
+            "description": "Which case of the state this is (for example 'missed', 'stopped', 'never')."
+          },
+          "short": {
+            "type": "string",
+            "maxLength": 14
+          },
+          "board": {
+            "type": "string",
+            "maxLength": 9
+          },
+          "note": {
+            "type": "string",
+            "maxLength": 160
+          },
+          "since": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date"
+          },
+          "exists": {
+            "type": "boolean"
+          },
+          "private": {
+            "type": "boolean"
+          },
+          "kind": {
+            "type": "string",
+            "maxLength": 20
+          },
+          "agent": {
+            "type": "string",
+            "maxLength": 80
+          },
+          "needs_n": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "agent_items": {
+            "type": "array",
+            "maxItems": 40,
+            "items": {
+              "$ref": "#/$defs/need"
+            }
+          },
+          "agent_n": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "href": {
+            "type": "string",
+            "maxLength": 2048
+          },
+          "tasks_href": {
+            "type": "string",
+            "maxLength": 2048
+          },
+          "tasks_changed": {
+            "$ref": "#/$defs/time"
+          },
+          "last_commit": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "when": {
+                "$ref": "#/$defs/time"
+              },
+              "msg": {
+                "type": "string",
+                "maxLength": 120
+              }
+            }
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "state": {
+      "type": "string",
+      "enum": [
+        "ok",
+        "waiting",
+        "working",
+        "error",
+        "missing"
+      ]
+    },
+    "time": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time",
+      "description": "Absolute ISO 8601 time with an offset; the page writes 'in 3 h' itself."
+    },
+    "need": {
+      "type": "object",
+      "required": [
+        "text"
+      ],
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "href": {
+          "type": "string",
+          "maxLength": 2048
+        }
+      }
+    },
+    "link": {
+      "type": "object",
+      "required": [
+        "href"
+      ],
+      "properties": {
+        "label": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "href": {
+          "type": "string",
+          "maxLength": 2048
+        }
+      }
+    }
+  }
+}

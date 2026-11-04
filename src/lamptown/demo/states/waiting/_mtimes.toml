@@ -1,0 +1,4 @@
+default = "-2d"
+
+[files]
+"jobs/sorter/sorter-{{0}}.log" = "-10m"

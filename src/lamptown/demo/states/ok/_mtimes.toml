@@ -1,0 +1,5 @@
+default = "-2d"
+
+[files]
+"jobs/sorter/sorter-{{0}}.log" = "-25m"
+"projects/paper-kite/*" = "-1d"

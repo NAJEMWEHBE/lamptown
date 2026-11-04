@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lamptown</title>
+<!-- Lamptown town page. `lamptown build` inlines kit.js, town.js, the room scripts and the data below
+     into one self-contained file; keep the slot texts exact. Open this template with ?preview=1 for a sample. -->
+<style>
+  html,body{margin:0;padding:0;height:100%;background:#0b0e1c;overflow:hidden}
+  body{background:radial-gradient(ellipse at 50% 45%,#121a2c 0%,#0b0e1c 70%,#080a14 100%);font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:#eef1ff}
+  #stage{position:absolute;left:0;top:0;transform-origin:0 0;outline:none}
+  #c{display:block;image-rendering:pixelated;image-rendering:crisp-edges}
+  #hits{position:absolute;left:0;top:0;width:400px;height:225px;transform-origin:0 0}
+  .hit{position:absolute;margin:0;padding:0;border:0;background:transparent;cursor:pointer;outline:none}
+  .hit:hover{background:rgba(255,211,110,.06)}
+  .hit:focus-visible{outline:1px solid #ffd36e;outline-offset:0;background:rgba(255,211,110,.10)}
+  #panel{position:fixed;z-index:5;width:min(380px,calc(100vw - 32px));box-sizing:border-box;background:#161b38;color:#eef1ff;
+    border:3px solid #59629a;outline:3px solid #080a16;box-shadow:9px 9px 0 rgba(3,4,14,.55);padding:14px 16px 16px}
+  #panel[hidden]{display:none}
+  #panel .ph{display:flex;align-items:center;gap:10px;margin:0 0 10px;padding-bottom:10px;border-bottom:3px solid #2b336a}
+  #panel .ph canvas{image-rendering:pixelated;image-rendering:crisp-edges;display:block}
+  #panel h2{margin:0;flex:1;line-height:0}
+  #panel .x{width:30px;height:30px;border:2px solid #080a16;background:#2b336a;color:#eef1ff;font:700 18px/1 system-ui,sans-serif;cursor:pointer;
+    box-shadow:inset -2px -2px 0 #1d2244,inset 2px 2px 0 #59629a;border-radius:0}
+  #panel .x:focus-visible,#panel a:focus-visible{outline:2px solid #ffd36e;outline-offset:2px}
+  #panel dl{margin:0;display:grid;grid-template-columns:auto 1fr;gap:6px 12px}
+  #panel dt{color:#8fe3ff;font-weight:700}
+  #panel dd{margin:0}
+  #panel .muted{color:#aab2e0}
+  #panel ul{margin:0;padding-left:18px}
+  #panel code{background:#0d1126;padding:1px 4px}
+  #panel .acts{display:flex;gap:10px;margin-top:14px;flex-wrap:wrap}
+  #panel .acts a{display:inline-block;padding:6px 12px;background:#2b336a;color:#ffd59a;text-decoration:none;font-weight:700;border:2px solid #080a16;
+    box-shadow:inset -2px -2px 0 #1d2244,inset 2px 2px 0 #59629a;border-radius:0}
+  #panel .acts a:hover{background:#3a4480}
+  .lamp-green{color:#3ddc7a}.lamp-amber{color:#ffb020}.lamp-red{color:#ff5a5a}.lamp-grey{color:#9aa0b8}
+  .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+</style>
+</head>
+<body>
+<h1 class="sr" id="town-h">Lamptown</h1>
+<div id="stage" tabindex="-1">
+  <canvas id="c" width="400" height="225" aria-hidden="true"></canvas>
+  <div id="hits" role="group" aria-labelledby="town-h"></div>
+</div>
+<div id="panel" role="dialog" aria-modal="false" aria-labelledby="p-title" hidden>
+  <div class="ph"><span id="p-lamp"></span><h2 id="p-title"></h2><button class="x" id="p-close" aria-label="Close">&times;</button></div>
+  <dl id="p-body"></dl>
+  <div class="acts" id="p-acts"></div>
+</div>
+<p id="room-sr" class="sr" aria-live="polite"></p>
+<p id="town-sr" class="sr"></p>
+<script id="town-data" type="application/json">/*%%TOWN_DATA%%*/</script>
+<script src="kit.js"></script>
+<script src="town.js"></script>
+<!--%%ROOMS%%-->
+<script>
+'use strict';
+bootRooms(); // after every room script has registered
+</script>
+</body>
+</html>

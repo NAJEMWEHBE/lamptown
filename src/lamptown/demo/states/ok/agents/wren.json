@@ -1,0 +1,15 @@
+{
+  "spec": "agent-status/1",
+  "id": "wren",
+  "title": "Wren: tail ribbons",
+  "agent": "wren",
+  "kind": "task",
+  "state": "ok",
+  "message": "Ribbons cut, waiting for wind",
+  "updated": "{{-20m}}",
+  "stale_after": 1800,
+  "progress": {
+    "done": 8,
+    "total": 8
+  }
+}

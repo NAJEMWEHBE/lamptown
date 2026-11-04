@@ -1,0 +1,15 @@
+{
+  "spec": "agent-status/1",
+  "id": "heron",
+  "title": "Heron: moss index",
+  "agent": "heron",
+  "kind": "task",
+  "state": "ok",
+  "message": "Finished the moss index",
+  "updated": "{{-50m}}",
+  "stale_after": 1800,
+  "progress": {
+    "done": 7,
+    "total": 7
+  }
+}

@@ -1,0 +1,57 @@
+{
+ "provider": "cursor",
+ "source": "Payload shapes from https://cursor.com/docs/agent/hooks (checked 2026-11-04). Fictional content.",
+ "cases": [
+  {
+   "name": "session start",
+   "payload": {"conversation_id": "c0ffee00-1111-4222-8333-444455556666", "generation_id": "g1", "model": "example-model", "hook_event_name": "sessionStart", "cursor_version": "9.9.9", "workspace_roots": ["/home/you/code/paper-kite"], "user_email": "kit@example.com", "transcript_path": null, "session_id": "s-1", "is_background_agent": false, "composer_mode": "agent"},
+   "expect": {"id": "cursor-c0ffee00-111", "title": "paper-kite", "state": "ok", "message": "Session started", "started": true, "absent": ["kit@example.com"]}
+  },
+  {
+   "name": "before submit prompt answers continue",
+   "payload": {"conversation_id": "c0ffee00-1111-4222-8333-444455556666", "generation_id": "g2", "hook_event_name": "beforeSubmitPrompt", "workspace_roots": ["/home/you/code/paper-kite"], "user_email": "kit@example.com", "prompt": "Make the tail longer", "attachments": []},
+   "expect": {"state": "working", "message": "Working", "stdout": {"continue": true}, "absent": ["tail longer", "kit@example.com"]}
+  },
+  {
+   "name": "post tool use",
+   "payload": {"conversation_id": "c0ffee00-1111-4222-8333-444455556666", "generation_id": "g2", "hook_event_name": "postToolUse", "workspace_roots": ["/home/you/code/paper-kite"], "tool_name": "Shell", "tool_input": {"command": "npm test"}},
+   "expect": {"state": "working", "message": "Ran Shell", "absent": ["npm test"]}
+  },
+  {
+   "name": "after agent response is not written by default",
+   "payload": {"conversation_id": "c0ffee00-1111-4222-8333-444455556666", "generation_id": "g2", "hook_event_name": "afterAgentResponse", "workspace_roots": ["/home/you/code/paper-kite"], "text": "The tail is now twice as long."},
+   "expect": {"ignored": true}
+  },
+  {
+   "name": "after agent response with --excerpts keeps state",
+   "args": ["--excerpts"],
+   "payload": {"conversation_id": "c0ffee00-1111-4222-8333-444455556666", "generation_id": "g2", "hook_event_name": "afterAgentResponse", "workspace_roots": ["/home/you/code/paper-kite"], "text": "The tail is now twice as long."},
+   "expect": {"state": "working", "message": "Said: The tail is now twice as long."}
+  },
+  {
+   "name": "stop completed",
+   "payload": {"conversation_id": "c0ffee00-1111-4222-8333-444455556666", "generation_id": "g2", "hook_event_name": "stop", "workspace_roots": ["/home/you/code/paper-kite"], "status": "completed", "loop_count": 0},
+   "expect": {"state": "ok", "message": "Turn finished", "stdout": ""}
+  },
+  {
+   "name": "stop aborted",
+   "payload": {"conversation_id": "c0ffee00-1111-4222-8333-444455556666", "generation_id": "g3", "hook_event_name": "stop", "workspace_roots": ["/home/you/code/paper-kite"], "status": "aborted", "loop_count": 0},
+   "expect": {"state": "ok", "message": "Stopped by you"}
+  },
+  {
+   "name": "stop error",
+   "payload": {"conversation_id": "c0ffee00-1111-4222-8333-444455556666", "generation_id": "g4", "hook_event_name": "stop", "workspace_roots": ["/home/you/code/paper-kite"], "status": "error", "loop_count": 1},
+   "expect": {"state": "error", "message": "The agent stopped with an error"}
+  },
+  {
+   "name": "permission event is ignored and not answered",
+   "payload": {"conversation_id": "c0ffee00-1111-4222-8333-444455556666", "generation_id": "g5", "hook_event_name": "beforeShellExecution", "workspace_roots": ["/home/you/code/paper-kite"], "command": "rm -r build", "cwd": "/home/you/code/paper-kite"},
+   "expect": {"ignored": true, "stdout": ""}
+  },
+  {
+   "name": "session end",
+   "payload": {"conversation_id": "c0ffee00-1111-4222-8333-444455556666", "hook_event_name": "sessionEnd", "workspace_roots": ["/home/you/code/paper-kite"], "session_id": "s-1", "reason": "user_close", "duration_ms": 45000, "final_status": "completed"},
+   "expect": {"state": "ok", "message": "Session ended"}
+  }
+ ]
+}

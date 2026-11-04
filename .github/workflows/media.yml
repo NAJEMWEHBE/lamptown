@@ -1,0 +1,110 @@
+name: Regenerate media
+
+# Manual only (Actions > Regenerate media > Run workflow). Rebuilds docs/media from the fictional
+# demo world with tools/make_media.py, runs the privacy gate on the result, and opens a pull
+# request when anything changed. Nothing is pushed to the branch it runs on.
+#
+# Repo setting needed once: Settings > Actions > General > "Allow GitHub Actions to create and
+# approve pull requests". CI does not start on a pull request opened with the workflow token;
+# close and reopen the pull request to run it.
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: media
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  media:
+    name: regenerate docs/media
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write        # push the media branch
+      pull-requests: write   # open the pull request
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.13"
+
+      - name: Install headless Chrome
+        id: chrome
+        uses: browser-actions/setup-chrome@48ad923757ca74d66703209fe939badbdf80f2f4  # v2.2.0
+        with:
+          chrome-version: stable
+          install-dependencies: true
+
+      - name: Install the package and Pillow
+        run: python -m pip install . "pillow==13.0.0"
+
+      - name: Make the media
+        env:
+          CHROME: ${{ steps.chrome.outputs.chrome-path }}
+        run: python tools/make_media.py
+
+      # Same rule as CI: the deny-list comes from the repo secret, goes to the runner's temp dir
+      # and is never printed. This workflow only runs by hand in the main repo, so the secret
+      # must be there.
+      - name: Load the deny-list from the repo secret
+        shell: python
+        env:
+          DENYLIST: ${{ secrets.LAMPTOWN_DENYLIST }}
+        run: |
+          import os
+          import pathlib
+          import sys
+
+          text = os.environ.get("DENYLIST", "")
+          if not text.strip():
+              print("::error title=Privacy gate::The LAMPTOWN_DENYLIST repo secret is missing.")
+              sys.exit(1)
+          path = pathlib.Path(os.environ["RUNNER_TEMP"]) / "lamptown-denylist.txt"
+          fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+          with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+              f.write(text.replace("\r\n", "\n").rstrip("\n") + "\n")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
+              env.write(f"LAMPTOWN_DENYLIST={path}\n")
+          print("deny-list loaded")
+
+      - name: Privacy gate (the tree with the new media)
+        run: python tools/privacy_gate.py --require-denylist
+
+      - name: Open a pull request when the media changed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE: ${{ github.ref_name }}
+          RUN: ${{ github.run_number }}
+        run: |
+          if [ -z "$(git status --porcelain -- docs/media)" ]; then
+            echo "::notice title=Media::docs/media is already up to date; no pull request."
+            exit 0
+          fi
+          if [ -n "$(git status --porcelain -- . ':!docs/media')" ]; then
+            echo "::error title=Media::make_media changed files outside docs/media:"
+            git status --porcelain -- . ':!docs/media'
+            exit 1
+          fi
+          branch="media/regenerate-$RUN"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898341+github-actions[bot]@users.noreply.github.com"
+          msg="$RUNNER_TEMP/media-commit.txt"
+          printf 'Regenerate README media\n\nMade by the "Regenerate media" workflow (run %s) with tools/make_media.py.\n' "$RUN" > "$msg"
+          python tools/privacy_gate.py --commit-msg "$msg" --require-denylist
+          git switch -c "$branch"
+          git add -- docs/media
+          git commit -F "$msg"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:refs/heads/$branch"
+          gh pr create --base "$BASE" --head "$branch" \
+            --title "Regenerate README media" \
+            --body "Made by the Regenerate media workflow (run $RUN) from the fictional demo world with tools/make_media.py. The privacy gate passed on the new files. Look at every image before merging. CI does not start on its own for this pull request: close and reopen it to run CI."

@@ -1,0 +1,33 @@
+{
+  "skill": {
+    "name": "harbour-lights",
+    "scanned_at": "2026-03-02T09:30:00+00:00"
+  },
+  "risk_assessment": {
+    "recommendation": "DO_NOT_INSTALL",
+    "score": 88,
+    "severity": "HIGH"
+  },
+  "issues": [
+    {
+      "id": "FAKE-0",
+      "line": 1
+    },
+    {
+      "id": "FAKE-1",
+      "line": 4
+    },
+    {
+      "id": "FAKE-2",
+      "line": 7
+    },
+    {
+      "id": "FAKE-3",
+      "line": 10
+    },
+    {
+      "id": "FAKE-4",
+      "line": 13
+    }
+  ]
+}

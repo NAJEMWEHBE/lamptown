@@ -1,0 +1,39 @@
+# Local working folders (never published)
+_progress/
+_scratch/
+
+# The privacy deny-list must never live in the repo
+*denylist*.txt
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+*.whl
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Generated town pages and app state
+/out/
+town.html
+!/src/lamptown/web/town.html
+.webview/
+
+# Editors and OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Internal planning notes (never published)
+_private/

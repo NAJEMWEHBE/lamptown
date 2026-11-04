@@ -1,0 +1,284 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lamptown.invalid/schemas/rooms/vault.schema.json",
+  "title": "Lamptown room: vault (notes library)",
+  "description": "A notes vault: one drying line per folder, one salted fish per note (bundles past 32). The inbox is the wet tray (5 fish, then '+N'); dropped notes feed the cat. 'working' means a review is filing notes now.",
+  "type": "object",
+  "required": [
+    "state"
+  ],
+  "properties": {
+    "state": {
+      "$ref": "#/$defs/state"
+    },
+    "label": {
+      "type": "string",
+      "maxLength": 120
+    },
+    "error": {
+      "type": "string",
+      "maxLength": 300
+    },
+    "num": {
+      "type": [
+        "string",
+        "integer"
+      ],
+      "description": "Optional: the number on the building's name plate."
+    },
+    "updated": {
+      "$ref": "#/$defs/time"
+    },
+    "needs": {
+      "type": "array",
+      "maxItems": 500,
+      "items": {
+        "$ref": "#/$defs/need"
+      }
+    },
+    "folders": {
+      "type": "array",
+      "maxItems": 200,
+      "items": {
+        "type": "object",
+        "required": [
+          "label",
+          "n"
+        ],
+        "properties": {
+          "label": {
+            "type": "string",
+            "maxLength": 120
+          },
+          "n": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "href": {
+            "type": "string",
+            "maxLength": 2048
+          },
+          "key": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "The folder name inside the vault."
+          },
+          "notes": {
+            "type": "array",
+            "maxItems": 400,
+            "items": {
+              "type": "string",
+              "maxLength": 120
+            },
+            "description": "Some note names (the count n is always the true one)."
+          },
+          "kept": {
+            "type": "boolean",
+            "description": "The folder of kept inbox notes."
+          }
+        }
+      }
+    },
+    "notes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "inbox": {
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "maxItems": 500,
+          "items": {
+            "type": "object",
+            "required": [
+              "title"
+            ],
+            "properties": {
+              "title": {
+                "type": "string",
+                "maxLength": 120
+              },
+              "from": {
+                "type": "string",
+                "maxLength": 120
+              },
+              "href": {
+                "type": "string",
+                "maxLength": 2048
+              },
+              "triaged": {
+                "type": "boolean"
+              },
+              "n": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "id": {
+                "type": "string",
+                "maxLength": 200
+              },
+              "mark": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "enum": [
+                  "keep",
+                  "drop",
+                  null
+                ]
+              },
+              "reason": {
+                "type": "string",
+                "maxLength": 140
+              }
+            }
+          }
+        },
+        "untriaged": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "date": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 40
+        },
+        "file": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "href": {
+          "type": "string",
+          "maxLength": 2048
+        },
+        "total": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "kept": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "drops": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unreadable": {
+          "type": "boolean"
+        }
+      }
+    },
+    "last_review": {
+      "$ref": "#/$defs/time"
+    },
+    "why": {
+      "type": "string",
+      "maxLength": 40,
+      "description": "Which case of the state this is (for example 'missed', 'stopped', 'never')."
+    },
+    "vault_name": {
+      "type": "string",
+      "maxLength": 120,
+      "description": "The vault folder's own name (never its full path)."
+    },
+    "kept": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "dropped": {
+      "type": "object",
+      "properties": {
+        "n": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "names": {
+          "type": "array",
+          "maxItems": 400,
+          "items": {
+            "type": "string",
+            "maxLength": 120
+          }
+        },
+        "href": {
+          "type": "string",
+          "maxLength": 2048
+        }
+      }
+    },
+    "last_review_href": {
+      "type": "string",
+      "maxLength": 2048
+    },
+    "log_href": {
+      "type": "string",
+      "maxLength": 2048
+    },
+    "next_review": {
+      "$ref": "#/$defs/time"
+    },
+    "review_when": {
+      "type": "string",
+      "maxLength": 120,
+      "description": "The review schedule in plain words."
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "state": {
+      "type": "string",
+      "enum": [
+        "ok",
+        "waiting",
+        "working",
+        "error",
+        "missing"
+      ]
+    },
+    "time": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time",
+      "description": "Absolute ISO 8601 time with an offset; the page writes 'in 3 h' itself."
+    },
+    "need": {
+      "type": "object",
+      "required": [
+        "text"
+      ],
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "href": {
+          "type": "string",
+          "maxLength": 2048
+        }
+      }
+    },
+    "link": {
+      "type": "object",
+      "required": [
+        "href"
+      ],
+      "properties": {
+        "label": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "href": {
+          "type": "string",
+          "maxLength": 2048
+        }
+      }
+    }
+  }
+}

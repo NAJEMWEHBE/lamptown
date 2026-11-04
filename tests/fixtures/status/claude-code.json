@@ -1,0 +1,88 @@
+{
+ "provider": "claude-code",
+ "source": "Payload shapes from https://code.claude.com/docs/en/hooks (checked 2026-11-04). Fictional content.",
+ "cases": [
+  {
+   "name": "session start",
+   "payload": {"session_id": "5c1f0e8a-7b2d-4e6a-9f3c-2d8b1a0e4c77", "transcript_path": "/home/you/.claude/projects/paper-kite/5c1f0e8a.jsonl", "cwd": "/home/you/code/paper-kite", "hook_event_name": "SessionStart", "source": "startup", "model": "example-model"},
+   "expect": {"id": "claude-code-5c1f0e8a-7b2", "title": "paper-kite", "state": "ok", "message": "Session started", "needs": 0, "started": true}
+  },
+  {
+   "name": "prompt submitted",
+   "payload": {"session_id": "5c1f0e8a-7b2d-4e6a-9f3c-2d8b1a0e4c77", "transcript_path": "/home/you/.claude/projects/paper-kite/5c1f0e8a.jsonl", "cwd": "/home/you/code/paper-kite", "permission_mode": "default", "hook_event_name": "UserPromptSubmit", "prompt": "Rename the kite string helper to tether"},
+   "expect": {"id": "claude-code-5c1f0e8a-7b2", "state": "working", "message": "Working", "needs": 0, "absent": ["tether"]}
+  },
+  {
+   "name": "pre tool use",
+   "payload": {"session_id": "5c1f0e8a-7b2d-4e6a-9f3c-2d8b1a0e4c77", "cwd": "/home/you/code/paper-kite", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "pytest -q tests/test_tether.py"}, "tool_use_id": "toolu_01"},
+   "expect": {"state": "working", "message": "Using Bash", "absent": ["pytest"]}
+  },
+  {
+   "name": "post tool use",
+   "payload": {"session_id": "5c1f0e8a-7b2d-4e6a-9f3c-2d8b1a0e4c77", "cwd": "/home/you/code/paper-kite", "hook_event_name": "PostToolUse", "tool_name": "Edit", "tool_input": {"file_path": "/home/you/code/paper-kite/kite.py"}, "tool_response": {"success": true}, "tool_use_id": "toolu_02", "duration_ms": 41},
+   "expect": {"state": "working", "message": "Ran Edit", "needs": 0}
+  },
+  {
+   "name": "permission prompt notification",
+   "payload": {"session_id": "5c1f0e8a-7b2d-4e6a-9f3c-2d8b1a0e4c77", "cwd": "/home/you/code/paper-kite", "hook_event_name": "Notification", "message": "Claude needs your permission to use Bash", "title": "Permission needed", "notification_type": "permission_prompt"},
+   "expect": {"state": "waiting", "message": "Needs your permission", "needs": 1}
+  },
+  {
+   "name": "permission request",
+   "payload": {"session_id": "5c1f0e8a-7b2d-4e6a-9f3c-2d8b1a0e4c77", "cwd": "/home/you/code/paper-kite", "hook_event_name": "PermissionRequest", "tool_name": "WebFetch", "tool_input": {"url": "https://example.com/kites"}},
+   "expect": {"state": "waiting", "message": "Allow WebFetch?", "needs": 1}
+  },
+  {
+   "name": "idle notification is ignored",
+   "payload": {"session_id": "5c1f0e8a-7b2d-4e6a-9f3c-2d8b1a0e4c77", "cwd": "/home/you/code/paper-kite", "hook_event_name": "Notification", "message": "Claude is waiting for your input", "notification_type": "idle_prompt"},
+   "expect": {"ignored": true}
+  },
+  {
+   "name": "background agent finished notification is ignored",
+   "payload": {"session_id": "5c1f0e8a-7b2d-4e6a-9f3c-2d8b1a0e4c77", "cwd": "/home/you/code/paper-kite", "hook_event_name": "Notification", "message": "A background agent finished", "notification_type": "agent_completed"},
+   "expect": {"ignored": true}
+  },
+  {
+   "name": "stop",
+   "payload": {"session_id": "5c1f0e8a-7b2d-4e6a-9f3c-2d8b1a0e4c77", "cwd": "/home/you/code/paper-kite", "hook_event_name": "Stop", "stop_hook_active": false, "last_assistant_message": "Renamed the helper and all 14 tests pass.", "background_tasks": [], "session_crons": []},
+   "expect": {"state": "ok", "message": "Turn finished", "needs": 0, "absent": ["Renamed the helper"]}
+  },
+  {
+   "name": "stop with --excerpts: first line only, secrets masked",
+   "args": ["--excerpts"],
+   "payload": {"session_id": "5c1f0e8a-7b2d-4e6a-9f3c-2d8b1a0e4c77", "cwd": "/home/you/code/paper-kite", "hook_event_name": "Stop", "stop_hook_active": false, "last_assistant_message": "\n  Set API_KEY=kite-fake-0000 for the tests.\nThe second line names moss-secret-plan."},
+   "expect": {"state": "ok", "message": "Turn finished: Set API_KEY=… for the tests.", "absent": ["kite-fake-0000", "moss-secret-plan"]}
+  },
+  {
+   "name": "stop with on-stop waiting",
+   "args": ["--on-stop", "waiting"],
+   "payload": {"session_id": "5c1f0e8a-7b2d-4e6a-9f3c-2d8b1a0e4c77", "cwd": "/home/you/code/paper-kite", "hook_event_name": "Stop", "stop_hook_active": false, "last_assistant_message": "Shall I also update the docs?"},
+   "expect": {"state": "waiting", "needs": 1}
+  },
+  {
+   "name": "stop while background tasks run",
+   "payload": {"session_id": "5c1f0e8a-7b2d-4e6a-9f3c-2d8b1a0e4c77", "cwd": "/home/you/code/paper-kite", "hook_event_name": "Stop", "stop_hook_active": false, "last_assistant_message": "Started the long test run.", "background_tasks": [{"id": "bg1"}]},
+   "expect": {"state": "working", "message": "Waiting on background tasks"}
+  },
+  {
+   "name": "stop failure",
+   "payload": {"session_id": "5c1f0e8a-7b2d-4e6a-9f3c-2d8b1a0e4c77", "cwd": "/home/you/code/paper-kite", "hook_event_name": "StopFailure", "error": "rate_limit", "last_assistant_message": ""},
+   "expect": {"state": "error", "message": "Stopped by an API error: rate_limit"}
+  },
+  {
+   "name": "subagent stop is ignored",
+   "payload": {"session_id": "5c1f0e8a-7b2d-4e6a-9f3c-2d8b1a0e4c77", "cwd": "/home/you/code/paper-kite", "hook_event_name": "SubagentStop", "stop_hook_active": false, "agent_id": "a1", "agent_type": "Explore"},
+   "expect": {"ignored": true}
+  },
+  {
+   "name": "session end",
+   "payload": {"session_id": "5c1f0e8a-7b2d-4e6a-9f3c-2d8b1a0e4c77", "cwd": "/home/you/code/paper-kite", "hook_event_name": "SessionEnd", "reason": "prompt_input_exit"},
+   "expect": {"state": "ok", "message": "Session ended", "needs": 0}
+  },
+  {
+   "name": "windows folder",
+   "payload": {"session_id": "e2b7c9d1-0000-4000-8000-000000000001", "cwd": "C:\\Users\\you\\code\\moss-engine", "hook_event_name": "UserPromptSubmit", "prompt": "hello"},
+   "expect": {"id": "claude-code-e2b7c9d1-000", "title": "moss-engine", "state": "working"}
+  }
+ ]
+}

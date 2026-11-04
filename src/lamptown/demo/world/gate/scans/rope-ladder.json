@@ -1,0 +1,21 @@
+{
+  "skill": {
+    "name": "rope-ladder",
+    "scanned_at": "{{-15d}}"
+  },
+  "risk_assessment": {
+    "recommendation": "CAUTION",
+    "score": 34,
+    "severity": "MEDIUM"
+  },
+  "issues": [
+    {
+      "id": "DEMO-1",
+      "line": 12
+    },
+    {
+      "id": "DEMO-2",
+      "line": 40
+    }
+  ]
+}

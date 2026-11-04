@@ -1,0 +1,50 @@
+{
+ "provider": "codex",
+ "source": "notify: https://learn.chatgpt.com/docs/config-file/config-advanced ; hooks: https://learn.chatgpt.com/docs/hooks (checked 2026-11-04). Fictional content.",
+ "cases": [
+  {
+   "name": "notify turn complete (JSON argument)",
+   "argv": true,
+   "payload": {"type": "agent-turn-complete", "thread-id": "b5f6c1a2-3d4e-5f60-7182-93a4b5c6d7e8", "turn-id": "12345", "cwd": "/home/you/code/tidebook", "input-messages": ["Add a tide table export"], "last-assistant-message": "Added the CSV export and a test."},
+   "expect": {"id": "codex-b5f6c1a2-3d4", "title": "tidebook", "state": "ok", "message": "Turn finished", "absent": ["tide table export", "CSV export"]}
+  },
+  {
+   "name": "notify with on-stop waiting",
+   "argv": true,
+   "args": ["--on-stop", "waiting"],
+   "payload": {"type": "agent-turn-complete", "thread-id": "b5f6c1a2-3d4e-5f60-7182-93a4b5c6d7e8", "turn-id": "12346", "cwd": "/home/you/code/tidebook", "input-messages": [], "last-assistant-message": "Which date format?"},
+   "expect": {"state": "waiting", "needs": 1}
+  },
+  {
+   "name": "unknown notify type is ignored",
+   "argv": true,
+   "payload": {"type": "some-future-event", "thread-id": "b5f6c1a2"},
+   "expect": {"ignored": true}
+  },
+  {
+   "name": "hook session start",
+   "payload": {"session_id": "019a1b2c-3d4e-7f00-8a9b-0c1d2e3f4a5b", "transcript_path": null, "cwd": "/home/you/code/tidebook", "hook_event_name": "SessionStart", "model": "example-model", "source": "startup"},
+   "expect": {"id": "codex-019a1b2c-3d4", "state": "ok", "message": "Session started", "started": true}
+  },
+  {
+   "name": "hook prompt",
+   "payload": {"session_id": "019a1b2c-3d4e-7f00-8a9b-0c1d2e3f4a5b", "turn_id": "t1", "cwd": "/home/you/code/tidebook", "hook_event_name": "UserPromptSubmit", "model": "example-model", "prompt": "Explain the harbour tides"},
+   "expect": {"state": "working", "message": "Working", "absent": ["harbour tides"]}
+  },
+  {
+   "name": "hook permission request",
+   "payload": {"session_id": "019a1b2c-3d4e-7f00-8a9b-0c1d2e3f4a5b", "turn_id": "t1", "cwd": "/home/you/code/tidebook", "hook_event_name": "PermissionRequest", "model": "example-model", "tool_name": "shell", "tool_input": {"command": ["make", "release"]}},
+   "expect": {"state": "waiting", "message": "Allow shell?", "needs": 1}
+  },
+  {
+   "name": "hook stop",
+   "payload": {"session_id": "019a1b2c-3d4e-7f00-8a9b-0c1d2e3f4a5b", "turn_id": "t1", "cwd": "/home/you/code/tidebook", "hook_event_name": "Stop", "model": "example-model", "stop_hook_active": false, "last_assistant_message": "Done."},
+   "expect": {"state": "ok", "message": "Turn finished", "needs": 0}
+  },
+  {
+   "name": "hook session end",
+   "payload": {"session_id": "019a1b2c-3d4e-7f00-8a9b-0c1d2e3f4a5b", "cwd": "/home/you/code/tidebook", "hook_event_name": "SessionEnd", "model": "example-model", "reason": "other"},
+   "expect": {"state": "ok", "message": "Session ended"}
+  }
+ ]
+}

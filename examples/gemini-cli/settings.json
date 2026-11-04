@@ -1,0 +1,22 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {"hooks": [{"type": "command", "name": "lamptown-status", "command": "lamptown status hook gemini-cli", "timeout": 10000}]}
+    ],
+    "BeforeAgent": [
+      {"hooks": [{"type": "command", "name": "lamptown-status", "command": "lamptown status hook gemini-cli", "timeout": 10000}]}
+    ],
+    "AfterTool": [
+      {"matcher": ".*", "hooks": [{"type": "command", "name": "lamptown-status", "command": "lamptown status hook gemini-cli", "timeout": 10000}]}
+    ],
+    "Notification": [
+      {"hooks": [{"type": "command", "name": "lamptown-status", "command": "lamptown status hook gemini-cli", "timeout": 10000}]}
+    ],
+    "AfterAgent": [
+      {"hooks": [{"type": "command", "name": "lamptown-status", "command": "lamptown status hook gemini-cli", "timeout": 10000}]}
+    ],
+    "SessionEnd": [
+      {"hooks": [{"type": "command", "name": "lamptown-status", "command": "lamptown status hook gemini-cli", "timeout": 10000}]}
+    ]
+  }
+}

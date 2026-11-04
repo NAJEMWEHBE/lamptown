@@ -1,0 +1,33 @@
+{
+  "_note": "Fictional calls for the tests.",
+  "tools": {
+    "kite-knots": {
+      "call": "install",
+      "date": "2026-03-01",
+      "origin": "third-party",
+      "note": "Read every flag; all fine",
+      "source": "https://example.invalid/kite"
+    },
+    "harbour-lights": {
+      "call": "skip",
+      "date": "2026-03-02",
+      "note": "Too many flags"
+    },
+    "tide-reader": {
+      "call": "skip",
+      "date": "2026-03-03"
+    },
+    "moss-indexer": {
+      "call": "install",
+      "origin": "own"
+    },
+    "otter-notes": {
+      "call": "park",
+      "date": "2026-03-05"
+    },
+    "bad-entry": "not an object",
+    "odd-call": {
+      "call": "maybe"
+    }
+  }
+}
