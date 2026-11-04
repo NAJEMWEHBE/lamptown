@@ -369,7 +369,8 @@ def test_older_contest_from_a_crate_is_picked_under_the_lamp(tmp_path, kinds):
     r = run(
         build_lab(tmp_path),
         "const t = RS.room.targets().find(x => x.id === 'crate-1'); const tip = t.tip; t.onClick();"
-        " await wait(300); return Object.assign({ tip, plate: RS.room.plate() }, RS.room.seen());",
+        " await until(() => RS.room.seen().lamp === 1, 3000);"  # slow runners: wait for it, not 300 ms
+        " return Object.assign({ tip, plate: RS.room.plate() }, RS.room.seen());",
         frag="#room=lab",
     )
     assert r["tip"][0] == "Kite colours" and r["tip"][2] == "PICK: Dusk Violet"
