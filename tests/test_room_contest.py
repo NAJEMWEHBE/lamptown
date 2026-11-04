@@ -369,9 +369,11 @@ def test_older_contest_from_a_crate_is_picked_under_the_lamp(tmp_path, kinds):
     r = run(
         build_lab(tmp_path),
         "const t = RS.room.targets().find(x => x.id === 'crate-1'); const tip = t.tip; t.onClick();"
-        # slow runners: wait for the lamp itself, not a fixed 300 ms
+        # slow runners: wait for the lamp and the turned tag (the tag turns 0.66 s
+        # into a 1.2 s card turn), not a fixed delay; the cap still fails a stuck turn
         " const t0 = performance.now();"
-        " while (RS.room.seen().lamp !== 1 && performance.now() - t0 < 3000) await wait(50);"
+        " const done = s => s.lamp === 1 && !!s.pickTag && s.pickTag[0] !== 'K03';"
+        " while (!done(RS.room.seen()) && performance.now() - t0 < 4000) await wait(50);"
         " return Object.assign({ tip, plate: RS.room.plate() }, RS.room.seen());",
         frag="#room=lab",
     )
