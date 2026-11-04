@@ -119,6 +119,9 @@ def test_browser_job_installs_chrome_and_requires_it(ci):
     assert job["env"]["LAMPTOWN_REQUIRE_BROWSER"] == "1"
     chrome = [s for s in steps(job) if "setup-chrome" in str(s.get("uses", ""))]
     assert len(chrome) == 1 and chrome[0]["id"] == "chrome"
+    # macOS uses the runner's own Chrome (Chrome for Testing hangs there); an empty
+    # $CHROME makes find_browser look in /Applications
+    assert chrome[0]["if"] == "runner.os != 'macOS'"
     (run,) = [s for s in steps(job) if "-m browser" in s.get("run", "")]
     assert run["env"]["CHROME"] == "${{ steps.chrome.outputs.chrome-path }}"
 

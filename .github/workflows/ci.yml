@@ -187,8 +187,11 @@ jobs:
         with:
           python-version: "3.13"
 
+      # Not on macOS: Chrome for Testing hangs there (its helpers are refused the Mach port
+      # rendezvous), while the runner's own Google Chrome works; the tests find that one.
       - name: Install headless Chrome
         id: chrome
+        if: runner.os != 'macOS'
         uses: browser-actions/setup-chrome@48ad923757ca74d66703209fe939badbdf80f2f4  # v2.2.0
         with:
           chrome-version: stable

@@ -341,7 +341,7 @@ Every key except `kind`, `name` and the reserved `_` keys is passed through. `st
 | `LAMPTOWN_CONFIG` | every command | The config file, when `--config` is not given. |
 | `AGENT_STATUS_DIR` | `lamptown status`, `status_dir` | The default status folder (else `~/.agent-status`). |
 | `LAMPTOWN_APP_DIR` | `lamptown app` | Keep the app's log, lock and web view profile in this one folder. |
-| `CHROME` | tests, `tools/make_media.py` | The Chrome, Chromium or Edge to use. |
+| `CHROME` | tests, `tools/make_media.py` | The Chrome, Chromium or Edge to use. On macOS, pick Google Chrome: Chrome for Testing can hang when run headless there. |
 
 ## When the config is wrong
 
