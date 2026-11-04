@@ -6,7 +6,7 @@
    "name": "notify turn complete (JSON argument)",
    "argv": true,
    "payload": {"type": "agent-turn-complete", "thread-id": "b5f6c1a2-3d4e-5f60-7182-93a4b5c6d7e8", "turn-id": "12345", "cwd": "/home/you/code/tidebook", "input-messages": ["Add a tide table export"], "last-assistant-message": "Added the CSV export and a test."},
-   "expect": {"id": "codex-b5f6c1a2-3d4", "title": "tidebook", "state": "ok", "message": "Turn finished", "absent": ["tide table export", "CSV export"]}
+   "expect": {"id": "codex-93a4b5c6d7e8", "title": "tidebook", "state": "ok", "message": "Turn finished", "absent": ["tide table export", "CSV export"]}
   },
   {
    "name": "notify with on-stop waiting",
@@ -24,7 +24,7 @@
   {
    "name": "hook session start",
    "payload": {"session_id": "019a1b2c-3d4e-7f00-8a9b-0c1d2e3f4a5b", "transcript_path": null, "cwd": "/home/you/code/tidebook", "hook_event_name": "SessionStart", "model": "example-model", "source": "startup"},
-   "expect": {"id": "codex-019a1b2c-3d4", "state": "ok", "message": "Session started", "started": true}
+   "expect": {"id": "codex-0c1d2e3f4a5b", "state": "ok", "message": "Session started", "started": true}
   },
   {
    "name": "hook prompt",

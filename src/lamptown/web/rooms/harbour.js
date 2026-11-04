@@ -39,6 +39,8 @@ const NOW_T = () => performance.now() / 1000;
 const DEMO_STATES = ['ok', 'waiting', 'working', 'error', 'missing'];
 
 let raw = null, demo = null, M = null, LAY = null, STATIC = null, BOATS = {}, HOV = null, lit = 0, bellT = -9, timers = [], caption = '', cursor = null, lastTick = 0;
+let enters = 0, updates = 0;   // for tests: a data swap updates the open room, it doesn't walk in again
+let QUAY_ON = false, QUAY = null;   // live: L10 berths: the live quay is shown (the static layer was built for it); what it drew
 
 /* ---------- data ---------- */
 const S = v => String(v == null ? '' : v);
@@ -189,6 +191,7 @@ function board(p, i, hov) {
 }
 function slip(b) { // the slip: rails, trestles, gantry, the hull (or what stands for it), the caption
   const p = b.p, st = p.state;
+  b.leadRow = b.leadNote = null;   // live: L10-fix: drawn again below only if they still show (the quay may have come or gone)
   R(b.x, 170, b.w - 2, 3, '#3a2a30'); R(b.x, 170, b.w - 2, 1, '#5a4248'); R(b.x, 173, b.w - 2, 7, '#1a1424');
   for (let x = b.x + 4; x < b.x + b.w - 4; x += 10) R(x, 173, 2, 14, '#2a2030');
   R(b.x, 92, b.w - 2, 3, '#3a3050'); R(b.x, 92, b.w - 2, 1, '#544a72'); R(b.lamp[0], 95, 1, b.lamp[1] - 95, '#5a5068');
@@ -205,14 +208,17 @@ function slip(b) { // the slip: rails, trestles, gantry, the hull (or what stand
   else if (p.tasks) lines.push([fit([`PLANKED = TASKS DONE: ${p.tasks.done} OF ${p.tasks.total}`, `${p.tasks.done} OF ${p.tasks.total} DONE`], `${p.tasks.done}/${p.tasks.total}`), CYAN]);
   else if (p.agent) lines.push([fit([(p.kind || 'agent').toUpperCase() + ': ' + (p.message || '-').toUpperCase(), (p.kind || 'agent').toUpperCase()], '-'), LILAC]);
   else lines.push([fit(['NO TASKS.MD: MOORED', 'NO TASKS.MD', 'NO TASKS'], '-'), LILAC]);
-  const lead = st !== 'missing' && p.leadN ? fit(['+' + p.leadN + ' FOR THE AGENT', '+' + p.leadN + ' AGENT'], '+' + p.leadN) : '';
-  const hh = 12 + (p.tasks && st !== 'error' && st !== 'missing' ? 4 : 0) + (lead ? 8 : 0);
+  // live: L10 berths: with the live quay along the front (QUAY_ON), the caption keeps its first line only (the hull's
+  // planking and its pinned note still show progress and the agent's items; the hover has the numbers)
+  const lead = st !== 'missing' && p.leadN && !QUAY_ON ? fit(['+' + p.leadN + ' FOR THE AGENT', '+' + p.leadN + ' AGENT'], '+' + p.leadN) : '';
+  const bar = !!p.tasks && st !== 'error' && st !== 'missing' && !QUAY_ON;
+  const hh = QUAY_ON ? 10 : 12 + (bar ? 4 : 0) + (lead ? 8 : 0);
   R(b.x + 3, 184, b.w - 8, hh, 'rgba(8,10,22,0.8)'); b.capY = 184 + hh;
   textL(fitText(lines[0][0], b.w - 12), b.x + 6, 186, lines[0][1]);
   let y = 193;
-  if (p.tasks && st !== 'error' && st !== 'missing') { const bw = b.w - 14, d = Math.round(bw * p.tasks.done / p.tasks.total); R(b.x + 6, y, d, 2, '#b07a44'); R(b.x + 6 + d, y, bw - d, 2, '#2a2236'); y += 4; }
+  if (bar) { const bw = b.w - 14, d = Math.round(bw * p.tasks.done / p.tasks.total); R(b.x + 6, y, d, 2, '#b07a44'); R(b.x + 6 + d, y, bw - d, 2, '#2a2236'); y += 4; }
   if (lead) { R(b.x + 6, y, 4, 5, '#cfd6ff'); P(b.x + 8, y, '#5fe8ff'); textL(lead, b.x + 13, y, '#b8c0f0'); b.leadRow = [b.x + 4, y - 1, b.w - 10, 7]; }
-  if (lead) { const px = b.hx0 + 5, py = Math.min(b.top + 14, KEEL - 12); R(px, py, 7, 9, '#cfd6ff'); R(px + 1, py + 2, 5, 1, '#8a90b8'); R(px + 1, py + 4, 5, 1, '#8a90b8'); R(px + 1, py + 6, 4, 1, '#8a90b8'); P(px + 3, py, '#5fe8ff'); b.leadNote = [px - 1, py - 1, 9, 11]; }
+  if (st !== 'missing' && p.leadN) { const px = b.hx0 + 5, py = Math.min(b.top + 14, KEEL - 12); R(px, py, 7, 9, '#cfd6ff'); R(px + 1, py + 2, 5, 1, '#8a90b8'); R(px + 1, py + 4, 5, 1, '#8a90b8'); R(px + 1, py + 6, 4, 1, '#8a90b8'); P(px + 3, py, '#5fe8ff'); b.leadNote = [px - 1, py - 1, 9, 11]; }
 }
 function hull(b, err) {
   for (let x = b.hx0 + 5; x < b.hx1; x += 10) { const t = hTop(b, x), bt = hBot(b, x); R(x + 3, t + 2, 1, bt - t - 2, '#2e2030'); }
@@ -369,6 +375,59 @@ function hoverMarks() {
   if (HOV.startsWith('closed:')) { const i = LAY.boards.findIndex(p => 'closed:' + p.id === HOV); if (i >= 0) board(LAY.boards[i], i, true); }
 }
 
+/* ---------- live: L10 berths: the live quay along the front, the same berths as on the town's wharf ----------
+   One cell per berth in BERTHS' order (the order they were given out), the project's boat paint on its name board,
+   and who works there: every agent on it at the Harbour, as a Lamplighter with its lantern (done ones hang a green
+   lantern on the cell's post). The projects sharing the overflow mooring: one "+N" cell. Names only. */
+const QY = { board: 196, feet: 218, deck: 209 }, QRANK = { waiting: 0, error: 1, working: 2, quiet: 3 };
+function liveView() { return typeof BERTHS === 'object' && BERTHS && !demo ? BERTHS.view() : null; }
+function quayNow() { const v = liveView(); return !!(v && v.on && (v.berths.length || v.over.length)); }
+function quayCells(v) {
+  const list = v.berths.map(b => ({ b })).concat(v.over.length ? [{ over: v.over }] : []);
+  const w = Math.min(84, Math.floor((W - 4) / Math.max(1, list.length)));
+  return list.map((c, i) => Object.assign(c, { x: 2 + i * w, w }));
+}
+function quay() {
+  QUAY = null;
+  const v = liveView(); if (!v || !v.on || (!v.berths.length && !v.over.length)) return;
+  const cells = quayCells(v), glows = [], shown = [];
+  // the quay's deck, from just above (as the landing's floor): planks along it, their seams, the near edge
+  R(0, QY.deck - 1, W, 1, OL); R(0, QY.deck, W, 1, '#8a6444');
+  for (let y = QY.deck + 1; y < H; y += 3) { R(0, y, W, 2, (y >> 1) % 2 ? '#5a4030' : '#634634'); R(0, y + 2, W, 1, '#3a281e'); }
+  for (let y = QY.deck + 1, k = 0; y < H; y += 3, k++) for (let x = (k * 13) % 31; x < W; x += 31) P(x, y, '#3a281e');
+  for (const c of cells) {
+    const { x, w } = c, bx = x + 5, bw = w - 8;
+    R(x + 1, QY.board - 1, 3, QY.deck - QY.board + 2, OL); R(x + 2, QY.board, 1, QY.deck - QY.board + 1, '#7a5638');   // the cell's post
+    R(bx, QY.board, bw, 9, OL); R(bx + 1, QY.board + 1, bw - 2, 7, '#161b38'); R(bx + 1, QY.board + 1, bw - 2, 1, '#2b336a');
+    if (c.over) {
+      const s = fitText('+' + c.over.length + ' MORE', bw - 6);
+      textL(s, bx + 3, QY.board + 2, LILAC);
+      c.over.slice(0, Math.floor((bw - 4) / 7)).forEach((o, i) => { const px = bx + 3 + i * 7; R(px - 1, QY.deck + 3, 7, 5, OL); R(px, QY.deck + 4, 5, 3, o.paint); });   // their paints
+      shown.push({ over: c.over.map(o => o.id), x, w });
+      continue;
+    }
+    const b = c.b;
+    R(bx + 2, QY.board + 2, 6, 4, OL); R(bx + 3, QY.board + 3, 4, 2, b.paint); P(bx + 7, QY.board + 3, b.paint);   // her paint
+    textL(fitText(b.name, bw - 12), bx + 10, QY.board + 2, WHITE);
+    const ags = b.agents.filter(a => a.state !== 'ok').sort((p, q) => QRANK[p.state] - QRANK[q.state]);
+    const fit = Math.max(1, Math.floor((w - 12) / 9)), n = ags.length > fit ? fit - 1 : ags.length, drawn = [];
+    for (let i = 0; i < n; i++) { const a = ags[i], d = BERTHS.figure(x + 10 + i * 9, QY.feet, a, 1); if (d) glows.push(d); drawn.push(a.id); }
+    if (ags.length > n) textL('+' + (ags.length - n), x + 7 + n * 9, QY.feet - 7, '#ffd59a');
+    if (!ags.length) textL(fitText(b.facts.ok ? 'DONE HERE' : 'NO AGENT NOW', w - 10), x + 7, QY.feet - 7, b.facts.ok ? '#7ff0a8' : '#7a7f99');
+    if (b.facts.ok) { R(x + 3, QY.board + 11, 3, 1, '#262636'); R(x + 3, QY.board + 12, 3, 3, '#7ff0a8'); glows.push({ x: x + 4, y: QY.board + 13, col: '#3dff8a', small: true }); }
+    shown.push({ id: b.id, name: b.name, x, w, agents: drawn, more: ags.length - n, done: b.facts.ok, paint: b.paint });
+  }
+  for (const d of glows) glow(glowSp(d.col, d.small ? 3 : 6, d.small ? 3 : 5, 0.36), d.x, d.y);
+  QUAY = { cells: shown, list: cells };
+}
+function quayTargets() {
+  if (!QUAY) return [];
+  return QUAY.list.map(c => (c.over
+    ? { id: 'berth:more', box: [c.x, QY.board - 1, c.w, QY.deck - QY.board + 6], tip: [plural(c.over.length, 'MORE PROJECT') + ' SHARE THE OVERFLOW MOORING'].concat(c.over.slice(0, 6).map(o => o.name)),
+      label: c.over.length + ' more live projects.', onClick: null }
+    : { id: 'berth:' + c.b.id, box: [c.x, QY.board - 1, c.w, QY.deck - QY.board + 6], tip: c.b.tip, label: c.b.tip.join('. '), onClick: null }));
+}
+
 /* ---------- sound (synthesised, short, quiet) ---------- */
 function bell() { const ac = sfx.ctx(); if (!ac) return; const t0 = ac.currentTime + 0.02; sfx.tone(t0, 1046, 1.1, 0.3, 'sine'); sfx.tone(t0, 1568, 0.7, 0.14, 'sine'); sfx.tone(t0, 2637, 0.25, 0.07, 'sine'); }
 function flap() { const ac = sfx.ctx(); if (!ac) return; const t0 = ac.currentTime + 0.01; sfx.noise(t0, 0.18, 0.5, 260, 'bandpass'); sfx.tone(t0, 70, 0.15, 0.25, 'sine'); }
@@ -433,7 +492,7 @@ function targets() {
   if (LAY.more) { const r = LAY.more.rest;
     out.push({ id: 'boat:more', box: [LAY.more.x, 74, LAY.more.w - 2, 132], tip: ['+' + r.length + ' more projects'].concat(r.slice(0, 8).map(p => p.name + ' (' + (p.private ? 'private' : p.status) + ')')), label: r.length + ' more projects.', onClick: null }); }
   if (NOTICE) out.push({ id: 'notice', box: NOTICE, tip: M.empty ? ['No projects to show', 'List them in a projects source in lamptown.toml.'] : ['No active or paused projects', 'Closed projects hang on the wall above.'], label: 'Notice: no projects', onClick: null });
-  return out;
+  return quayTargets().concat(out);   // live: L10 berths: the quay is in front of the bays
 }
 function hover(tg) { // the town's hover hook (pointer or Tab): the desk rings, a paused tarp flaps
   const id = tg && tg.id || null; if (id === HOV) return; HOV = id;
@@ -484,19 +543,31 @@ registerRoom('harbour', {
   enter(data, opts) {
     raw = data && typeof data === 'object' ? data : { state: 'missing', missing: true };
     demo = opts.demo ? { state: DEMO_STATES.includes(opts.state) ? opts.state : '', qs: opts.qs } : null;
-    setup(); buildStatic(); lap();
+    QUAY_ON = quayNow(); setup(); buildStatic(); lap(); enters++;
     if (demo) runDemo();
+  },
+  /* new data while the room is open (a live swap): the berths are drawn again in place; the hover, the desk lamp and the
+     bell keep going, no door sound. The demo shows its own sample projects, so it keeps them. */
+  update(data) {
+    raw = data && typeof data === 'object' ? data : { state: 'missing', missing: true };
+    updates++;
+    if (demo) return;
+    const hov = HOV;
+    M = model(raw); NOTICE = null; LAY = layout(); BOATS = {}; buildStatic();
+    HOV = hov && targets().some(o => o.id === hov) ? hov : null;   // still there: still hovered
   },
   leave() { timers.forEach(clearTimeout); timers = []; STATIC = null; BOATS = {}; HOV = null; DHOV = null; caption = ''; cursor = null; },
   draw(ctx, t) {
-    if (!STATIC) buildStatic();
+    const q = quayNow(); if (q !== QUAY_ON) { QUAY_ON = q; STATIC = null; }   // live: L10 berths: the captions make room
+    if (!STATIC) { buildStatic(); if (HOV && !targets().some(o => o.id === HOV)) HOV = null; }   // live: L10-fix: no hover on what went
     g.drawImage(STATIC, 0, 0);
     hoverMarks(); water(t);
     for (const b of LAY.bays) if (b.p.status === 'paused' && b.p.exists) pausedBoat(b, t, HOV === 'boat:' + b.p.id);
     nameBoards(t); lamps(t); shipwright(t); deskAndBell(t);
     glow(glowSp('#7fa8ff', 16, 30, 0.14), 17, 135, M.state === 'missing' ? 0.2 : 0.6);
+    quay();   // live: L10 berths
     drawList();
-    if (!caption) textL(M.sample ? 'SAMPLE HARBOUR (DEMO). EACH BOAT IS A PROJECT' : 'EACH BOAT IS A PROJECT. HOVER OR CLICK ONE. ESC = BACK TO TOWN', 5, 217, LILAC);
+    if (!caption && !QUAY_ON) textL(M.sample ? 'SAMPLE HARBOUR (DEMO). EACH BOAT IS A PROJECT' : 'EACH BOAT IS A PROJECT. HOVER OR CLICK ONE. ESC = BACK TO TOWN', 5, 217, LILAC);
     if (M.sample) drawSampleBadge();
     if (demo) drawDemoLayer();
     if (!K.still && LAY.bays.some(b => atWork(b.p)) && t - lastTick > 1.3) { lastTick = t; tick(); }
@@ -517,7 +588,7 @@ registerRoom('harbour', {
         planks: b.cells ? [b.laid, b.cells.length] : null, tarp: b.p.status === 'paused' && b.p.exists, dust: b.p.status === 'active' && b.p.state === 'missing',
         flag: b.p.status === 'active' && b.p.state === 'error', shipwright: atWork(b.p), leadNote: !!b.leadNote })),
       moreBay: LAY.more ? LAY.more.rest.length : 0, boards: LAY.boards.length, moreBoards: LAY.moreC, desk: M.yoursN, list: listShown,
-      notice: !!NOTICE, hov: HOV, caption };
+      notice: !!NOTICE, hov: HOV, caption, enters, updates, quay: QUAY ? QUAY.cells : null };
   },
 });
 })();

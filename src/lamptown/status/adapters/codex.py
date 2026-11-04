@@ -12,15 +12,16 @@ Checked on 2026-11-04 against https://learn.chatgpt.com/docs/config-file/config-
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from lamptown.status.adapters import (
     Update,
     excerpt,
-    folder_name,
     folder_path,
     make_id,
     one_line,
+    project_folder,
     stop_update,
 )
 
@@ -28,10 +29,27 @@ AGENT = "codex"
 DISPLAY = "Codex"
 
 
+# --- L5-fix: ids from the random end of the thread id ---
+_UUID = re.compile(r"^[0-9a-fA-F]{8}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?"
+                   r"[0-9a-fA-F]{12}$")
+
+
+def thread_id(session: Any, folder: str = "") -> str:
+    """The record id of a Codex thread, shared by these hooks and the Codex log reader.
+
+    Codex thread ids are UUIDv7: their first 48 bits are a millisecond clock, so two threads
+    started together (parallel subagents) share their first characters. A UUID's id is
+    ``codex-`` + its last 12 hex digits (random bits); any other text is :func:`make_id`'s."""
+    if isinstance(session, str) and _UUID.match(session.strip()):
+        return f"{AGENT}-{session.strip().replace('-', '').lower()[-12:]}"
+    return make_id(AGENT, session, folder)
+# --- end L5-fix ---
+
+
 def _base(payload: dict[str, Any]) -> Update:
-    folder = folder_name(payload.get("cwd"))
+    folder = project_folder(payload.get("cwd"))  # L5-fix: never the login name
     session = payload.get("session_id") or payload.get("thread-id") or payload.get("thread_id")
-    return Update(id=make_id(AGENT, session, folder), agent=AGENT, title=folder or None,
+    return Update(id=thread_id(session, folder), agent=AGENT, title=folder or None,
                   display=DISPLAY, folder_path=folder_path(payload.get("cwd")))
 
 

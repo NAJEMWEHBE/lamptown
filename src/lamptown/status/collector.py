@@ -85,6 +85,7 @@ class Record:
     quiet: bool = False
     invalid: bool = False
     folder: str = ""  # x-folder: the session's folder, only for private_dirs
+    project_path: str = ""  # L3-fix: x-project when it is a path; only for private_dirs too
     written: datetime | None = None  # the file's own time (for invalid files)
     private: bool = False
 
@@ -146,6 +147,10 @@ def read_record(path: Path, now: datetime, stale_default: int | None,
         started=parse_time(doc.get("started")), next_run=parse_time(doc.get("next_run")),
         folder=folder if isinstance(folder, str) and len(folder) <= 1024 else "",
     )
+    project = doc.get("x-project")  # --- L3-fix: an x-project path counts like a folder ---
+    if isinstance(project, str) and len(project) <= 1024 and ("/" in project or "\\" in project
+                                                              or project.startswith("~")):
+        rec.project_path = project
     stale_after = doc.get("stale_after", stale_default)
     if rec.state != "working" or updated is None or not stale_after:
         return rec  # a file (or source) with stale_after = 0 never ages
@@ -354,7 +359,8 @@ def collect(paths: dict, now: datetime) -> dict:
         if _expired(rec, now, hide_after, expire_after):
             continue
         private = all_private or (private_roots and (
-            _under(rec.folder, private_roots) or _under(str(rec.path.parent), private_roots)))
+            _under(rec.folder, private_roots) or _under(str(rec.path.parent), private_roots)
+            or _under(rec.project_path, private_roots)))  # L3-fix
         shown.append(_mask(rec) if private else rec)
 
     # cap before anything is shaped, so a crowded folder never breaks the room's schema

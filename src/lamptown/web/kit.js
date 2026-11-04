@@ -49,9 +49,81 @@ const FONT = {
   " ":["..","..","..","..",".."]
 };
 FONT['–'] = FONT['—'] = FONT['-'];
-// ONE pixel font for every word on screen: upper case only; a character it lacks prints as a space
-function textW(s) { let w = 0; for (const ch of String(s).toUpperCase()) w += (FONT[ch] ? FONT[ch][0].length : 2) + 1; return Math.max(0, w - 1); }
-function text(s, x, y, c) { for (const ch of String(s).toUpperCase()) { const gl = FONT[ch] || FONT[' ']; sprite(gl, x, y, { '#': c }); x += gl[0].length + 1; } }
+// ONE pixel font for every word on screen: upper case only; an ASCII character it lacks prints as a space
+// (any other character: the glyph fallback below)
+function textW(s) { s = String(s).toUpperCase(); if (FB_ANY.test(s)) return fbW(s); /* L9-fix */ let w = 0; for (const ch of s) w += (FONT[ch] ? FONT[ch][0].length : 2) + 1; return Math.max(0, w - 1); }
+function text(s, x, y, c) { s = String(s).toUpperCase(); if (FB_ANY.test(s)) return fbText(s, x, y, c); /* L9-fix */ for (const ch of s) { const gl = FONT[ch] || FONT[' ']; sprite(gl, x, y, { '#': c }); x += gl[0].length + 1; } }
+
+// --- L9-fix: glyph fallback --- a character the pixel font lacks no longer vanishes (names in any script stay readable):
+//  * accented Latin (É, Ü, Ç, Ñ, Å...) is drawn as its base letter in the pixel font (NFD minus the marks): CAFÉ -> CAFE;
+//  * any other script (Arabic, Hebrew, Greek, Cyrillic, CJK, emoji) is drawn as one run in a small system font
+//    (Tahoma first: its Arabic reads best at 9 px) at about the pixel font's height, then cut to whole pixels (each pixel fully on or off: crisp, no smoothing halo), in
+//    the text's colour. A run keeps the spaces, digits and signs between its letters, so a right-to-left phrase is shaped
+//    and ordered right to left as a whole inside the left-to-right line. Direction overrides are dropped.
+//  Text with only ASCII takes the old path untouched. A run's canvas is FB_H high with the caps line FB_UP down, so a
+//  label holding a run is taller (its `oy` says by how much) and textL draws it that much higher.
+const FB_ANY = /[^\x00-\x7f]/, FB_RTL = /[\u0590-\u08ff\ufb1d-\ufdff\ufe70-\ufeff]/, FB_CTRL = /[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
+const FB_FONT = '9px Tahoma, "Segoe UI", "Noto Sans", "DejaVu Sans", sans-serif', FB_H = 9, FB_UP = 2;
+const FB_MAP = new Map(), FB_PARTS = new Map(), FB_RUN = new Map();
+function fbChar(ch) { // the pixel font's letters for ch; '' when it has none (a run); null: a lone accent mark (dropped)
+  if (FONT[ch]) return ch;
+  if (/[\u0300-\u036f]/.test(ch)) return null;
+  let m = FB_MAP.get(ch);
+  if (m === undefined) {
+    const base = ch.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase();
+    m = base && base !== ch && [...base].every(c => FONT[c]) ? base : '';
+    FB_MAP.set(ch, m);
+  }
+  return m;
+}
+function fbParts(s) { // upper-case s -> [[pixel text] | [run text, true]]
+  let parts = FB_PARTS.get(s); if (parts) return parts;
+  parts = [];
+  const chs = [...s.replace(FB_CTRL, '')];
+  let px = '';
+  for (let i = 0; i < chs.length;) {
+    const m = fbChar(chs[i]);
+    if (m !== '') { if (m) px += m; i++; continue; }
+    let last = i;   // the run: up to its last unknown character before the next pixel-font letter
+    for (let j = i; j < chs.length; j++) { const f = fbChar(chs[j]); if (f && /[A-Z]/.test(f)) break; if (f === '') last = j; }
+    if (px) { parts.push([px]); px = ''; }
+    parts.push([chs.slice(i, last + 1).join(''), true]);
+    i = last + 1;
+  }
+  if (px) parts.push([px]);
+  if (FB_PARTS.size > 2000) FB_PARTS.clear();
+  FB_PARTS.set(s, parts);
+  return parts;
+}
+function fbRun(s, col) { // a run drawn crisp in col (cached per run and colour)
+  const k = col + '|' + s; let c = FB_RUN.get(k); if (c) return c;
+  const rtl = FB_RTL.test(s), m = document.createElement('canvas').getContext('2d'); m.font = FB_FONT;
+  const w = Math.max(1, Math.ceil(m.measureText(s).width) + 1);
+  c = document.createElement('canvas'); c.width = w; c.height = FB_H;
+  const x = c.getContext('2d');
+  x.font = FB_FONT; x.direction = rtl ? 'rtl' : 'ltr'; x.textAlign = rtl ? 'right' : 'left'; x.textBaseline = 'alphabetic';
+  x.fillStyle = '#fff'; x.fillText(s, rtl ? w : 0, FB_UP + 5);   // its baseline under the pixel caps' bottom row
+  const img = x.getImageData(0, 0, w, FB_H), d = img.data;
+  for (let i = 3; i < d.length; i += 4) d[i] = d[i] >= 140 ? 255 : 0;   // whole pixels only
+  x.putImageData(img, 0, 0);
+  x.globalCompositeOperation = 'source-in'; x.fillStyle = col; x.fillRect(0, 0, w, FB_H);
+  if (FB_RUN.size > 600) FB_RUN.clear();
+  FB_RUN.set(k, c);
+  return c;
+}
+function fbW(s) {
+  let w = 0;
+  for (const [t, run] of fbParts(s)) if (run) w += fbRun(t, '#fff').width + 1; else for (const ch of t) w += FONT[ch][0].length + 1;
+  return Math.max(0, w - 1);
+}
+function fbText(s, x, y, c) {
+  for (const [t, run] of fbParts(s)) {
+    if (run) { const r = fbRun(t, c); g.drawImage(r, Math.round(x), Math.round(y) - FB_UP); x += r.width + 1; }
+    else for (const ch of t) { const gl = FONT[ch]; sprite(gl, x, y, { '#': c }); x += gl[0].length + 1; }
+  }
+}
+const fbTall = s => FB_ANY.test(s) && fbParts(s).some(p => p[1]);   // a label with a run needs the taller canvas
+// --- end L9-fix ---
 
 /* ---------- glow sprites (pixel-stepped, additive) ---------- */
 function mkGlow(rx, ry, col, a) {
@@ -77,12 +149,17 @@ function layer(w, h, fn) {
 const LBL = new Map();
 function label(s, col) { // cached pixel text (one canvas per string + colour)
   s = String(s).toUpperCase(); const k = col + '|' + s; let c = LBL.get(k);
-  if (!c) { if (LBL.size > 600) LBL.clear(); c = layer(Math.max(1, textW(s)), 5, () => text(s, 0, 0, col)); LBL.set(k, c); }
+  if (!c) {
+    if (LBL.size > 600) LBL.clear();
+    const oy = fbTall(s) ? FB_UP : 0;   // L9-fix: room for a fallback run above and below the caps
+    c = layer(Math.max(1, textW(s)), oy ? FB_H : 5, () => text(s, 0, oy, col)); c.oy = oy; LBL.set(k, c);
+  }
   return c;
 }
-function textL(s, x, y, col) { g.drawImage(label(s, col), Math.round(x), Math.round(y)); }
+function textL(s, x, y, col) { const l = label(s, col); g.drawImage(l, Math.round(x), Math.round(y) - l.oy); }
 function textC(s, cx, y, col) { textL(s, cx - textW(s) / 2, y, col); }
-function fitText(s, maxW) { s = String(s).toUpperCase(); if (textW(s) <= maxW) return s; while (s.length > 1 && textW(s + '.') > maxW) s = s.slice(0, -1); return s.trimEnd() + '.'; }
+// (L9-fix: a cut never splits a surrogate pair)
+function fitText(s, maxW) { s = String(s).toUpperCase(); if (textW(s) <= maxW) return s; while (s.length > 1 && textW(s + '.') > maxW) s = s.slice(0, /[\udc00-\udfff]$/.test(s) ? -2 : -1); return s.trimEnd() + '.'; }
 function wrapText(s, maxW) { // words onto lines no wider than maxW pixels
   const out = []; let line = '';
   for (const w of String(s).toUpperCase().split(/\s+/).filter(Boolean)) {
@@ -184,6 +261,23 @@ const SFX = (() => {
   function click() { if (!ctx()) return; tone(ac.currentTime + 0.01, 1300, 0.05, 0.12, 'square'); }
   return { unlock, ctx, out, hush, setMuted, tone, noise, door, click, get muted() { return muted; } };
 })();
+// --- live: L8 lighthouse --- the town's one sound: a short bell when an agent starts waiting for you (web/lighthouse.js).
+// arm(): on the first click or key in town (a gesture), make the sound ready, then rest it again (no idle audio thread).
+// bell(): one strike, only once armed and not muted; the audio rests again after it unless a room is open. true: it played.
+// armed: only arm() sets it. A sound context alone is not enough: a `#room=` link opens a room (and makes one) with no gesture.
+SFX.armed = false;
+SFX.arm = function () { SFX.armed = true; const ac = SFX.unlock(); if (ac && !(typeof RS === 'object' && RS && RS.id)) ac.suspend().catch(() => {}); return !!ac; };
+SFX.bell = function () {
+  const ac = SFX.armed ? SFX.ctx() : null; if (!ac || document.hidden) return false;
+  if (ac.state === 'suspended') ac.resume().catch(() => {});
+  const t = ac.currentTime + 0.03, f = 784;   // G5, with a bell's inharmonic partials
+  [[1, 0.42, 1.5], [2.0, 0.2, 1.0], [2.76, 0.14, 0.7], [5.4, 0.06, 0.3]].forEach(([k, v, d]) => SFX.tone(t, f * k, d, v, 'sine'));
+  SFX.noise(t, 0.03, 0.12, 3200, 'highpass');
+  clearTimeout(SFX.bellRest);
+  SFX.bellRest = setTimeout(() => { if (!(typeof RS === 'object' && RS && RS.id) && ac.state === 'running') ac.suspend().catch(() => {}); }, 1900);
+  return true;
+};
+// --- end live: L8 ---
 
 /* the drawing half of K (town.js adds the navigation half and freezes it) */
 const KIT = {

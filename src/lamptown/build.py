@@ -1,8 +1,11 @@
 """Build the town: config -> collectors -> checked room data -> one self-contained ``town.html``.
 
-Also writes ``town-details.html``, a plain accessible text view of the same data. Both files are
-written atomically (temp file + rename), so a reader (a browser, the desktop app) never sees half a
-page.
+Also writes ``town-details.html``, a plain accessible text view of the same data, and
+``town-data.js`` (``lamptownData(<the same data>);``: a live page swaps it in when the data's
+``rev`` changes). With ``[live]`` on, ``town-history.js`` and ``town-live.js`` too (see
+``lamptown.livetown``), in that order: ``town-data.js`` first, ``town-live.js`` last. Every file
+is written atomically (temp file + rename), so a reader (a browser, the desktop app) never sees
+half a page.
 """
 
 from __future__ import annotations
@@ -14,13 +17,14 @@ import json
 import os
 import re
 import tempfile
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from importlib import metadata, resources
 from pathlib import Path
 from typing import Any
 
-from lamptown import __version__
+from lamptown import __version__, livetown
 from lamptown.collectors import (
     TIMEOUT,
     error_result,
@@ -30,17 +34,24 @@ from lamptown.collectors import (
     source_paths,
 )
 from lamptown.collectors.schema import room_schema, validate
-from lamptown.config import PLOTS, Building, Config, user_data_dir
+from lamptown.config import LIGHTHOUSE, PLOTS, Building, Config, user_data_dir
 
 TOWN_NAME = "town.html"
 DETAILS_NAME = "town-details.html"
+DATA_JS = "town-data.js"
+LIVE_JS = "town-live.js"
+HISTORY_JS = "town-history.js"
+HISTORY_EVERY = 60  # seconds: town-history.js is rewritten at most this often between builds
 DATA_SPEC = "lamptown-town/1"
 ROOM_ENTRY_GROUP = "lamptown.rooms"
 
 DATA_SLOT = "/*%%TOWN_DATA%%*/"
 ROOMS_SLOT = "<!--%%ROOMS%%-->"
 SCRIPT_TAG = '<script src="{name}"></script>'
-WEB_SCRIPTS = ("kit.js", "town.js")
+WEB_SCRIPTS = ("kit.js", "town.js",
+               "lighthouse.js")  # live: L8 lighthouse (draws only with parts.lighthouse)
+WEB_SCRIPTS += ("live.js",)  # live: L7 lamplighters (one figure per live agent)
+WEB_SCRIPTS += ("berths.js",)  # live: L10 harbour berths (one per live project)
 
 LAMP_OF_STATE = {"ok": "green", "working": "green", "waiting": "amber", "error": "red",
                  "missing": "grey"}
@@ -59,9 +70,25 @@ class BuildResult:
     details: Path
     data: dict[str, Any]
     warnings: list[str] = field(default_factory=list)
+    data_js: Path | None = None
+    live: Path | None = None  # town-live.js, with [live] on
+    history: Path | None = None  # town-history.js, with [live] on
 
 
 # ----------------------------------------------------------------------------- rooms
+def _status_paths(config: Config, paths: dict) -> dict:
+    """A ``status_dir`` source reads the live town's status folder when it names none, and
+    every ``[live] private_dirs`` entry is private in it too: the Watcher and the room then
+    mask the same records with the same ids."""
+    if "dir" not in paths and "dirs" not in paths:
+        paths["dir"] = str(livetown.live_status_dir(config))
+    if config.live.private_dirs:
+        own = paths.get("private_dirs") or []
+        own = [own] if isinstance(own, str) else list(own)
+        paths["private_dirs"] = own + [d for d in config.live.private_dirs if d not in own]
+    return paths
+
+
 def collect_rooms(config: Config, now: dt.datetime, timeout: float = TIMEOUT) -> dict[str, dict]:
     """Room data per building id: every source run at once, merged, then checked against its schema.
     """
@@ -69,7 +96,10 @@ def collect_rooms(config: Config, now: dt.datetime, timeout: float = TIMEOUT) ->
     owner: list[str] = []
     for b in config.buildings:
         for s in b.sources:
-            jobs.append((s.kind, s.collector, source_paths(s.table, b.id, b.type, config.base_dir)))
+            paths = source_paths(s.table, b.id, b.type, config.base_dir)
+            if s.kind == "status_dir" and not s.collector:
+                paths = _status_paths(config, paths)
+            jobs.append((s.kind, s.collector, paths))
             owner.append(b.id)
     results = run_sources(jobs, now, timeout) if jobs else []
     per: dict[str, list[dict]] = {b.id: [] for b in config.buildings}
@@ -145,8 +175,23 @@ def part_for(b: Building, room: dict[str, Any]) -> dict[str, Any]:
 
 
 def town_data(config: Config, rooms: dict[str, dict], now: dt.datetime,
-              fixed_clock: bool = False) -> dict[str, Any]:
-    """The data the town page reads (``D`` in the page)."""
+              fixed_clock: bool = False, live: dict[str, Any] | None = None) -> dict[str, Any]:
+    """The data the town page reads (``D`` in the page), with its ``rev``.
+
+    ``live`` (the live payload, when ``[live]`` is on) adds ``parts.lighthouse``: the live
+    town's own place, not one of the six plots (``plots`` keeps only those)."""
+    data = _town_data(config, rooms, now, fixed_clock)
+    if live is not None:
+        part = livetown.lighthouse_part(live, DETAILS_NAME)
+        data["parts"][LIGHTHOUSE] = part
+        data["rooms"] = {**data["rooms"],
+                         LIGHTHOUSE: {"state": part["state"], "label": part["result"]}}
+    data["rev"] = livetown.rev_of(data)
+    return data
+
+
+def _town_data(config: Config, rooms: dict[str, dict], now: dt.datetime,
+               fixed_clock: bool) -> dict[str, Any]:
     parts = {b.id: part_for(b, rooms.get(b.id, {"state": "missing"})) for b in config.buildings}
     plots = {p: None for p in PLOTS}
     for b in config.buildings:
@@ -217,6 +262,11 @@ def room_scripts(config: Config, warnings: list[str]) -> str:
         if src:
             done.add(b.type)
             blocks.append(script_block(src, f' data-room="{html.escape(b.type)}"'))
+    # --- live: L9 lighthouse room (the keeper's handover book; the type is reserved) ---
+    if config.live.enabled and LIGHTHOUSE not in done:
+        f = resources.files("lamptown").joinpath("web", "rooms", f"{LIGHTHOUSE}.js")
+        blocks.append(script_block(f.read_text(encoding="utf-8"), f' data-room="{LIGHTHOUSE}"'))
+    # --- end live: L9 ---
     return "\n".join(blocks)
 
 
@@ -436,7 +486,90 @@ footer{padding-bottom:30px;color:var(--mut)}
 """
 
 
-def render_details(data: dict[str, Any]) -> str:
+def _lighthouse_section(rows: list[dict] | None) -> str:
+    """The details page's "Lighthouse today": names only (a title, a project name, a tool)."""
+    if rows is None:
+        return ""
+    if rows:
+        items = "".join(
+            f"<li>{_e(r['name'])}"
+            + (f' <span class="dim">({_e(r["tool"])})</span>' if r.get("tool") else "")
+            + (f": {_e(r['state'])}" if r.get("state") else "") + "</li>"
+            for r in rows[:200])
+        more = f'<p class="dim">And {len(rows) - 200} more.</p>' if len(rows) > 200 else ""
+        body = f'<ul class="wait">{items}</ul>{more}'
+    else:
+        body = '<p class="said">No agents today.</p>'
+    return ('<section class="bld" id="lighthouse" aria-labelledby="h-lighthouse">'
+            '<div class="bh"><h2 id="h-lighthouse">Lighthouse today</h2>'
+            '<span class="kind">the live town: every agent seen today</span></div>'
+            f"{body}</section>")
+
+
+# --- L9-fix: the lighthouse's past days in words (the book's text view) ---
+_WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+_MONTHS = ("January", "February", "March", "April", "May", "June", "July", "August", "September",
+           "October", "November", "December")
+_CLOSE_WORDS = {"work": "working at close", "wait": "waiting for you at close", "fail": "failed",
+                "quiet": "gone quiet", "done": "done", "project": "new project"}
+
+
+def _state_at_close(events: list) -> str:
+    """One agent's state when its day closed, as the book's slip reads it (names only)."""
+    st, ci = None, None
+    for e in events:
+        k = e[2]
+        if k == "project":
+            st = st or "project"
+            continue
+        if st in (None, "project"):
+            st = "work"
+        if k in ("start", "answer") or (k in ("files", "commit") and st == "quiet"):
+            st = "work"
+        elif k in ("wait", "fail", "quiet", "done"):
+            st = k
+        elif k == "ci" and len(e) > 3:
+            ci = e[3]
+    words = _CLOSE_WORDS.get(st or "", "")
+    return words + (", CI red" if ci == 0 and st not in ("fail", "project") else "")
+
+
+def _lighthouse_days_section(history: dict[str, Any] | None) -> str:
+    """The details page's "Lighthouse, the last days": every past day of the handover book, newest
+    first, one line per agent: its name, tool and state at close. Names only, as the book."""
+    days = [d for d in (history or {}).get("days") or [] if not d.get("today")]
+    if not days:
+        return ""
+    out = []
+    for d in reversed(days):
+        try:
+            when = dt.date.fromisoformat(d["date"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        evs: dict[int, list] = {}
+        for e in d.get("events") or []:
+            evs.setdefault(e[1], []).append(e)
+        rows = [(a, evs[i]) for i, a in enumerate(d.get("agents") or []) if i in evs]
+        items = "".join(
+            f"<li>{_e(a['name'].title() if a['name'] != 'AGENT' else 'Agent')}"
+            + (f' <span class="dim">({_e(a["tool"])})</span>' if a.get("tool") else "")
+            + (f": {_e(_state_at_close(ev))}" if _state_at_close(ev) else "") + "</li>"
+            for a, ev in rows[:200])
+        more = f'<p class="dim">And {len(rows) - 200} more.</p>' if len(rows) > 200 else ""
+        body = f'<ul class="wait">{items}</ul>{more}' if rows else '<p class="said">No agents.</p>'
+        head = f"{_WEEKDAYS[when.weekday()]} {when.day} {_MONTHS[when.month - 1]}"
+        out.append(f"<h3>{head}</h3>{body}")
+    return ('<section class="bld" id="lighthouse-days" aria-labelledby="h-lighthouse-days">'
+            '<div class="bh"><h2 id="h-lighthouse-days">Lighthouse, the last days</h2>'
+            f'<span class="kind">the handover book: each agent as its day closed</span></div>'
+            f'{"".join(out)}</section>')
+# --- end L9-fix ---
+
+
+def render_details(data: dict[str, Any], lighthouse: list[dict] | None = None,
+                   history: dict[str, Any] | None = None) -> str:
+    """The details page. ``lighthouse``: the "Lighthouse today" lines (``[live]`` on);
+    ``history``: the book's payload, for its past days in words (L9-fix)."""
     parts, rooms, plots = data["parts"], data["rooms"], data["plots"]
     title = _e(data.get("title") or "Lamptown")
     all_needs = [(p, t) for p in parts.values() for t in needs_of(rooms.get(p["id"], {}))]
@@ -511,6 +644,8 @@ def render_details(data: dict[str, Any]) -> str:
 <main id="main">
 {needs}
 {"".join(secs)}
+{_lighthouse_section(lighthouse)}
+{_lighthouse_days_section(history)}
 {lots}
 </main>
 <footer>Lamptown {_e(data.get("version", ""))}.
@@ -521,22 +656,131 @@ Everything here is read-only; times are your local time.</footer>
 
 
 # ----------------------------------------------------------------------------- writing
+REPLACE_TRIES = 40  # x 25 ms: Windows refuses a rename while a browser has the file open
+
+
 def write_atomic(out: Path, text: str) -> None:
-    """Write to a unique temp file in the same folder, then swap it in."""
+    """Write to a unique temp file in the same folder, then swap it in (on Windows, trying
+    again for up to a second while another program has the file open)."""
     out.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=out.name + ".", suffix=".tmp", dir=out.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
             f.write(text)
-        os.replace(tmp, out)
+        for attempt in range(REPLACE_TRIES):
+            try:
+                os.replace(tmp, out)
+                break
+            except PermissionError:
+                if os.name != "nt" or attempt == REPLACE_TRIES - 1:
+                    raise
+                time.sleep(0.025)
     except BaseException:
         with contextlib.suppress(OSError):
             os.unlink(tmp)
         raise
 
 
+def js_call(fn: str, obj: Any) -> str:
+    """One classic-script line, ``fn(<obj>);``, safe for any value (see :func:`script_json`)."""
+    return f"{fn}({script_json(obj)});\n"
+
+
 def default_out_dir(config: Config) -> Path:
     return Path(config.town.out) if config.town.out else user_data_dir() / "town"
+
+
+def read_rev(out_dir: str | os.PathLike[str]) -> str:
+    """The ``rev`` in ``town-data.js`` (``""`` when there is none)."""
+    try:
+        text = (Path(out_dir) / DATA_JS).read_text(encoding="utf-8")
+        head, tail = "lamptownData(", ");"
+        body = text.strip()
+        if body.startswith(head) and body.endswith(tail):
+            rev = json.loads(body[len(head):-len(tail)]).get("rev")
+            return rev if isinstance(rev, str) else ""
+    except (OSError, ValueError, AttributeError):
+        pass
+    return ""
+
+
+@dataclass
+class LiveFiles:
+    live: Path
+    payload: dict[str, Any]
+    history: Path | None = None  # None: not due this time (or not written: see warnings)
+    warnings: list[str] = field(default_factory=list)  # L3-fix: a file skipped this tick
+
+
+# --- L3-fix: a broken history or a held live file never fails a build ---
+def _history(config: Config, now: dt.datetime, tz: dt.tzinfo | None,
+             ctx: livetown.LiveContext, warnings: list[str]) -> dict[str, Any]:
+    """The history payload; an event log that can't be read gives empty days and a warning."""
+    try:
+        return livetown.history_payload(livetown.read_history(config, now, tz, ctx), config,
+                                        now, tz)
+    except Exception as e:  # the book is a nicety: the town is built without it
+        warnings.append(f"live history: the event log can't be read ({type(e).__name__}: "
+                        f"{e}); the lighthouse's book is empty this time"[:300])
+        return livetown.history_payload([], config, now, tz)
+
+
+def _write_live(path: Path, text: str, warnings: list[str]) -> bool:
+    """Write a live file; one another program holds (a browser, past the retries) is skipped
+    with a warning: the next tick writes it again."""
+    try:
+        write_atomic(path, text)
+    except PermissionError as e:
+        warnings.append(f"{path.name}: in use by another program, not written this time "
+                        f"({e.strerror or type(e).__name__}); the next tick writes it again")
+        return False
+    return True
+# --- end L3-fix ---
+
+
+def write_live_files(
+    config: Config,
+    out_dir: str | os.PathLike[str] | None = None,
+    *,
+    rev: str | None = None,
+    now: dt.datetime | None = None,
+    tz: dt.tzinfo | None = None,
+    history: bool | None = None,
+    ctx: livetown.LiveContext | None = None,
+    cache: dict | None = None,
+) -> LiveFiles:
+    """One Watcher tick's files, without a rebuild: ``town-history.js`` when due, then
+    ``town-live.js`` (always: its ``at`` is the page's heartbeat, so call this at least every
+    ~10 s even when nothing changed).
+
+    ``rev``: the town data's (default: read from ``town-data.js``). ``history``: ``True``
+    writes it now, ``False`` never, ``None`` when the file is missing or over
+    :data:`HISTORY_EVERY` seconds old. ``ctx`` and ``cache`` (a dict kept between calls) save
+    work on every tick: ``livetown.context(config)`` once, and records re-read only when their
+    file changed."""
+    out = Path(out_dir) if out_dir else default_out_dir(config)
+    ctx = ctx or livetown.context(config)
+    clock = now or dt.datetime.now(dt.UTC)
+    hist_path = out / HISTORY_JS
+    if history is None:
+        try:
+            history = time.time() - hist_path.stat().st_mtime >= HISTORY_EVERY
+        except OSError:
+            history = True
+    wrote_history = None
+    warnings: list[str] = []
+    if history:
+        hist = _history(config, clock, tz, ctx, warnings)
+        if _write_live(hist_path, js_call("lamptownHistory", hist), warnings):
+            wrote_history = hist_path
+    if rev is None:
+        rev = read_rev(out)
+    records = livetown.read_records(ctx.status_dir, cache)
+    payload = livetown.live_payload(records, config, clock, rev=rev, ctx=ctx,
+                                    at=dt.datetime.now(dt.UTC))
+    _write_live(out / LIVE_JS, js_call("lamptownLive", payload), warnings)
+    return LiveFiles(live=out / LIVE_JS, payload=payload, history=wrote_history,
+                     warnings=warnings)
 
 
 def build(
@@ -545,8 +789,12 @@ def build(
     now: dt.datetime | None = None,
     timeout: float = TIMEOUT,
     log: Callable[[str], None] | None = None,
+    *,
+    tz: dt.tzinfo | None = None,
 ) -> BuildResult:
-    """Collect, check and write the town page and the details page. Returns where they went."""
+    """Collect, check and write the town page, the details page and ``town-data.js`` (plus,
+    with ``[live]`` on, ``town-history.js`` and ``town-live.js``). Returns where they went.
+    ``tz``: the zone the handover book's days are in (default: this computer's)."""
     fixed = now is not None
     if now is None:
         now = dt.datetime.now().astimezone().replace(microsecond=0)
@@ -559,14 +807,37 @@ def build(
         r = rooms[b.id]
         if r.get("state") == "error" and r.get("error"):
             warnings.append(f"building {b.id!r}: {r['error']}")
-    data = town_data(config, rooms, now, fixed_clock=fixed)
+    live = hist = None
+    ctx = None
+    if config.live.enabled:
+        ctx = livetown.context(config)
+        live = livetown.live_payload(livetown.read_records(ctx.status_dir), config, now, ctx=ctx)
+        hist = _history(config, now, tz, ctx, warnings)  # L3-fix: never a failed build
+    data = town_data(config, rooms, now, fixed_clock=fixed, live=live)
     town_html = render_town(data, room_scripts(config, warnings))
-    details_html = render_details(data)
+    today = livetown.lighthouse_today(live, hist) if live is not None and hist else None
+    # L9-fix: past days
+    details_html = render_details(data, today, hist if live is not None else None)
     details = out / DETAILS_NAME
     town = out / TOWN_NAME
+    data_js = out / DATA_JS
     write_atomic(details, details_html)
+    write_atomic(data_js, js_call("lamptownData", data))  # before town-live.js (its rev)
     write_atomic(town, town_html)
+    result = BuildResult(town=town, details=details, data=data, warnings=warnings,
+                         data_js=data_js)
+    if live is not None and hist is not None:
+        # L3-fix: the town is written already; a held live file only loses one heartbeat
+        if _write_live(out / HISTORY_JS, js_call("lamptownHistory", hist), warnings):
+            result.history = out / HISTORY_JS
+        live = dict(live, rev=data["rev"], at=livetown.stamp(dt.datetime.now(dt.UTC)))
+        if _write_live(out / LIVE_JS, js_call("lamptownLive", live), warnings):
+            result.live = out / LIVE_JS
+    else:
+        for name in (LIVE_JS, HISTORY_JS):  # live switched off: no old heartbeat to load
+            with contextlib.suppress(OSError):
+                (out / name).unlink()
     if log:
         for w in warnings:
             log(w)
-    return BuildResult(town=town, details=details, data=data, warnings=warnings)
+    return result

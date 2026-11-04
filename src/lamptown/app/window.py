@@ -25,12 +25,14 @@ from typing import Any
 from lamptown.app.applog import AppLog
 from lamptown.app.instance import SingleInstance
 from lamptown.app.links import open_link
-from lamptown.app.live import POLL, Live, fingerprint
+from lamptown.app.live import POLL, Live, window_title
 from lamptown.app.paths import AppPaths, app_paths
+from lamptown.livefeed import Builder, LiveFeed  # Builder: lamptown.app.window.Builder too
 
 APP_ID = "Lamptown.Desktop"  # Windows taskbar grouping: the window gets its own button and icon
 BG = "#0b0e1c"
 EXIT_OK, EXIT_FALLBACK, EXIT_BUSY = 0, 1, 4
+STOP_WAIT = 5.0  # seconds the app waits for the live loop to stop after the window closed
 
 INSTALL_HINT = 'The desktop window needs pywebview: pip install "lamptown[app]"'
 LINUX_HINT = (
@@ -61,58 +63,6 @@ def asset(name: str) -> Path | None:
 def icon_for_platform(platform: str | None = None) -> Path | None:
     platform = sys.platform if platform is None else platform
     return asset("lamptown.ico" if platform == "win32" else "lamptown.png")
-
-
-# ----------------------------------------------------------------------------- building
-class Builder:
-    """Builds the town in-process. Reads the config on every call, so edits show up live; a broken
-    config is logged (once per distinct message) and keeps the last good page."""
-
-    def __init__(self, config: str | None, out: str | None, log: Callable[[str], None]) -> None:
-        self.config = config
-        self.out = Path(out).expanduser() if out else None
-        self.log = log
-        self.town: Path | None = None
-        self.error: str | None = None
-        self._said: str | None = None
-
-    def out_dir(self, cfg) -> Path:
-        if self.out is None:
-            from lamptown.build import default_out_dir
-
-            self.out = default_out_dir(cfg)
-        return self.out
-
-    def fallback_town(self) -> Path:
-        """Where the town page will be once a build works (for a window that opens on an error)."""
-        if self.out is None:
-            from lamptown.config import user_data_dir
-
-            self.out = user_data_dir() / "town"
-        from lamptown.build import TOWN_NAME
-
-        return self.out / TOWN_NAME
-
-    def __call__(self) -> dict[str, Any] | None:
-        from lamptown.build import build
-        from lamptown.config import ConfigError, load_config
-
-        try:
-            cfg = load_config(self.config)
-            res = build(cfg, out_dir=self.out_dir(cfg))
-        except (ConfigError, OSError) as e:
-            self.error = str(e)
-            if self.error != self._said:
-                self.log(f"can't build the town: {self.error}")
-                self._said = self.error
-            return None
-        except Exception:
-            self.error = "the build crashed (see the log)"
-            self.log("build crashed:\n" + traceback.format_exc())
-            return None
-        self.error = self._said = None
-        self.town = res.town
-        return res.data
 
 
 def error_page(msg: str) -> str:
@@ -187,7 +137,16 @@ def run_app(
 
 def _run(paths: AppPaths, inst: SingleInstance, log: AppLog, config, out, poll,  # noqa: PLR0917
          on_ready) -> int:
-    builder = Builder(config, out, log)
+    feed = LiveFeed(log)  # the app's one Watcher (with [live] on); closed when the app ends
+    try:
+        return _run_window(paths, inst, log, config, out, poll, on_ready, feed)
+    finally:
+        feed.close()  # saves the Watcher's state and lets the status folder go
+
+
+def _run_window(paths: AppPaths, inst: SingleInstance, log: AppLog, config, out,  # noqa: PLR0917
+                poll, on_ready, feed: LiveFeed) -> int:
+    builder = Builder(config, out, log, on_config=feed.configure)
     data = builder()  # open on fresh data instead of reloading right after the window shows
     town = builder.town or builder.fallback_town()
     try:
@@ -211,7 +170,7 @@ def _run(paths: AppPaths, inst: SingleInstance, log: AppLog, config, out, poll, 
         webview.settings["ALLOW_DOWNLOADS"] = False
         api = _Api(log)
         w, h = window_size(webview)
-        title = _title(data)
+        title = window_title(data)
         if data is not None:
             win = webview.create_window(title, town.resolve().as_uri(), js_api=api, width=w,
                                         height=h, min_size=(800, 500), background_color=BG)
@@ -219,7 +178,7 @@ def _run(paths: AppPaths, inst: SingleInstance, log: AppLog, config, out, poll, 
             win = webview.create_window(title, html=error_page(builder.error or "unknown error"),
                                         js_api=api, width=w, height=h, min_size=(800, 500),
                                         background_color=BG)
-        live = Live(win, builder, town.resolve().as_uri(), last=fingerprint(data), poll=poll,
+        live = Live(win, builder, town.resolve().as_uri(), data=data, feed=feed, poll=poll,
                     log=log)
         api._live = live
         win.events.shown += lambda *_a: (shown.set(), log("window shown"))
@@ -235,16 +194,35 @@ def _run(paths: AppPaths, inst: SingleInstance, log: AppLog, config, out, poll, 
 
         inst.serve(on_command)
 
+        started, finished = threading.Event(), threading.Event()
+
+        def run_live() -> None:
+            try:
+                live.run()
+            finally:
+                finished.set()
+
         def worker() -> None:
+            # pywebview runs this on a non-daemon thread. The loop runs on a daemon thread of
+            # its own: a web view torn down mid-script may never answer evaluate_js (WebView2
+            # waits with no timeout), and a thread stuck there must not keep the process alive.
+            started.set()
             if on_ready is not None:
                 threading.Thread(target=on_ready, args=(live, win), daemon=True,
                                  name="lamptown-on-ready").start()
-            live.run()
+            threading.Thread(target=run_live, daemon=True, name="lamptown-live").start()
 
         icon = icon_for_platform()
         log(f"app starting (pywebview {_version('pywebview')}, poll {poll:g} s)")
-        webview.start(worker, private_mode=False, storage_path=str(paths.webview),
-                      icon=str(icon) if icon else None)
+        try:
+            webview.start(worker, private_mode=False, storage_path=str(paths.webview),
+                          icon=str(icon) if icon else None)
+        finally:
+            live.on_closed()
+            # let a tick still running end before the Watcher closes, but not forever
+            if started.is_set() and not finished.wait(STOP_WAIT):
+                log(f"the live loop didn't stop within {STOP_WAIT:g} s (the web view stopped "
+                    "answering); closing without it")
     except Exception as e:
         log("app failed:\n" + traceback.format_exc())
         if shown.is_set():  # it ran and then broke: don't pop a browser on top
@@ -265,9 +243,7 @@ def _version(dist: str) -> str:
         return "?"
 
 
-def _title(data: dict[str, Any] | None) -> str:
-    t = str((data or {}).get("title") or "Lamptown").strip() or "Lamptown"
-    return t if "lamptown" in t.lower() else f"{t} - Lamptown"
+_title = window_title  # the window's plain title (lamptown.app.live.window_title)
 
 
 def _page(win) -> str:

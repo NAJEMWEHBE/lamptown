@@ -100,6 +100,17 @@ def folder_name(path: Any) -> str:
     return pure.name
 
 
+# --- L5-fix: home folder ---
+def project_folder(path: Any) -> str:
+    """:func:`folder_name`, but ``""`` for a folder that names no project: the home folder, a
+    drive or file-system root, or one above home (:func:`lamptown.status.events.home_or_root`),
+    so a session started in ``~`` never shows the login name as its title or id."""
+    from lamptown.status.events import home_or_root  # events imports this module
+
+    return "" if home_or_root(path) else folder_name(path)
+# --- end L5-fix ---
+
+
 def make_id(agent: str, session: Any, folder: str = "") -> str:
     """``<agent>-<session>`` (first 12 id-safe characters), else ``<agent>-<folder>``."""
     for part in (session, folder):

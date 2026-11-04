@@ -68,8 +68,10 @@ def add_parser(subparsers) -> None:
     a = subparsers.add_parser(
         "app",
         help="open the town in its own window, kept live",
-        description="Open the town in a desktop window that rebuilds itself and reloads when the "
-                    "data changes. Needs the [app] extra (pywebview); without it the town opens "
+        description="Open the town in a desktop window that keeps itself live: it rebuilds the "
+                    "town every --poll seconds and swaps the new data in place, and with [live] "
+                    "on it runs the Watcher every few seconds and counts what needs you in the "
+                    "window title. Needs the [app] extra (pywebview); without it the town opens "
                     "in your browser. A second launch brings the open window to the front.",
     )
     add_app_args(a)

@@ -588,13 +588,21 @@ def test_m1_events_are_kept_when_the_log_cannot_be_written(tmp_path, monkeypatch
     w.close()
 
 
-def test_m1_a_restart_from_older_saved_state_does_not_double_events(tmp_path):
+def test_m1_a_restart_from_older_saved_state_does_not_double_events(tmp_path, monkeypatch):
+    from lamptown.status import watch as watch_mod
+
     reader = CursorReader()
     w = Watcher(tmp_path, [reader], tz=UTC)
     w.tick(T0)  # saved
     reader.log.append({"t": T0, "id": SID, "k": "commit", "title": "Fix"})
     update_status("moss-build", tmp_path, now=T0, title="Moss build")
+
+    def crash(*a, **k):  # the process dies after the log write, before the save
+        raise OSError(5, "I/O error")
+
+    monkeypatch.setattr(watch_mod, "atomic_write_json", crash)
     assert sorted(_kinds(w.tick(T0 + timedelta(seconds=3)))) == ["commit", "start"]
+    monkeypatch.undo()
     w._unlock()  # a crash: the state of that tick was never saved
     again = Watcher(tmp_path, [reader], tz=UTC)
     assert again.state()["readers"]["cursor"] == {"pos": 0}  # older state: it replays...
@@ -759,3 +767,253 @@ def test_m12_readers_share_one_budget_per_tick(tmp_path):
     assert w.tick(T0).errors == []
     assert seen[0] is seen[1] and seen[0].left == seen[0].total - 2 * seen[0].per_file
     assert old_style.states == [{"polls": 1}]
+
+
+# ---------------------------------------------------------------- re-check fixes (W1)
+def test_w1_a_crash_after_a_logged_event_never_logs_it_again(tmp_path):
+    update_status("hook-1", tmp_path, now=T0 - timedelta(seconds=5), title="Fix kite",
+                  state="working", agent="codex")
+    w = Watcher(tmp_path, [], tz=UTC)
+    w.tick(T0)  # the snapshot, saved
+    update_status("other-1", tmp_path, now=T0 + timedelta(seconds=24), title="Other")
+    w.tick(T0 + timedelta(seconds=25))  # saved again (25 s after the last save)
+    update_status("hook-1", tmp_path, now=T0 + timedelta(seconds=26), state="waiting")
+    assert _kinds(w.tick(T0 + timedelta(seconds=27))) == ["wait"]  # 2 s after the last save
+    update_status("hook-1", tmp_path, now=T0 + timedelta(seconds=28), **{"x-files": 3})
+    w.tick(T0 + timedelta(seconds=29))  # the record is touched again: it gets a new time
+    w._unlock()  # the process dies: no close()
+    again = Watcher(tmp_path, [], tz=UTC)
+    again.tick(T0 + timedelta(seconds=31))
+    again.tick(T0 + timedelta(seconds=65))  # the files group of minute 09:00 is written
+    again.close()
+    assert [e["k"] for e in _logged(tmp_path) if e["id"] == "hook-1"] == ["wait", "files"]
+
+
+def test_w1_ticks_without_events_still_save_at_most_every_few_seconds(tmp_path, monkeypatch):
+    from lamptown.status import watch as watch_mod
+
+    writes = []
+    real = watch_mod.atomic_write_json
+    monkeypatch.setattr(watch_mod, "atomic_write_json",
+                        lambda *a, **k: writes.append(1) or real(*a, **k))
+    reader = CursorReader()
+    w = Watcher(tmp_path, [reader], tz=UTC)
+    w.tick(T0)
+    before = len(writes)
+    reader.log.append({"t": T0, "id": SID, "k": "commit", "title": "Fix"})
+    w.tick(T0 + timedelta(seconds=3))  # logged a line: saved at once
+    assert len(writes) == before + 1
+    w.tick(T0 + timedelta(seconds=6))  # nothing new: no write
+    assert len(writes) == before + 1
+    w.close()
+
+
+def test_w5_tick_events_are_only_the_lines_the_log_took(tmp_path):
+    reader = CursorReader()
+    w = Watcher(tmp_path, [reader], tz=UTC)
+    w.tick(T0)
+    reader.log.append({"t": T0 - timedelta(days=20), "id": SID, "k": "commit", "title": "Old"})
+    old = w.tick(T0 + timedelta(seconds=3))
+    assert old.events == [] and not (tmp_path / "events").exists()  # too old for keep_days
+    reader.log.append({"t": T0 + timedelta(seconds=4), "id": SID, "k": "commit", "title": "Fix"})
+    assert _kinds(w.tick(T0 + timedelta(seconds=6))) == ["commit"]
+    w._unlock()  # a crash; the next run's reader sends that commit again
+    replay = FakeReader()
+    replay.events = [dict(reader.log[-1])]
+    again = Watcher(tmp_path, [replay], tz=UTC)
+    assert again.tick(T0 + timedelta(seconds=9)).events == []  # already in the log
+    again.close()
+    assert [e["title"] for e in _logged(tmp_path)] == ["Fix"]
+
+
+def test_w6_a_hook_record_with_a_lone_surrogate_still_takes_merges(tmp_path):
+    reader = FakeReader()
+    w = Watcher(tmp_path, [reader], tz=UTC)
+    w.tick(T0)
+    half = json.loads(r'"Fix kite \ud83d"')
+    (tmp_path / f"{SID}.json").write_text(json.dumps({
+        "spec": "agent-status/1", "id": SID, "title": half, "state": "working",
+        "updated": "2026-11-04T09:00:05Z", "message": half,
+        "needs_you": [{"text": half}]}), encoding="utf-8")  # a Node hook writes "\ud83d"
+    w.tick(T0 + timedelta(seconds=6))
+    reader.agents = [{"id": SID, "x-files": 2, "at": T0 + timedelta(seconds=9)}]
+    result = w.tick(T0 + timedelta(seconds=10))
+    assert result.errors == [] and result.written == [SID]
+    doc = read_status(tmp_path / f"{SID}.json")
+    assert doc["x-files"] == 2 and doc["title"] == doc["message"] == "Fix kite ?"
+    assert doc["needs_you"] == [{"text": "Fix kite ?"}]
+    w.close()
+
+
+def test_w7_after_a_restart_the_reader_may_follow_its_own_write_in_the_same_second(tmp_path):
+    reader = FakeReader()
+    with Watcher(tmp_path, [reader], tz=UTC) as w:
+        w.tick(T0)
+        reader.agents = [_agent(at=T0 + timedelta(seconds=5))]
+        w.tick(T0 + timedelta(seconds=5))
+    with Watcher(tmp_path, [reader], tz=UTC) as w:  # the app restarted
+        reader.agents = [_agent(state="waiting", needs_you=[{"text": "Your turn"}],
+                                at=T0 + timedelta(seconds=5, microseconds=900000))]
+        result = w.tick(T0 + timedelta(seconds=6))
+    assert result.kept == [] and result.written == [SID]
+    assert read_status(tmp_path / f"{SID}.json")["state"] == "waiting"
+    saved = (tmp_path / ".lamptown" / "cursors.json").read_text(encoding="utf-8")
+    assert "Fix save slots" not in saved.split('"wrote"')[-1]  # digests only, no names
+
+
+def test_w9_only_a_taken_lock_means_another_watcher(tmp_path, monkeypatch):
+    import errno
+
+    from lamptown.status import watch as watch_mod
+
+    def unsupported(fd):
+        raise OSError(errno.ENOLCK, "No locks available")
+
+    monkeypatch.setattr(watch_mod, "_lock_fd", unsupported)
+    result = Watcher(tmp_path, [], tz=UTC).tick(T0)
+    assert not result.busy and result.errors == ["watcher lock: No locks available"]
+
+    def taken(fd):
+        raise BlockingIOError(errno.EAGAIN, "Resource temporarily unavailable")
+
+    monkeypatch.setattr(watch_mod, "_lock_fd", taken)
+    result = Watcher(tmp_path, [], tz=UTC).tick(T0)
+    assert result.busy and result.errors == [watch_mod.BUSY]
+
+
+# ---------------------------------------------------------------- review fixes (W1-fix2)
+def _at(seconds):
+    return T0 + timedelta(seconds=seconds)
+
+
+class AgentScript:
+    """A log reader of status changes: ``(seconds, agent)`` pairs, handed out by a cursor
+    kept in its saved state (so a restart from older saved state replays them)."""
+
+    name = "script"
+
+    def __init__(self, items):
+        self.items = items
+
+    def poll(self, state, now):
+        i = state.get("i", 0)
+        agents = []
+        while i < len(self.items) and _at(self.items[i][0]) <= now:
+            seconds, doc = self.items[i]
+            agents.append({**doc, "at": _at(seconds)})
+            i += 1
+        state["i"] = i
+        return Batch(agents=agents)
+
+
+def test_w1fix2_a_failed_save_after_a_logged_tick_is_retried_next_tick(tmp_path, monkeypatch):
+    from lamptown.status import watch as watch_mod
+
+    update_status("hook-1", tmp_path, now=_at(-5), title="Fix kite", state="working",
+                  agent="codex")
+    w = Watcher(tmp_path, [], tz=UTC)
+    w.tick(_at(0))
+    update_status("other-1", tmp_path, now=_at(24), title="Other")
+    w.tick(_at(25))  # saved
+    update_status("hook-1", tmp_path, now=_at(26), state="waiting")
+    real = watch_mod.atomic_write_json
+
+    def held(*args, **kwargs):  # an antivirus scanner holds cursors.json past the retries
+        raise PermissionError(13, "Access is denied")
+
+    monkeypatch.setattr(watch_mod, "atomic_write_json", held)
+    failed = w.tick(_at(27))
+    assert _kinds(failed) == ["wait"] and failed.errors[0].startswith("watcher state:")
+    monkeypatch.setattr(watch_mod, "atomic_write_json", real)
+    update_status("hook-1", tmp_path, now=_at(28), title="Fix kite tail")  # no event
+    w.tick(_at(29))  # only 4 s after the last good save: still saved, to retry the failed one
+    w._unlock()  # the process dies: no close()
+    again = Watcher(tmp_path, [], tz=UTC)
+    again.tick(_at(31))
+    again.close()
+    assert [e["k"] for e in _logged(tmp_path) if e["id"] == "hook-1"] == ["wait"]
+
+
+def test_w1fix2_a_record_write_without_events_is_saved_at_once(tmp_path):
+    items = [
+        (5, {"id": SID, "title": "Fix save slots", "state": "working", "agent": "codex"}),
+        (10, {"id": SID, "title": "Fix save slots now"}),  # a record write, no event
+        (10.9, {"id": SID, "state": "waiting", "needs_you": [{"text": "Your turn"}]}),
+    ]
+    w = Watcher(tmp_path, [AgentScript(items[:1])], tz=UTC)
+    w.tick(_at(0))
+    w.tick(_at(6))  # the record is made and "start" logged: saved
+    w.readers = [AgentScript(items[:2])]
+    assert w.tick(_at(10)).written == [SID]
+    w._unlock()  # the process dies 0 s after its own write
+    with Watcher(tmp_path, [AgentScript(items)], tz=UTC) as again:
+        result = again.tick(_at(11))  # it still knows the record is its own
+    assert result.kept == [] and result.written == [SID]
+    assert read_status(tmp_path / f"{SID}.json")["state"] == "waiting"
+
+
+def test_w1fix2_a_crash_mid_minute_keeps_the_files_count(tmp_path):
+    def run(folder, crash):
+        update_status(SID, folder, now=_at(-5), title="Fix kite", state="working",
+                      agent="codex")
+        reader = CursorReader()
+        w = Watcher(folder, [reader], tz=UTC)
+        w.tick(_at(0))
+        reader.log.append({"t": _at(2), "id": SID, "k": "files", "n": 2})
+        w.tick(_at(3))  # the reader's 2 files: the minute's group is still open
+        update_status(SID, folder, now=_at(5), **{"x-files": 3})
+        w.tick(_at(6))  # the hook's 3 files join the open group
+        if crash:
+            w._unlock()  # the process dies: no close()
+            w = Watcher(folder, [reader], tz=UTC)
+        w.tick(_at(9))
+        w.tick(_at(65))  # minute 09:00 is over: its group is written
+        w.close()
+        return [e.get("n") for e in _logged(folder) if e["k"] == "files"]
+
+    clean = run(tmp_path / "clean", crash=False)
+    assert clean == [5]
+    assert run(tmp_path / "crash", crash=True) == clean
+
+
+def test_w1fix2_a_push_or_ci_from_both_sources_is_logged_once(tmp_path):
+    update_status(SID, tmp_path, now=_at(-5), title="Fix kite", state="working", agent="codex")
+    reader = CursorReader()
+    w = Watcher(tmp_path, [reader], tz=UTC)
+    w.tick(_at(0))
+    reader.log.append({"t": _at(63), "id": SID, "k": "push"})
+    assert _kinds(w.tick(_at(63))) == ["push"]  # the reader saw the push in the session log
+    w._unlock()  # the process dies: the memory of it is in the saved state
+    w = Watcher(tmp_path, [reader], tz=UTC)
+    w.tick(_at(64))
+    update_status(SID, tmp_path, now=_at(66), **{"x-pushed": True})
+    assert _kinds(w.tick(_at(66))) == []  # the record's copy of the same push, 3 s later
+    reader.log.append({"t": _at(70), "id": SID, "k": "ci", "ok": True})
+    assert _kinds(w.tick(_at(70))) == ["ci"]
+    update_status(SID, tmp_path, now=_at(72), **{"x-ci": "green"})
+    assert _kinds(w.tick(_at(72))) == []  # the same green run
+    update_status(SID, tmp_path, now=_at(80), **{"x-ci": "red"})
+    assert _kinds(w.tick(_at(80))) == ["ci"]  # a new result is news
+    reader.log.append({"t": _at(100), "id": SID, "k": "push"})
+    assert _kinds(w.tick(_at(100))) == ["push"]  # a second push from the same source
+    saved = (tmp_path / ".lamptown" / "cursors.json").read_text(encoding="utf-8")
+    recent = json.loads(saved)["recent"]
+    assert recent and SID not in json.dumps(recent)  # hashed: no ids in it
+    w.tick(_at(400))
+    assert w.state()["recent"] == {}  # forgotten after two minutes
+    w.close()
+    pushes = [(e["k"], e["t"][14:19]) for e in _logged(tmp_path) if e["k"] in ("push", "ci")]
+    assert pushes == [("push", "01:03"), ("ci", "01:10"), ("ci", "01:20"), ("push", "01:40")]
+
+
+def test_w1fix2_the_push_memory_stays_bounded(tmp_path):
+    from lamptown.status import watch as watch_mod
+
+    reader = CursorReader()
+    w = Watcher(tmp_path, [reader], tz=UTC)
+    w.tick(_at(0))
+    for i in range(watch_mod.MAX_RECENT + 50):
+        reader.log.append({"t": _at(1), "id": f"codex-{i:05d}", "k": "push"})
+    w.tick(_at(3))
+    assert len(w.state()["recent"]) == watch_mod.MAX_RECENT
+    w.close()

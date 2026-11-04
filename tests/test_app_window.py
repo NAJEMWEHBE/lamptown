@@ -1,10 +1,12 @@
 """Real-window smoke test of the desktop app (needs pywebview and a display).
 
-Runs the app in a child process on a fictional config with a 1 s poll, then from inside it:
-enters a room and opens its card, changes the data and checks the reload kept both, takes a
-screenshot (Windows), minimises the window and checks nothing is rebuilt and the page stops
-drawing, restores it and checks rebuilds resume. Skipped where there is no display (headless
-Linux CI without xvfb) and, for now, on macOS unless LAMPTOWN_APP_SMOKE=1.
+Runs the app in a child process on a fictional config with a 1 s poll and the live town on,
+then from inside it: enters a room and opens its card, changes the data and checks it was pushed
+in place (no reload; the room updated, not entered again), changes the town's shape and checks
+the reload kept the room and the card, takes a screenshot (Windows), writes an agent that waits
+on you and checks the window title counts it, minimises the window and checks nothing is rebuilt
+and the page stops drawing, restores it and checks rebuilds resume. Skipped where there is no
+display (headless Linux CI without xvfb) and, for now, on macOS unless LAMPTOWN_APP_SMOKE=1.
 
 Screenshots go to $LAMPTOWN_SHOT_DIR when set, else the test's temp folder.
 """
@@ -24,6 +26,10 @@ ROOM = "docks"
 CONFIG = """version = 1
 [town]
 title = "Harbour Watch"
+
+[live]
+status_dir = "status"
+poll = 1
 
 [[building]]
 id = "docks"
@@ -58,6 +64,18 @@ label = "Bell tower"
   [[building.source]]
   kind = "static"
   state = "ok"
+{extra}"""
+
+# a new building: the town changes shape, so the window reloads
+EXTRA = """
+[[building]]
+id = "kiosk"
+type = "kiosk"
+plot = "lab"
+label = "Tea kiosk"
+  [[building.source]]
+  kind = "static"
+  state = "ok"
 """
 
 
@@ -85,7 +103,8 @@ pytestmark = [
 
 def test_real_window_keeps_the_room_across_a_reload_and_pauses_when_minimised(tmp_path):
     shots = Path(os.environ.get("LAMPTOWN_SHOT_DIR") or tmp_path)
-    (tmp_path / "lamptown.toml").write_text(CONFIG.format(done=3), encoding="utf-8")
+    (tmp_path / "lamptown.toml").write_text(CONFIG.format(done=3, extra=""),
+                                             encoding="utf-8")
     r = subprocess.run([sys.executable, __file__, "run", str(tmp_path), str(shots)],
                        capture_output=True, text=True, timeout=180, check=False)
     lines = [ln for ln in r.stdout.splitlines() if ln.startswith("{")]
@@ -99,6 +118,7 @@ def test_real_window_keeps_the_room_across_a_reload_and_pauses_when_minimised(tm
     assert r.returncode == 0, f"{detail}\nstderr: {r.stderr[-2000:]}"
     names = {x["name"] for x in results}
     assert "room kept after the reload" in names and "rebuilds resume after restore" in names
+    assert "data change pushed in place" in names and "title counts who needs you" in names
     assert "a .bat link only showed its folder" in names
     assert not (tmp_path / "marker.txt").exists(), "a link ran a program"
 
@@ -175,9 +195,24 @@ def _scenario(folder: Path, shots: Path) -> int:
             check("view hash names the room and the card", hash0 == f"#room={ROOM}&open={ROOM}",
                   hash0)
             t0 = win.evaluate_js("performance.timeOrigin")
-            reloads0 = live.reloads
-            (folder / "lamptown.toml").write_text(CONFIG.format(done=6), encoding="utf-8")
-            check("data change noticed", wait(lambda: live.reloads > reloads0, 15),
+            reloads0, pushes0 = live.reloads, live.pushes
+            enters0 = win.evaluate_js("RS.room.seen().enters")
+            planks0 = win.evaluate_js("JSON.stringify(RS.room.seen().bays.map(b => b.planks))")
+            (folder / "lamptown.toml").write_text(CONFIG.format(done=6, extra=""),
+                                                  encoding="utf-8")
+            check("data change pushed in place", wait(lambda: live.pushes > pushes0, 15),
+                  f"ticks {live.ticks}")
+            check("harbour updated, not entered again", wait_js(
+                win, "JSON.stringify(RS.room.seen().bays.map(b => b.planks)) !== "
+                f"{json.dumps(planks0)} && RS.room.seen().updates > 0 && "
+                f"RS.room.seen().enters === {json.dumps(enters0)}", True, 10) is True, planks0)
+            check("no reload for a data change", live.reloads == reloads0 and
+                  win.evaluate_js("performance.timeOrigin") == t0)
+            check("room and card still open", wait_js(win, "RS.id === 'docks' && openPlot !== null",
+                                                      True, 5) is True)
+            (folder / "lamptown.toml").write_text(CONFIG.format(done=6, extra=EXTRA),
+                                                  encoding="utf-8")
+            check("a new building reloads the page", wait(lambda: live.reloads > reloads0, 15),
                   f"ticks {live.ticks}")
             ok = wait(lambda: wait_js(win, "performance.timeOrigin", None, 0.5) not in (t0, None),
                       15)
@@ -191,9 +226,26 @@ def _scenario(folder: Path, shots: Path) -> int:
             if sys.platform == "win32":
                 shot = shots / "app-room-after-reload.png"
                 check("screenshot", _screenshot(win, shot), shot)
-            ticks = live.ticks
+            ticks, lives = live.ticks, live.live_ticks
             check("rebuilds while showing", wait(lambda: live.ticks >= ticks + 2, 6),
                   f"{live.ticks - ticks}")
+            check("live ticks while showing", live.live_ticks >= lives + 2,
+                  f"{live.live_ticks - lives}")
+            from lamptown.status.store import update_status
+
+            plain = "Harbour Watch - Lamptown"
+            update_status("codex-trim", folder / "status", title="Trim the sails",
+                          state="waiting", agent="codex")
+            check("title counts who needs you",
+                  wait(lambda: _title(win) == "1 needs you - " + plain, 10), _title(win))
+            check("the page got the live payload",
+                  wait_js(win, "LIVE.payload && LIVE.payload.need", 1, 5) == 1)
+            check("its corner says live", wait_js(win, "LIVE.on", True, 5) is True)
+            if sys.platform == "win32":
+                shot = shots / "app-title-badge.png"
+                check("screenshot of the badge", _screenshot(win, shot), shot)
+            update_status("codex-trim", folder / "status", state="working")
+            check("title plain again", wait(lambda: _title(win) == plain, 10), _title(win))
             win.minimize()
             check("minimise noticed", wait(lambda: live.vis.hidden, 5))
             time.sleep(1.5)  # a rebuild already running may finish
@@ -211,7 +263,8 @@ def _scenario(folder: Path, shots: Path) -> int:
             check("details page open", wait_js(win, "document.title.endsWith('details')", True)
                   is True)
             last, reloads = live.last, live.reloads
-            (folder / "lamptown.toml").write_text(CONFIG.format(done=7), encoding="utf-8")
+            (folder / "lamptown.toml").write_text(CONFIG.format(done=7, extra=EXTRA),
+                                                  encoding="utf-8")
             check("change seen on the details page", wait(lambda: live.last != last, 10))
             time.sleep(1.5)
             check("details page left alone", live.reloads == reloads and
@@ -226,6 +279,36 @@ def _scenario(folder: Path, shots: Path) -> int:
                  state_dir=folder / "state", on_ready=scenario, echo=False)
     check("app exited cleanly", rc == 0, rc)
     return 0 if all(r["ok"] for r in results) else 1
+
+
+_HWND: dict[int, int] = {}
+
+
+def _hwnd(win) -> int:
+    """The window's handle, read once (a WinForms property; the window exists by then)."""
+    key = id(win)
+    if key not in _HWND:
+        _HWND[key] = int(win.native.Handle.ToInt64())
+    return _HWND[key]
+
+
+def _title(win) -> str:
+    """The window's title as the OS shows it, else pywebview's.
+
+    Windows: user32's InternalGetWindowText, through ctypes. Not ``win.native.Text``: that
+    pythonnet call keeps the GIL while it waits for the GUI thread, which may itself be waiting
+    for the GIL to run the app's set_title, and the two deadlock (the window then shows "Not
+    Responding" and the test times out). InternalGetWindowText sends no message at all."""
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            buf = ctypes.create_unicode_buffer(512)
+            ctypes.windll.user32.InternalGetWindowText(_hwnd(win), buf, len(buf))
+            return buf.value
+        except Exception:
+            pass
+    return str(win.title)
 
 
 PS_SHOT = r"""
@@ -255,7 +338,7 @@ def _screenshot(win, out: Path) -> bool:
     from lamptown.app.shortcut import run_powershell
 
     out.parent.mkdir(parents=True, exist_ok=True)
-    hwnd = int(win.native.Handle.ToInt64())
+    hwnd = _hwnd(win)
     run_powershell(PS_SHOT, {"LT_HWND": str(hwnd), "LT_OUT": str(out)})
     return out.is_file() and out.stat().st_size > 1000
 

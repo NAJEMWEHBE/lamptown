@@ -83,6 +83,11 @@ def with_rev(data: dict, rev: str) -> dict:
     return dict(data, rev=rev)
 
 
+def no_rev(data: dict) -> dict:
+    """Town data as a Watcher that forgot the rev writes it (a build always adds one)."""
+    return {k: v for k, v in data.items() if k != "rev"}
+
+
 def iso_ago(seconds: float) -> str:
     """A real-clock time `seconds` ago, as a Watcher writes `at` (the page reads Date.now())."""
     t = dt.datetime.now(dt.UTC) - dt.timedelta(seconds=seconds)
@@ -245,7 +250,7 @@ def test_the_apps_own_push_is_always_used(tmp_path):
     r = run(page, f"""
       const a = lamptownData({js(with_rev(d2, "r3"))}), newer = SEEN.plates.boathouse.name;
       const b = lamptownData({js(with_rev(d1, "r2"))});   // the app sent it, so it is what to show
-      const c = lamptownData({js(d2)});                    // no rev: shown, rev unknown
+      const c = lamptownData({js(no_rev(d2))});            // no rev: shown, rev unknown
       return {{ a, b, c, newer, rev: LIVE.rev, name: SEEN.plates.boathouse.name }};""",
             query="?t=300&live=0")
     assert r["a"] is True and r["b"] is True and r["c"] is True
@@ -256,7 +261,7 @@ def test_the_apps_own_push_is_always_used(tmp_path):
 def test_town_data_without_a_rev_is_used_but_not_recorded(tmp_path):
     page, d1, d2 = town(tmp_path)
     write_live(page.parent, live_payload("r2"))
-    write_data(page.parent, d2)  # a Watcher that forgot the rev
+    write_data(page.parent, no_rev(d2))  # a Watcher that forgot the rev
     r = run(page, UNTIL + """
       LIVE.every = 100; lamptownPoll();
       await until(() => LIVE.polls >= 4 && LIVE.bad === 'r2');
@@ -281,9 +286,11 @@ def test_no_watcher_keeps_the_snapshot_and_says_built(tmp_path):
     assert r["live"] is None
 
 
-def test_a_live_file_that_goes_away_turns_live_back_to_built(tmp_path):
+def test_a_live_file_that_goes_away_says_built_once_its_heartbeat_is_stale(tmp_path):
+    # a missed poll (the file mid-replace on Windows, or gone) is no news about the Watcher: only
+    # the age of the last payload decides LIVE, so a miss with a fresh payload stays LIVE (W3)
     page, d1, _ = town(tmp_path)
-    write_live(page.parent, live_payload("r1"))
+    write_live(page.parent, live_payload("r1", at=iso_ago(12)))
     r = run(page, UNTIL + """
       const on = await until(() => LIVE.on);
       const first = SEEN.corner;
@@ -291,11 +298,32 @@ def test_a_live_file_that_goes_away_turns_live_back_to_built(tmp_path):
       const real = liveScript;
       liveScript = (name, done) => real(name === 'town-live.js' ? 'gone-live.js' : name, done);
       lamptownPoll();
-      const off = await until(() => !LIVE.on);
-      liveScript = real;
-      return { on, first, off, corner: SEEN.corner };""", replace_data=js(with_rev(d1, "r1")))
+      await until(() => LIVE.miss >= 2 && !LIVE.busy);
+      const missed = { on: LIVE.on, corner: SEEN.corner, miss: LIVE.miss };
+      const off = await until(() => !LIVE.on, 40000);
+      quiet(); liveScript = real;
+      return { on, first, missed, off, corner: SEEN.corner,
+        age: Date.now() - Date.parse(LIVE.payload.at) };""", replace_data=js(with_rev(d1, "r1")),
+            flags=("--virtual-time-budget=60000",))
     assert r["on"] is True and r["first"] == "LIVE"
+    assert r["missed"]["miss"] >= 2 and r["missed"]["on"] is True
+    assert r["missed"]["corner"] == "LIVE"
     assert r["off"] is True and r["corner"].startswith("BUILT ")
+    assert 30000 <= r["age"] < 36000  # BUILT once `at` was 30 s old, not at the first miss
+
+
+def test_the_apps_own_live_push_stays_live_when_no_file_is_there(tmp_path):
+    page, d1, _ = town(tmp_path)  # no town-live.js: the app calls lamptownLive(p) itself
+    r = run(page, UNTIL + f"""
+      lamptownLive({js(live_payload("r1"))});
+      const first = LIVE.on;
+      LIVE.every = 100; lamptownPoll();
+      await until(() => LIVE.fails >= 2 && !LIVE.busy);
+      quiet();
+      return {{ first, after: LIVE.on, fails: LIVE.fails, corner: SEEN.corner }};""",
+            replace_data=js(with_rev(d1, "r1")))
+    assert r["first"] is True and r["fails"] >= 2
+    assert r["after"] is True and r["corner"] == "LIVE"
 
 
 def test_a_stale_at_says_built_though_the_file_is_there(tmp_path):
@@ -599,6 +627,28 @@ def test_two_swaps_while_a_room_closes_step_back_once(tmp_path):
     assert r["inside"] == "#room=tr" and r["asked"] == 1 and r["backs"] == 1 and r["out"] is True
     assert r["hash"] == "#before" and r["state"] == {"mark": "before"}
     assert r["id"] is None and r["backing"] is None and r["left"] == 1
+
+
+def test_leaving_a_room_still_zooming_in_works_when_no_popstate_comes(tmp_path):
+    # history.back() brings no popstate (the 400 ms fallback's reason) while the room is still
+    # zooming in: the fallback leaves anyway, and Escape works again afterwards (W4)
+    page, _, _ = town(tmp_path)
+    r = run(page, UNTIL + """
+      history.back = () => {};
+      document.querySelector('.hit[data-id="tr"]').click();
+      const modeAtLeave = RS.mode;
+      leaveRoom();
+      const out = await until(() => RS.id === null && RS.mode === 'town', 3000);
+      const first = { id: RS.id, backing: RS.backing };
+      document.querySelector('.hit[data-id="tr"]').click();   // in again, and out with Escape
+      await until(() => RS.mode === 'room', 3000);
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      const again = await until(() => RS.id === null && RS.mode === 'town', 3000);
+      return { modeAtLeave, out, first, again, id: RS.id, backing: RS.backing };""",
+            query="?t=300&live=0&motion=1")
+    assert r["modeAtLeave"] == "in" and r["out"] is True
+    assert r["first"] == {"id": None, "backing": None}
+    assert r["again"] is True and r["id"] is None and r["backing"] is None
 
 
 def test_the_details_link_takes_no_other_scheme(tmp_path):

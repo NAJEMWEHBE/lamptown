@@ -21,10 +21,10 @@ from typing import Any
 from lamptown.status.adapters import (
     Update,
     excerpt,
-    folder_name,
     folder_path,
     make_id,
     one_line,
+    project_folder,
     stop_update,
 )
 
@@ -37,7 +37,7 @@ def translate(payload: dict[str, Any], on_stop: str = "ok", *,
     event = payload.get("hook_event_name")
     roots = payload.get("workspace_roots")
     root = roots[0] if isinstance(roots, list) and roots else None
-    folder = folder_name(root)
+    folder = project_folder(root)  # L5-fix: never the home folder's (login) name
     session = payload.get("conversation_id") or payload.get("session_id")
     base = Update(id=make_id(AGENT, session, folder), agent=AGENT, title=folder or None,
                   display=DISPLAY, folder_path=folder_path(root))

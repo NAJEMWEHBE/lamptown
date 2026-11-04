@@ -74,6 +74,7 @@ The demo world's config is a fuller, working example of every built-in room:
 | `version` | integer | `1` | The config format. This Lamptown reads version 1 only. |
 | `[town]` | table | | The town itself (below). |
 | `[[building]]` | array of tables | none | One table per building (below). |
+| `[live]` | table | off | The live town: agents walking the town, and the lighthouse (below). |
 
 Any other key is an error that names the key and lists the allowed ones.
 
@@ -333,6 +334,65 @@ Returns the table as room data and reads nothing. Handy for a fixed sign, a test
 
 Every key except `kind`, `name` and the reserved `_` keys is passed through. `state` defaults to
 `ok`.
+
+## `[live]`
+
+The live town (Lamptown 0.2, in progress). A `[live]` table switches it on: the build also writes
+`town-live.js` and `town-history.js` next to `town.html`, and the town gets a lighthouse. Only
+names leave your computer's files: a title, a project folder's name and a tool. Never message
+text, file contents or full paths.
+
+```toml
+[live]
+poll = 3                          # seconds between live ticks (1 to 60)
+history_days = 7                  # days the lighthouse's book keeps (1 to 31)
+private_dirs = ["~/private"]      # agents working in or under these show as "Private agent"
+# status_dir = "~/.agent-status"  # default: the status_dir source's dir, else $AGENT_STATUS_DIR
+
+[[live.reader]]
+kind = "claude-code"              # a reader by name, or reader = "./my_reader.py"
+
+[[live.place]]
+dir = "~/work/ideas"              # work in or under this folder (a glob: from its fixed part)
+plot = "lab"                      # walks to this plot
+```
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `enabled` | true/false | `true` | `false` keeps the table but switches the live town off. |
+| `poll` | number | `3` | Seconds between Watcher runs. The page's heartbeat (`town-live.js`) is still written at least every 10 s, and the 15 s rebuild keeps its pace, however slow the poll. |
+| `history_days` | integer | `7` | Days of history. |
+| `private_dirs` | path or list | none | Private folders. They count for `status_dir` sources too, and a `status_dir` source's own `private_dirs` count here. An agent is private when its folder (`x-folder`), its `x-project` written as a path, or the status folder is in or under one. |
+| `status_dir` | path | see above | The status folder the live town watches. A `status_dir` source with no `dir` reads it too. |
+
+`~`, `$VARS` and config-relative paths work in `private_dirs`, `status_dir` and
+`[[live.place]] dir`, exactly as in a `status_dir` source's `private_dirs`.
+
+A silent agent ages as the `status_dir` source that reads the live status folder says
+(its `stale_after`, `quiet_after` and `expire_after`; else their defaults), so the harbour room
+and the live town agree. A finished agent stays on the page for 15 minutes.
+
+An agent started in your home folder, above it, or at a drive or file-system root has no
+project on the page (no berth, no project in the book): the folder's name there would be your
+login name.
+| `[[live.reader]]` | array of tables | none | `kind = "<name>"` or `reader = "./file.py"`; every other key goes to the reader as an option (path keys are resolved as for sources). |
+| `[[live.place]]` | array of tables | none | `dir` and `plot` (one of the six plots). |
+
+Where an agent walks: the reader's own choice, else the tower for scheduled jobs, else the
+building whose folders hold its working folder (from each building's sources: `skill_dirs` and
+`staging_dir` folders, the `markdown_vault` path, `scan_glob` globs, `contest_json` files and
+globs, `projects` paths, and any `dir`/`glob` key of other sources), else the harbour. The most
+specific folder wins; on a tie, `[[live.place]]` wins. A source folder that is your home folder
+or above it is ignored (it would hold every folder).
+
+Globs in sources: a wildcard in the file name only (`~/work/kiosk/*.json`) counts the fixed
+folder (`~/work/kiosk`). A wildcard in a folder part (`~/work/*/contest.json`) counts only the
+folders that hold a matching file (`~/work/sprint-a`, looked at again at most once a minute),
+never the fixed part before it: that would claim every sibling project in `~/work`. To send a
+whole folder to a building, name it in `[[live.place]]` (its fixed part counts, siblings and
+all).
+
+`lighthouse` is reserved: no building may use it as its id, room type or plot.
 
 ## Environment variables
 

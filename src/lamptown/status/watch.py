@@ -22,19 +22,28 @@ One :meth:`Watcher.tick` (the app calls it every few seconds; ``lamptown watch``
 3. **Events.** Reader events and folder events go to ``events.append`` (one log line each).
    ``files`` events are grouped to at most one per agent per minute (a late one joins the next
    minute's group). A reader event and a folder event of the same kind for the same agent in
-   one tick count once (the reader's, which carries its real time).
+   one tick count once (the reader's, which carries its real time). A ``push`` or ``ci``
+   result one source logged is not logged again from the other source within
+   :data:`RECENT_WINDOW` seconds, in a later tick too (the reader sees a push in the session
+   log; the record's ``x-pushed`` shows it a few seconds later).
 
 The very first tick (no saved snapshot) only takes the snapshot: records already in the
 folder don't replay as events. Readers catch up on history by sending events with their own
 times.
 
 Saved state: ``<status_dir>/.lamptown/cursors.json`` (readers' cursors, the folder snapshot,
-``files`` groups still open and the projects seen), written atomically when it changed, at most
-every :data:`SAVE_EVERY` seconds and on :meth:`Watcher.close`. If the event log can't be
-written, the tick's state is rolled back, so its events come again next tick. After a restart
-(or a crash) from older saved state, events already in the log are not written twice. It holds
-names, ids, counts and times; never a folder path, message text or file contents (readers key
-files by ``tail.cursor_key``, a hash). Records past ``expire_after`` keep only a small entry.
+``files`` groups still open, the projects seen, a digest of each record this Watcher wrote and
+the recent pushes and CI results under hashed keys), written atomically right after every tick
+that added lines to the event log, wrote a status record or changed an open ``files`` group
+(a failed save there is tried again every tick until it works), else when it changed at most
+every :data:`SAVE_EVERY` seconds, and on :meth:`Watcher.close`. So a crash loses only ticks
+that logged and wrote nothing (they replay and log what they would have), plus, in the
+worst case, the one tick it hit between its log write and its save: a replayed event with the
+same time is skipped, so only an event whose record was rewritten again in that moment could
+come twice. If the event log can't be written, the tick's state is rolled back, so its events
+come again next tick. It holds names, ids, counts, times and digests; never a folder path,
+message text or file contents (readers key files by ``tail.cursor_key``, a hash). Records past
+``expire_after`` keep only a small entry.
 
 Plots: :func:`default_plot` is a stub (``x-plot``, else ``tower`` for jobs, else
 ``boathouse``); pass ``plot_for`` to map a record's folder to a building (L3 does).
@@ -49,6 +58,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import errno
 import hashlib
 import inspect
 import json
@@ -67,7 +77,7 @@ from lamptown.status.collector import (
     _private_roots,
     _under,
 )
-from lamptown.status.events import clean_event, name_only, project_name, scrub
+from lamptown.status.events import clean_event, name_only, scrub  # L3-fix: project_of instead
 from lamptown.status.readers import (
     COUNTERS,
     FILL_ONLY,
@@ -100,8 +110,15 @@ STATE_MAX_BYTES = 4 * 1024 * 1024
 HEARTBEAT = 60  # seconds: an unchanged record is rewritten at most this often
 SAVE_EVERY = 20  # seconds: the saved state is written at most this often while things change
 MAX_PROJECTS = 2000
+RECENT_WINDOW = 120  # seconds: a push or CI result from a reader and a record counts once
+MAX_RECENT = 1000  # pushes and CI results remembered for that, at most
 STATE_EVENT = {"waiting": "wait", "ok": "done", "error": "fail", "quiet": "quiet"}
 BUSY = "another Lamptown watcher is running on this status folder"
+# what a lock call says when someone else holds the lock (msvcrt: EACCES or EDEADLOCK; flock:
+# EWOULDBLOCK). Anything else (ENOLCK, ENOTSUP on a network folder) is a real error.
+_TAKEN = frozenset(n for n in (errno.EAGAIN, errno.EWOULDBLOCK, errno.EACCES,
+                               getattr(errno, "EDEADLK", None), getattr(errno, "EDEADLOCK", None))
+                   if n is not None)
 
 PlotFor = Callable[[Mapping[str, Any]], str]
 
@@ -121,6 +138,10 @@ class TickResult:
     events: list[dict] = field(default_factory=list)  # events written to the log
     errors: list[str] = field(default_factory=list)  # short, safe to show
     busy: bool = False  # another Watcher holds this folder: nothing was done
+    # --- L4-fix: catch-up --- a reader is still catching up (history left to read): tick
+    # again soon (1 s instead of 3 s); the next tick reads with Budget.catch_up()
+    behind: bool = False
+    # --- end L4-fix ---
 
     @property
     def changed(self) -> bool:
@@ -129,7 +150,18 @@ class TickResult:
 
 def _fresh_state() -> dict:
     return {"v": STATE_VERSION, "readers": {}, "folder": None, "pending": {}, "flushed": {},
-            "projects": [], "pruned": ""}
+            "projects": [], "pruned": "", "wrote": {}, "recent": {}}
+
+
+def _scrubbed(value: Any) -> Any:
+    """A JSON value with every lone surrogate in its text (keys too) replaced by ``?``."""
+    if isinstance(value, str):
+        return scrub(value)
+    if isinstance(value, dict):
+        return {scrub(str(k)): _scrubbed(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_scrubbed(v) for v in value]
+    return value
 
 
 def _aware(moment: datetime) -> datetime:
@@ -238,6 +270,9 @@ class Watcher:
         self._seen: dict[date, set] = {}  # event keys already in each day file (while replaying)
         self._wrote: dict[str, str] = {}  # status id -> digest of the record this Watcher wrote
         self._budget_kw: dict[int, bool] = {}
+        self._unsaved = False  # a save that had to happen failed: try again every tick
+        self._behind = False  # --- L4-fix: catch-up --- (a reader said so last tick)
+        self._turn = 0  # --- L4-fix: catch-up --- (which reader goes first on such a tick)
 
     # ------------------------------------------------------------ lock
     def _lock(self) -> str | None:
@@ -252,13 +287,15 @@ class Watcher:
             return f"watcher lock: {exc.strerror or type(exc).__name__}"
         try:
             _lock_fd(fd)
-        except OSError:
+        except OSError as exc:
             os.close(fd)
-            return BUSY
+            if exc.errno in _TAKEN:
+                return BUSY
+            return f"watcher lock: {exc.strerror or type(exc).__name__}"
         self._fd = fd
         # whoever held the folder before may have moved the saved state on: start from disk
         self._state, self._saved, self._saved_at, self._good = None, "", None, ""
-        self._since, self._seen, self._wrote = None, {}, {}
+        self._since, self._seen, self._wrote, self._unsaved = None, {}, {}, False
         return None
 
     def _unlock(self) -> None:
@@ -302,9 +339,16 @@ class Watcher:
             return _fresh_state()
         state = _fresh_state()
         for key, kind in (("readers", dict), ("folder", dict), ("pending", dict),
-                          ("flushed", dict), ("projects", list), ("pruned", str)):
+                          ("flushed", dict), ("projects", list), ("pruned", str),
+                          ("wrote", dict), ("recent", dict)):
             if isinstance(doc.get(key), kind):
                 state[key] = doc[key]
+        state["wrote"] = {k: v for k, v in state["wrote"].items()
+                          if isinstance(k, str) and isinstance(v, str)}
+        state["recent"] = {k: v for k, v in state["recent"].items()
+                           if isinstance(v, dict) and isinstance(v.get("t"), str)
+                           and v.get("s") in ("r", "f")}
+        self._wrote = dict(state["wrote"])  # a restart still knows which records were its own
         self._saved = json.dumps(state, sort_keys=True)
         return state
 
@@ -316,21 +360,31 @@ class Watcher:
         if text == self._saved:
             return False
         atomic_write_json(self.state_path, self.state(), max_bytes=STATE_MAX_BYTES)
-        self._saved = text
+        self._saved, self._unsaved = text, False
         return True
 
-    def _save_tick(self, text: str, now: datetime, result: TickResult) -> None:
+    def _save_tick(self, text: str, now: datetime, result: TickResult, *,
+                   urgent: bool = False) -> None:
+        """Save the state after a tick. ``urgent`` (the tick logged lines, wrote a record or
+        changed an open ``files`` group, so a crash before the next save would change what is
+        logged): now; else at most every :data:`SAVE_EVERY` seconds. An urgent save that fails
+        is tried again every tick until one works."""
         if text == self._saved:
+            self._unsaved = False
             return
+        urgent = urgent or self._unsaved
         last = self._saved_at
-        if last is not None and timedelta(0) <= now - last < timedelta(seconds=SAVE_EVERY):
-            return  # a crash loses at most this much; the log skips what replays
+        if not urgent and last is not None and timedelta(0) <= now - last < timedelta(
+                seconds=SAVE_EVERY):
+            # nothing a crash could change: the lost state replays into the same events
+            return
         try:
             atomic_write_json(self.state_path, self.state(), max_bytes=STATE_MAX_BYTES)
         except (OSError, ValueError) as exc:
             result.errors.append(f"watcher state: {exc}"[:200])
+            self._unsaved = urgent
             return
-        self._saved, self._saved_at = text, now
+        self._saved, self._saved_at, self._unsaved = text, now, False
 
     def _rollback(self, now: datetime) -> None:
         """A tick failed half-way: forget what it did, so it all comes again next tick."""
@@ -352,11 +406,18 @@ class Watcher:
             self._good = json.dumps(state, sort_keys=True)
         if self._since is None:
             self._since = iso(now)  # a run before this one may have logged events up to now
-        budget = Budget()
         if state.get("folder") is None:  # first run: what is already there is no news
             self._diff(state, now, result)
+        # --- L4-fix: catch-up --- a reader behind: a big budget with a 200 ms reading
+        # deadline, and the readers take turns going first (none starves the others)
+        budget = Budget.catch_up() if self._behind else Budget()
+        readers = list(self.readers)
+        if self._behind and len(readers) > 1:
+            self._turn = (self._turn + 1) % len(readers)
+            readers = readers[self._turn:] + readers[:self._turn]
+        # --- end L4-fix ---
         reader_events: list[Mapping[str, Any]] = []
-        for reader in self.readers:
+        for reader in readers:
             batch = self._poll(reader, state, now, result, budget)
             if batch is None:
                 continue
@@ -372,27 +433,42 @@ class Watcher:
                 if change is not None:
                     self._apply(change, now, result)
             reader_events.extend(e for e in found[:MAX_EVENTS] if isinstance(e, Mapping))
+        # --- L4-fix: catch-up ---
+        result.behind = self._behind = any(getattr(r, "behind", False) is True
+                                           for r in self.readers)
+        # --- end L4-fix ---
 
         folder_events = self._diff(state, now, result)
         snapshot = state["folder"] or {}
         mine = [e for e in (self._enrich(raw, snapshot, now) for raw in reader_events) if e]
         claimed = {(e["id"], e["k"]) for e in mine}
         found = [e for e in folder_events if (e["id"], e["k"]) not in claimed]
+        mine, found = self._once(mine, "r", state, now), self._once(found, "f", state, now)
+        open_before = json.dumps(state["pending"], sort_keys=True)
         out = self._group(mine + found, state, now)
+        regrouped = json.dumps(state["pending"], sort_keys=True) != open_before
         out.sort(key=lambda e: e["t"])
         if out:
             replay = any(e["t"] <= (self._since or "") for e in out)
             try:
-                event_log.append(self.dir, out, tz=self.tz, keep_days=self.keep_days, now=now,
-                                 seen=self._seen if replay else None)
+                result.events = event_log.append(
+                    self.dir, out, tz=self.tz, keep_days=self.keep_days, now=now,
+                    seen=self._seen if replay else None)
             except (OSError, ValueError) as exc:
                 result.errors.append(f"event log: {getattr(exc, 'strerror', None) or exc}"[:200])
                 self._rollback(now)
                 return result
-            result.events = out
+        known = state["folder"] or {}
+        self._wrote = {sid: d for sid, d in self._wrote.items()
+                       if sid in known or sid in result.written}
+        state["wrote"] = dict(sorted(self._wrote.items()))
         self._prune(state, now, result)
         self._good = json.dumps(state, sort_keys=True)
-        self._save_tick(self._good, now, result)
+        # save now when a crash would change the log: logged lines would come again with new
+        # times (W1), a record this Watcher wrote would read as someone else's (W7), and an
+        # open files group would be counted again from the readers' and the folder's replays
+        self._save_tick(self._good, now, result,
+                        urgent=bool(result.events or result.written) or regrouped)
         return result
 
     def _poll(self, reader: Reader, state: dict, now: datetime, result: TickResult,
@@ -432,7 +508,10 @@ class Watcher:
                         ours=True)
             return
         updated = parse_time(old.get("updated"))
-        base = {k: v for k, v in old.items() if k != "updated"}
+        raw = {k: v for k, v in old.items() if k != "updated"}
+        # a hook may have written a lone surrogate (JSON allows "\ud83d"; UTF-8 does not): the
+        # merge rewrites those fields with "?", or no write into this record could ever succeed
+        base = _scrubbed(raw)
         ours = self._wrote.get(sid) == _digest(old)
         # Newer than the record, or the same second as a record this Watcher wrote itself. A
         # record someone else wrote in the same second wins: a hook fires just after the line.
@@ -458,7 +537,7 @@ class Watcher:
         fresh = updated is not None and at - updated < timedelta(seconds=self.heartbeat)
         if merged == base and (not newer or fresh):
             return  # nothing to merge, and no heartbeat due
-        diff = {k: merged.get(k) for k in set(base) | set(merged) if base.get(k) != merged.get(k)}
+        diff = {k: merged.get(k) for k in set(raw) | set(merged) if raw.get(k) != merged.get(k)}
         if newer:
             self._write(sid, diff, at, result, ours=True)
         else:  # counters and x- fields only: the record keeps its writer's time
@@ -493,8 +572,12 @@ class Watcher:
         return plot if isinstance(plot, str) else default_plot(doc)
 
     def _entry(self, doc: dict, sig: list[int], result: TickResult) -> dict:
-        private = self._private(doc.get("x-folder"))
-        project = project_name(doc.get("x-project")) or project_name(doc.get("x-folder"))
+        # --- L3-fix: home folder --- (and an x-project path counts like a folder for privacy)
+        x_project = doc.get("x-project")
+        private = self._private(doc.get("x-folder")) or (
+            event_log.path_like(x_project) and self._private(x_project))
+        project = event_log.project_of(x_project, doc.get("x-folder"))
+        # --- end L3-fix ---
         title = name_only(doc["title"], event_log.LIMITS["title"])
         return {  # a private record keeps no name here either: this snapshot is saved to disk
             "m": sig, "raw": doc["state"], "u": doc["updated"],
@@ -671,8 +754,10 @@ class Watcher:
         private = bool(entry and entry.get("pv")) or self._private(folder)
         if self.private_roots and entry is None and not (isinstance(folder, str) and folder):
             private = True  # no record and no folder: it can't be checked, so it is hidden
-        if not doc.get("project") and folder:
-            doc["project"] = project_name(folder)
+        # --- L3-fix: home folder ---
+        if doc.get("project") or folder:
+            doc["project"] = event_log.project_of(doc.get("project"), folder)
+        # --- end L3-fix ---
         doc.pop("folder", None)
         if private:
             doc = self._mask(doc)
@@ -681,6 +766,39 @@ class Watcher:
             return None
         event["t"] = min(event["t"], iso(now))  # both UTC "...Z" text: compares as time
         return event
+
+    @staticmethod
+    def _once(events: list[dict], source: str, state: dict, now: datetime) -> list[dict]:
+        """``events`` without the copy of a push or CI result the other source already logged.
+
+        A reader sees a push in its log, and the record shows it (``x-pushed``, ``x-ci``) a few
+        seconds later, often in another tick. Each one logged is kept in ``state["recent"]``
+        for :data:`RECENT_WINDOW` seconds, under a hash of its id, kind and result (no names or
+        ids on disk), with its time and its source (``source``: ``"r"`` reader, ``"f"`` folder
+        diff). The other source's copy within that window is dropped; the same source twice is
+        two real pushes. At most :data:`MAX_RECENT` are kept (the newest)."""
+        recent: dict = state.setdefault("recent", {})
+        edge = iso(now - timedelta(seconds=RECENT_WINDOW))
+        for key in [k for k, v in recent.items() if v["t"] < edge]:
+            del recent[key]
+        window = timedelta(seconds=RECENT_WINDOW)
+        out = []
+        for event in events:
+            if event["k"] not in ("push", "ci"):
+                out.append(event)
+                continue
+            mark = f"{event['id']}|{event['k']}|{event.get('ok')}"
+            key = hashlib.sha256(mark.encode()).hexdigest()[:16]
+            seen = recent.get(key)
+            when, then = parse_time(event["t"]), parse_time(seen["t"]) if seen else None
+            if seen and seen["s"] != source and when and then and abs(when - then) <= window:
+                continue  # the other source's copy of one already logged
+            recent[key] = {"t": event["t"], "s": source}
+            out.append(event)
+        if len(recent) > MAX_RECENT:
+            for key in sorted(recent, key=lambda k: recent[k]["t"])[: len(recent) - MAX_RECENT]:
+                del recent[key]
+        return out
 
     @staticmethod
     def _group(found: list[dict], state: dict, now: datetime) -> list[dict]:

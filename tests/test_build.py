@@ -104,7 +104,8 @@ def test_page_is_self_contained(tmp_path):
 def test_no_temp_files_left_behind(tmp_path):
     B.build(parse_config(""), out_dir=tmp_path, now=NOW)
     B.build(parse_config(""), out_dir=tmp_path, now=NOW)
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["town-details.html", "town.html"]
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["town-data.js", "town-details.html",
+                                                          "town.html"]
 
 
 # ----------------------------------------------------------------------------- a fictional town

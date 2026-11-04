@@ -38,7 +38,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from collections.abc import Iterable
+import time
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -47,19 +48,43 @@ TOTAL = 2 * 1024 * 1024
 PER_FILE = 512 * 1024
 MAX_LINE = 256 * 1024
 HEAD = 256
+# --- L4-fix: catch-up --- a tick while a reader is behind (first run, a long pause):
+CATCHUP_TOTAL = 32 * 1024 * 1024
+CATCHUP_PER_FILE = 4 * 1024 * 1024
+CATCHUP_SECONDS = 0.2  # reading deadline of such a tick
+# --- end L4-fix ---
 
 
 class Budget:
-    """Bytes one tick may read: ``total`` in all, ``per_file`` from any one file."""
+    """Bytes one tick may read: ``total`` in all, ``per_file`` from any one file.
 
-    def __init__(self, total: int = TOTAL, per_file: int = PER_FILE) -> None:
+    ``deadline`` (a ``clock()`` reading, default ``time.monotonic``): after it, :meth:`allow`
+    gives 0, so a catch-up tick with a big byte budget still ends on time; it is checked
+    before each read, so a tick runs over by at most one ``per_file`` read."""
+
+    # --- L4-fix: catch-up --- (deadline, clock)
+    def __init__(self, total: int = TOTAL, per_file: int = PER_FILE, *,
+                 deadline: float | None = None,
+                 clock: Callable[[], float] = time.monotonic) -> None:
         self.total, self.per_file, self.left = total, per_file, total
+        self.deadline, self.clock = deadline, clock
 
     def allow(self) -> int:
+        if self.deadline is not None and self.clock() >= self.deadline:
+            return 0
         return max(0, min(self.per_file, self.left))
+    # --- end L4-fix ---
 
     def spend(self, n: int) -> None:
         self.left -= n
+
+    # --- L4-fix: catch-up ---
+    @classmethod
+    def catch_up(cls, clock: Callable[[], float] = time.monotonic) -> Budget:
+        """The budget of a tick while a reader is behind: 32 MB, 4 MB a file, 200 ms."""
+        return cls(CATCHUP_TOTAL, CATCHUP_PER_FILE, deadline=clock() + CATCHUP_SECONDS,
+                   clock=clock)
+    # --- end L4-fix ---
 
 
 @dataclass
@@ -198,6 +223,25 @@ def _read(fh, st: os.stat_result, cur: dict | None, budget: Budget, *, max_line:
     return {"size": size, "mtime_ns": st.st_mtime_ns, "offset": offset + pos, "seen": seen,
             "head": _digest(head), "hlen": len(head), "ino": st.st_ino or 0,
             **({"skip": True} if skip else {})}
+
+
+def start_at(path: str | os.PathLike, cursors: dict, offset: int) -> None:
+    """Make the next :func:`tail` of ``path`` start at the first line that begins at or after
+    ``offset`` (a big log seen for the first time can start near its end, say). The cursor
+    has no head hash yet, so it can't tell a replaced file until that first read; a file
+    shorter than ``offset`` by then reads as truncated, from the start."""
+    offset = max(0, int(offset))
+    skip = False
+    if offset:
+        try:
+            with open(path, "rb") as fh:
+                fh.seek(offset - 1)
+                skip = fh.read(1) != b"\n"  # mid-line: skip to the next line start
+        except OSError:
+            skip = True
+    cursors[cursor_key(path)] = {"size": -1, "mtime_ns": 0, "offset": offset, "seen": offset,
+                                 "head": "", "hlen": 0, "ino": 0,
+                                 **({"skip": True} if skip else {})}
 
 
 def forget(cursors: dict, keep: Iterable[str | os.PathLike]) -> list[str]:

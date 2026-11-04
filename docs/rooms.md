@@ -402,7 +402,9 @@ Wrap the room in `(() => { ... })()` so its names don't clash with the town's or
 - **State is an object, not a tint.** Show each state as a thing in the scene (a dented trumpet, a
   padlock), so it reads without colour too.
 - **Use the kit.** One pixel font (`K.text`), the five state colours (`K.ST`), whole-pixel shapes.
-  The kit is documented in [kit-k.md](kit-k.md).
+  The kit is documented in [kit-k.md](kit-k.md). Live data, pointer drags and redraws go through
+  it too (`K.live()`, `K.liveScript()`, `K.pointer()`, `K.redraw()`): never reach into the town's
+  own state, which may change between versions.
 - **Stay cheap.** Build static parts once into a layer (`K.layer`) and blit it each frame. A room
   should draw a frame in a few milliseconds; the town caps itself at 20 fps.
 - **Respect still mode.** When `K.still` is true (the user asked for reduced motion), draw a

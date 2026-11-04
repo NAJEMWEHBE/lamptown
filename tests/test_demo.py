@@ -188,7 +188,9 @@ def test_a_fixed_now_gives_the_same_town_twice(tmp_path):
     b = build_demo(tmp_path / "b", now=NOW)
 
     def norm(res):
-        return json.dumps(res.data, sort_keys=True).replace(res.root.as_uri(), "ROOT") \
+        # rev hashes the data as built, folder paths included, so two folders differ there
+        data = {k: v for k, v in res.data.items() if k != "rev"}
+        return json.dumps(data, sort_keys=True).replace(res.root.as_uri(), "ROOT") \
             .replace(json.dumps(str(res.root))[1:-1], "ROOT")
     assert norm(a) == norm(b)
 

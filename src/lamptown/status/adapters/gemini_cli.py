@@ -16,10 +16,10 @@ from typing import Any
 from lamptown.status.adapters import (
     Update,
     excerpt,
-    folder_name,
     folder_path,
     make_id,
     one_line,
+    project_folder,
     stop_update,
 )
 
@@ -30,7 +30,7 @@ DISPLAY = "Gemini CLI"
 def translate(payload: dict[str, Any], on_stop: str = "ok", *,
               excerpts: bool = False) -> Update | None:
     event = payload.get("hook_event_name")
-    folder = folder_name(payload.get("cwd"))
+    folder = project_folder(payload.get("cwd"))  # L5-fix: never the login name
     base = Update(id=make_id(AGENT, payload.get("session_id"), folder), agent=AGENT,
                   title=folder or None,
                   display=DISPLAY, folder_path=folder_path(payload.get("cwd")))

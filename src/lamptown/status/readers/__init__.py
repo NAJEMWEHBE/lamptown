@@ -23,6 +23,10 @@ The contract::
   per file), shared by every reader: pass it to ``tail.tail``. A reader whose ``poll`` has no
   ``budget`` parameter is called as ``poll(state, now)`` (it should then use a small budget of
   its own).
+* ``behind`` (optional attribute, L4-fix): ``True`` after a poll that left history unread. The
+  Watcher then says so in ``TickResult.behind`` and gives the next tick a catch-up budget
+  (``Budget.catch_up()``: 32 MB, 4 MB a file, a 200 ms reading deadline); the loops tick every
+  second until no reader is behind. Readers without it are never "behind".
 * At most :data:`MAX_AGENTS` status changes and :data:`MAX_EVENTS` events per poll are taken;
   more is reported in ``TickResult.errors`` and dropped. A reader catching up stops early and
   goes on next poll (``tail`` does this through the budget).
@@ -73,7 +77,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from lamptown.status.adapters import folder_path
 from lamptown.status.collector import safe_href
-from lamptown.status.events import clean_event, name_only, project_name, scrub
+from lamptown.status.events import clean_event, home_or_root, name_only, project_name, scrub
 from lamptown.status.schema import parse_time
 from lamptown.status.store import KINDS, STATES, StatusError, check_id, iso
 
@@ -84,9 +88,12 @@ CI_STATES = ("running", "green", "red")
 MAX_AGENTS = 500  # per reader and tick
 MAX_EVENTS = 5000
 
-# Built-in kinds: "module:factory", imported only when used. The public readers (claude-code,
-# codex, git, ci_gh) arrive in later tickets.
-BUILTIN: dict[str, str] = {}
+# Built-in kinds: "module:factory", imported only when used. ci_gh arrives in a later ticket.
+BUILTIN: dict[str, str] = {
+    "claude_code": "lamptown.status.readers.claude_code:make_reader",
+    "codex": "lamptown.status.readers.codex:make_reader",
+    "git": "lamptown.status.readers.git:make_reader",
+}
 
 # What a reader may set on a record. ``None`` as a value removes an optional field.
 AGENT_KEYS = ("at", "title", "state", "kind", "agent", "message", "needs_you", "started",
@@ -189,10 +196,12 @@ def clean_agent(raw: Mapping[str, Any]) -> dict | None:
         clean = _clean_value(key, value)
         if clean is not None and clean != "":
             out[key] = clean
-    if "x-project" not in out and out.get("x-folder"):
+    # --- L4-fix: home folder --- (a home folder or a root names no project: no login name)
+    if "x-project" not in out and out.get("x-folder") and not home_or_root(out["x-folder"]):
         name = project_name(out["x-folder"])
         if name:
             out["x-project"] = name
+    # --- end L4-fix ---
     return out
 
 

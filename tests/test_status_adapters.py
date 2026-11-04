@@ -264,3 +264,17 @@ def test_every_provider_has_an_adapter():
         assert name == module.AGENT
         assert module.translate({}) is None
         assert module.respond({}) == ""
+
+
+# --- L5-fix (review-L5 B3): Codex ids from the random end of the thread id ---
+def test_codex_ids_come_from_the_random_end_of_the_thread_id():
+    # UUIDv7 thread ids 1 ms apart: the same first 12 characters (a clock), other ends
+    a = "019e4b1c-2d00-7a1b-8c2d-3e4f5a6b7c8d"
+    b = "019e4b1c-2d01-7f0e-9d1c-0b2a39485766"
+    ids = {codex.translate({"hook_event_name": "Stop", "session_id": a}).id,
+           codex.translate({"type": "agent-turn-complete", "thread-id": b}).id}
+    assert ids == {"codex-3e4f5a6b7c8d", "codex-0b2a39485766"}
+    assert codex.thread_id(a.upper()) == "codex-3e4f5a6b7c8d"
+    assert codex.thread_id(a.replace("-", "")) == "codex-3e4f5a6b7c8d"
+    assert codex.thread_id("not-a-uuid") == make_id("codex", "not-a-uuid")
+    assert codex.thread_id(None, "kite") == "codex-kite"

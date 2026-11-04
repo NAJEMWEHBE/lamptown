@@ -43,7 +43,7 @@ def _event(t, kind="start", sid="codex-3f9a", **extra):
 def test_append_writes_one_line_per_event(tmp_path):
     n = ev.append(tmp_path, [_event(T0), _event(T0 + timedelta(minutes=1), "files", n=12)],
                   tz=UTC)
-    assert n == 2
+    assert [e["k"] for e in n] == ["start", "files"]  # what was written, as written
     path = tmp_path / "events" / "2026-11-04.jsonl"
     lines = path.read_bytes().split(b"\n")
     assert lines[-1] == b"" and len(lines) == 3
@@ -60,7 +60,7 @@ def test_bad_events_are_skipped_and_unknown_keys_dropped(tmp_path):
     good = _event(T0, "ci", ok=False, message="secret reply text", path="/work/paper-kite/a.py")
     bad = [_event(T0, "explode"), _event("yesterday"), _event(T0, sid="../escape"),
            {"k": "start"}, "not a dict"]
-    assert ev.append(tmp_path, [good, *bad], tz=UTC) == 1
+    assert len(ev.append(tmp_path, [good, *bad], tz=UTC)) == 1
     (only,) = ev.read_day(tmp_path / "events" / "2026-11-04.jsonl")
     assert only["ok"] is False
     assert "message" not in only and "path" not in only
@@ -206,7 +206,8 @@ def test_lone_surrogates_are_replaced_not_fatal(tmp_path):
     title = json.loads(r'"Fix kite \ud83d"')  # a JS slice that cut an emoji in half
     assert ev.name_only(title, 50) == "Fix kite ?"
     assert ev.project_name(json.loads(r'"/work/kite\udc00"')) == "kite?"
-    assert ev.append(tmp_path, [_event(T0, title=title), _event(T0, "done")], tz=UTC) == 2
+    assert len(ev.append(tmp_path, [_event(T0, title=title), _event(T0, "done")],
+                         tz=UTC)) == 2
     assert [e["title"] for e in ev.read_day(tmp_path / "events" / "2026-11-04.jsonl")] == [
         "Fix kite ?", "Fix save slots"]
 
@@ -224,7 +225,7 @@ def test_append_drops_events_older_than_the_kept_days(tmp_path):
     old = _event(T0 - timedelta(days=20), "commit")
     edge = _event(T0 - timedelta(days=6), "commit")  # the oldest day still kept
     n = ev.append(tmp_path, [old, edge, _event(T0)], tz=UTC, keep_days=7, now=T0)
-    assert n == 2
+    assert [e["t"][:10] for e in n] == ["2026-10-29", "2026-11-04"]  # not the dropped one
     assert sorted(p.name for p in (tmp_path / "events").iterdir()) == [
         "2026-10-29.jsonl", "2026-11-04.jsonl"]
 
@@ -234,7 +235,113 @@ def test_append_can_skip_events_already_in_the_log(tmp_path):
     ev.append(tmp_path, first, tz=UTC)
     again = [*first, _event(T0 + timedelta(seconds=5), "files", n=4), _event(T0, "done")]
     seen: dict = {}
-    assert ev.append(tmp_path, again, tz=UTC, seen=seen) == 2
-    assert ev.append(tmp_path, again, tz=UTC, seen=seen) == 0  # the cache knows what it wrote
+    wrote = ev.append(tmp_path, again, tz=UTC, seen=seen)
+    assert [(e["k"], e.get("n")) for e in wrote] == [("files", 4), ("done", None)]  # only new
+    assert ev.append(tmp_path, again, tz=UTC, seen=seen) == []  # the cache knows what it wrote
     got = [(e["k"], e.get("n")) for e in ev.read_day(tmp_path / "events" / "2026-11-04.jsonl")]
     assert got == [("start", None), ("done", None), ("files", 3), ("files", 4)]
+
+
+# ---------------------------------------------------------------- re-check fixes (W1)
+@pytest.mark.parametrize(("text", "expected"), [
+    # W2: home folders behind a mount prefix (WSL, Git Bash, Cygwin)
+    ("/mnt/c/Users/Sam Doe/secret-app/x.py", "x.py"),
+    ("Edit /c/Users/Sam Doe/secret-app", "Edit secret-app"),
+    ("/cygdrive/d/Users/Sam Doe/secret-app/x.py", "x.py"),
+    ("see /mnt/d/home/sam/secret-app/x.py", "see x.py"),
+    # W8: forward-slash drive paths with spaces, macOS volumes, odd leads, ~user
+    ("d:/My Projects/secret app/x.py", "x.py"),
+    ('open "d:/My Projects/secret app/x.py" now', 'open "x.py" now'),
+    ("/Volumes/Work Drive/secret-client/x.md", "x.md"),
+    ("-/home/sam/secret-app", "-secret-app"),
+    (".../home/sam/secret-app/x.py", "...x.py"),
+    ("x~/home/sam/secret-app", "x~secret-app"),
+    ("~sam/secret-app/x.py", "x.py"),
+    ("~2/3 of tests pass", "~2/3 of tests pass"),  # "about", not a home folder
+    # slash commands and escapes are no paths; a real path next to one still goes
+    ("Run /code-review on L1", "Run /code-review on L1"),
+    ("/story-done L2", "/story-done L2"),
+    ("Add /help command", "Add /help command"),
+    (r"split on \n and \t", r"split on \n and \t"),
+    ("Run /code-review, then edit /work/paper-kite/a.py", "Run /code-review, then edit a.py"),
+    # relative paths that hold a "home" or "users" part stay
+    ("Edit app/home/page.tsx, src/users/a.ts", "Edit app/home/page.tsx, src/users/a.ts"),
+    ("see /home/you", "see ~"),  # W1-fix2: a home folder's name is never shown, even last
+])
+def test_w2_w8_name_only_cuts_mounted_homes_and_keeps_commands(text, expected):
+    assert ev.name_only(text, 200) == expected
+
+
+@pytest.mark.parametrize("text", [
+    "/mnt/c" * 700, "/c/users/" + "a " * 2000, "D:/" + "a " * 2000, "a:/ " * 1024,
+    "-/home/ " * 500, "/volumes/x" * 400, "~a/" * 1300, "/a " * 1300, "x/home/ a\\b c:/d " * 240,
+])
+def test_w2_w8_name_only_stays_fast_on_new_hostile_titles(text):
+    import time
+
+    start = time.perf_counter()
+    ev.name_only(text, 200)
+    assert time.perf_counter() - start < 0.05
+
+
+# ---------------------------------------------------------------- review fixes (W1-fix2)
+@pytest.mark.parametrize(("text", "expected"), [
+    # 1. a user name with a space, then forward slashes (Python's f"{Path.home()}/x")
+    (r"C:\Users\you there/secret-app/x.py", "x.py"),
+    (r"Edit C:\Users\you there/secret-app", "Edit secret-app"),
+    (r"C:/Users\you there\secret-app\x.py", "x.py"),
+    (r"\\fileserver\home\you there/secret-app/x.py", "x.py"),
+    ("//wsl.localhost/Ubuntu/home/you there/secret-app/x.py", "x.py"),
+    # 1. ... in file:// and editor URLs
+    ("file:///C:/Users/you there/secret-app/x.py", "x.py"),
+    ("vscode://file/C:/Users/you there/secret-app/x.py", "x.py"),
+    ("Open vscode://file/c:/Users/you there/secret-app now", "Open secret-app now"),
+    # 1. ... and as the last part of the text
+    (r"see C:\Users\you there", "see ~"),
+    ("see /mnt/c/Users/Sam Doe", "see ~"),
+    ('open "/Users/you there" now', 'open "~" now'),
+    # 5. other home roots, and volume labels with spaces
+    ("/var/home/Sam Doe/secret-app/x.py", "x.py"),
+    ("/export/home/Sam Doe/secret-app/x.py", "x.py"),
+    ("/System/Volumes/Data/Users/Sam Doe/secret-app/x.py", "x.py"),
+    ("/Volumes/Data/Users/Sam Doe/secret-app/x.py", "x.py"),
+    ("/run/media/sam/Work Drive/secret-client/x.md", "x.md"),
+    ("/media/sam/Work Drive/secret-client/x.md", "x.md"),
+    ("see /media/sam/Work Drive", "see ~"),
+    # 2. a forward-slash drive path no longer swallows the rest of an ordinary title ...
+    ("Fix c:/temp handling and the save/load test", "Fix temp handling and the save/load test"),
+    ("Use D:/ for builds, then tidy src/a.ts and lib/b.ts",
+     "Use for builds, then tidy src/a.ts and lib/b.ts"),
+    # 2. ... but still cuts real folder names with spaces, sync folders too
+    ("d:/Program Files (x86)/Secret Tool/x.exe", "x.exe"),
+    ("d:/Microsoft Visual Studio 2022/secret app/x.sln", "x.sln"),
+    ("c:/Users/you/OneDrive - Acme Holdings Group Inc/secret plan/x.docx", "x.docx"),
+    ("c:/Work/Acme Corp - Shared Documents/secret/x.md, then load", "x.md, then load"),
+    # slash commands and ordinary titles stay
+    ("Route /home page and /users list", "Route /home page and /users list"),
+    ("Wire /gsd:plan and /code-review", "Wire /gsd:plan and /code-review"),
+    ("Edit app/home/page.tsx and src/media/a.ts", "Edit app/home/page.tsx and src/media/a.ts"),
+    ("Fix km/h, I/O and TCP/IP", "Fix km/h, I/O and TCP/IP"),
+])
+def test_w1fix2_home_names_never_leak_and_titles_keep_their_words(text, expected):
+    assert ev.name_only(text, 200) == expected
+
+
+@pytest.mark.parametrize("text", [
+    "C:\\Users\\" + "a b/" * 1000, "\\\\" + "a " * 2000, "\\\\a\\" * 1000, "//a/" * 1000,
+    "/var/home/ " * 400, "/run/media/" + "a b/" * 1000, "/media/a/" * 500,
+    "D:/" + "a - " * 1000, "D:/" + "a b c d/" * 500, "d:/a - b c d e - " * 250,
+    "file:///" + "users/" * 600, "/system/volumes/data" * 200, "x/users/ a\\b c:/d - e " * 180,
+    "/users/" + "a" * 4000, "\\\\a\\users\\" + "b - " * 1000,
+])
+def test_w1fix2_name_only_stays_fast_on_hostile_titles(text):
+    import time
+
+    best = 1.0
+    for _ in range(3):  # the best of three: a busy CI runner may pause any one run
+        start = time.perf_counter()
+        ev.name_only(text, 200)
+        best = min(best, time.perf_counter() - start)
+    # about 2 ms here; a pattern that backtracks badly takes 50 ms or more on 4 KB, so a slow
+    # CI runner gets room without hiding one
+    assert best < 0.02

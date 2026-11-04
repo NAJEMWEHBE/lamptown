@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import posixpath  # L3-fix: home folder
 import re
 from collections.abc import Iterable, Mapping
 from datetime import UTC, date, datetime, timedelta, tzinfo
@@ -44,18 +45,44 @@ _PLOT_RE = re.compile(r"[^a-z0-9_-]+")
 # (so in brackets, quotes, backticks or after "=" too, but "save/load" is no path).
 _LEAD = r"(?<![\w.~-])"
 _TAIL = r"(?:[^\s\\/]+[\\/]+)*[^\s\\/]*"  # name/name/.../last (no spaces)
+# 00. Before any other pattern: the user name of a home folder (Users, home, Volumes, also
+#     behind a drive, a mount, a UNC host, /var, /export or /System/Volumes/Data) and the user
+#     and label of a removable drive (/media/<user>/<label>, /run/media/...) become "~". A name
+#     may hold spaces, so it runs to the next separator of either kind, a quote or the end of
+#     the text; then the other patterns see no space in it and cut the path whole, whatever
+#     separators or URL wrap it ("c:\\Users\\you there/x.py", "file:///c:/Users/you there/x").
+#     The name is never shown, even as the last part ("see /home/you" gives "see ~").
+_NAMEPART = r'[^\\/"<>|?*`]*'
+_HOMENAME_RE = re.compile(
+    r"((?<![^\W_])(?:[A-Za-z]:|(?:\\\\|//)[^\\/\s]+(?:[\\/][^\\/\s]+)?|/mnt/[a-z]|/cygdrive/[a-z]"
+    r"|/[a-z]|/var|/export|/system/volumes/data)?[\\/]"
+    r"(?:users|home|volumes|(?P<media>(?:run[\\/]+)?media))[\\/]+)" + _NAMEPART
+    + r"(?(media)(?:(?P<sep>[\\/]+)" + _NAMEPART + r")?)", re.IGNORECASE)
 # 0. A URL: file:// and the rest.
 _URL_RE = re.compile(_LEAD + r"[A-Za-z][A-Za-z0-9+.-]*:/{2,}" + _TAIL)
 # 1. A Windows drive or UNC path written with backslashes. Its names may hold spaces, so it
 #    runs to the last backslash of the text (cutting too much is safe; too little leaks).
 _WIN_RE = re.compile(_LEAD + r"(?:[A-Za-z]:\\|\\\\)(?:[^\\]*\\)*" + _TAIL)
-# 2. A home folder (/Users/<name>, /home/<name>, C:/Users/<name>): the user name may hold
-#    spaces, so it runs to the next separator.
+# 2. A drive path written with forward slashes ("d:/My Projects/x.py", as Git Bash and Node print
+#    it): its names may hold spaces too. A name is up to four words ("Program Files (x86)",
+#    "Microsoft Visual Studio 2022"), or more joined by " - " (a OneDrive or SharePoint folder:
+#    "OneDrive - Acme Holdings Group Inc"), so a title such as "Fix c:/temp handling and the
+#    save/load test" keeps its words. A word holds no character a Windows name can't (" < > |
+#    ? * or a backtick) and doesn't start with "-", so " - " reads one way only.
+_DWORD = r'[^\s\\/"<>|?*`-][^\s\\/"<>|?*`]*'
+_DNAME = f"{_DWORD}(?: {_DWORD}){{0,3}}"
+_DRIVE_RE = re.compile(_LEAD + rf"[A-Za-z]:/(?:{_DNAME}(?: - {_DNAME})*[\\/])*" + _TAIL)
+# 3. A home folder or a volume (/Users/<name>, /home/<name>, /Volumes/<name>), also behind a
+#    mount (/mnt/c/Users, /c/Users, /cygdrive/c/Users): the name may hold spaces, so it runs to
+#    the next separator. Only a letter or digit before it makes it relative ("app/home/x").
 #    (One separator before "users": a long run of slashes must not be scanned again and again.)
-_HOME_RE = re.compile(_LEAD + r"(?:[A-Za-z]:)?[\\/](?:users|home)[\\/]+[^\\/]*?[\\/]+" + _TAIL,
-                      re.IGNORECASE)
-# 3. Any other absolute path: X:/, ~/, /, //, \ or \\.
-_PATH_RE = re.compile(_LEAD + r"(?:[A-Za-z]:[\\/]|~[\\/]|[\\/]+)" + _TAIL)
+_HOME_RE = re.compile(r"(?<![^\W_])(?:/mnt/[a-z]|/cygdrive/[a-z]|/[a-z])?[\\/]"
+                      r"(?:users|home|volumes)[\\/]+[^\\/]*?[\\/]+" + _TAIL, re.IGNORECASE)
+# 4. Any other absolute path: X:/, ~/, ~name/, \\, or a root path of two parts or more
+#    ("/work/kite"). One part alone is a slash command or an escape ("/code-review", "\n").
+#    A root path starts at the first separator of a run, so a long run is scanned once.
+_PATH_RE = re.compile(_LEAD + r"(?:[A-Za-z]:[\\/]|~(?:[A-Za-z][\w.-]*)?[\\/]"
+                              r"|(?<![\\/])[\\/]+[^\s\\/]+[\\/])" + _TAIL)
 
 
 # ---------------------------------------------------------------- names only
@@ -73,16 +100,27 @@ def _last_part(match: re.Match) -> str:
     return found if not found.strip("\\/") else ""  # a lone "/" in "a / b" stays
 
 
+def _no_home_name(match: re.Match) -> str:
+    sep = match.group("sep")
+    return match.group(1) + "~" + (sep + "~" if sep else "")
+
+
 def name_only(text: Any, limit: int) -> str:
     """One line of ``text`` with every full path cut to its last part, at most ``limit`` chars.
 
     ``"Edit /work/paper-kite/src/main.py"`` becomes ``"Edit main.py"``; ``"C:\\Users\\you\\kite"``
     becomes ``"kite"``; so do paths in brackets or quotes, after ``=``, UNC paths and URLs.
+    A home folder's user name is never kept: ``"see /home/you"`` becomes ``"see ~"``.
     Relative fragments such as ``"save/load"`` stay. Lone surrogates become ``?``."""
     flat = scrub(one_line(text, 4096))
     if not flat:
         return ""
-    for pattern in (_URL_RE, _WIN_RE, _HOME_RE, _PATH_RE):
+    for _ in range(3):  # a home inside a volume ("/Volumes/Data/Users/<name>") takes two passes
+        cut = _HOMENAME_RE.sub(_no_home_name, flat)
+        if cut == flat:
+            break
+        flat = cut
+    for pattern in (_URL_RE, _WIN_RE, _DRIVE_RE, _HOME_RE, _PATH_RE):
         flat = pattern.sub(_last_part, flat)
     return one_line(flat, limit)
 
@@ -102,11 +140,70 @@ def _count(value: Any) -> int | None:
 
 
 def _when(value: Any) -> datetime | None:
-    if isinstance(value, datetime):
-        moment = value if value.tzinfo is not None else value.astimezone()
-    else:
-        moment = parse_time(value)
-    return moment.astimezone(UTC).replace(microsecond=0) if moment else None
+    # --- L3-fix: out-of-range time --- (a bad line is skipped like any other malformed one)
+    try:
+        if isinstance(value, datetime):
+            moment = value if value.tzinfo is not None else value.astimezone()
+        else:
+            moment = parse_time(value)
+        moment = moment.astimezone(UTC).replace(microsecond=0) if moment else None
+    except (OverflowError, ValueError):
+        return None
+    # years 1 and 9999 are refused too: their local day may not exist in a datetime
+    return moment if moment is not None and 1 < moment.year < 9999 else None
+    # --- end L3-fix ---
+
+
+# --- L3-fix: home folder ---
+# A bare home folder (or the folder of all of them), on any OS, also behind a mount.
+_HOMES_RE = re.compile(r"^(?:[a-z]:|/mnt/[a-z]|/cygdrive/[a-z]|/[a-z])?/(?:users|home)(?:/[^/]+)?$")
+
+
+def _flat(path: str) -> str:
+    text = path.strip()
+    text = os.path.expanduser(text) if text.startswith("~") else text
+    return posixpath.normpath(text.replace("\\", "/")).rstrip("/").casefold()
+
+
+def path_like(value: Any) -> bool:
+    """``value`` is a path, not a bare name (it has a separator or starts with ``~``)."""
+    return isinstance(value, str) and ("/" in value or "\\" in value
+                                       or value.strip().startswith("~"))
+
+
+def home_or_root(path: Any) -> bool:
+    """A folder that names no project: a drive or file-system root, the home folder or one
+    above it, or any bare home folder (``/home/<name>``, ``/Users/<name>``,
+    ``C:\\Users\\<name>``). Text only: nothing is opened."""
+    if not isinstance(path, str) or not path.strip():
+        return False
+    flat = _flat(path)
+    parts = [p for p in flat.split("/") if p]
+    if not parts or (len(parts) == 1 and parts[0].endswith(":")) or parts == ["."]:
+        return True
+    home = _flat(os.path.expanduser("~"))
+    if home and (flat == home or home.startswith(flat + "/")):
+        return True
+    return bool(_HOMES_RE.match(flat))
+
+
+def project_of(project: Any, folder: Any) -> str:
+    """A record's project name: ``project`` (``x-project``: a name, or a path cut to its last
+    part), else the last part of ``folder`` (``x-folder``). Never a login name: a folder that
+    :func:`home_or_root` holds names no project, and neither does a ``project`` that only
+    repeats its name, nor the home folder's own name when no other folder gives one."""
+    login = folder_name(os.path.expanduser("~")).casefold()
+    broad = home_or_root(folder)
+    from_folder = "" if broad else project_name(folder)
+    name = project_name(project)
+    if name:
+        key = name.casefold()
+        if ((path_like(project) and home_or_root(project))
+                or (broad and key == project_name(folder).casefold())
+                or (key == login and not from_folder)):
+            name = ""
+    return name or from_folder
+# --- end L3-fix: home folder ---
 
 
 def clean_event(raw: Mapping[str, Any]) -> dict | None:
@@ -173,9 +270,11 @@ def event_key(event: Mapping[str, Any]) -> tuple:
 
 def append(status_dir: str | os.PathLike, events: Iterable[Mapping[str, Any]], *,
            tz: tzinfo | None = None, keep_days: int | None = None, now: datetime | None = None,
-           seen: dict[date, set] | None = None) -> int:
+           seen: dict[date, set] | None = None) -> list[dict]:
     """Add ``events`` to their day files (by the local date of each ``t``). Events that
-    :func:`clean_event` rejects are skipped. Returns how many lines were written.
+    :func:`clean_event` rejects are skipped. Returns the events written, in their on-disk
+    form (day by day, each day in the order given): not the ones skipped as too old or as
+    already logged.
 
     ``keep_days``: events older than the last ``keep_days`` local days (today counts as one,
     ``now`` default: the clock) are dropped, so a reader catching up never makes a day file
@@ -194,12 +293,12 @@ def append(status_dir: str | os.PathLike, events: Iterable[Mapping[str, Any]], *
         day = local_day(event["t"], tz)
         if oldest is None or day >= oldest:
             by_day.setdefault(day, []).append(event)
+    written: list[dict] = []
     if not by_day:
-        return 0
+        return written
     folder = events_dir(status_dir)
     folder.mkdir(parents=True, exist_ok=True, mode=0o700)
     flags = os.O_RDWR | os.O_APPEND | os.O_CREAT | getattr(os, "O_BINARY", 0)
-    written = 0
     for day in sorted(by_day):
         path = day_path(status_dir, day)
         todo = by_day[day]
@@ -223,7 +322,7 @@ def append(status_dir: str | os.PathLike, events: Iterable[Mapping[str, Any]], *
                 view = view[done:]
         finally:
             os.close(fd)
-        written += len(todo)
+        written.extend(todo)
         if seen is not None:
             seen[day].update(event_key(e) for e in todo)
     return written

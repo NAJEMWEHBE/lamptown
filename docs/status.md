@@ -92,8 +92,10 @@ adds a "Your turn" need), `--stale-after SECONDS`, `--excerpts` (see below).
 
 ### What a hook writes
 
-Each session gets the id `<provider>-<first 12 characters of the session id>` and the
-project folder's name as its title. Exactly these fields are written:
+Each session gets the id `<provider>-<first 12 characters of the session id>` (Codex:
+`codex-<last 12 hex digits of the thread id>`, as Codex thread ids start with a clock) and the
+project folder's name as its title (none for the home folder or a drive root: the title is then
+the provider's name, never your login name). Exactly these fields are written:
 
 | Field | Value |
 |---|---|
@@ -229,3 +231,53 @@ code can write the field (`update_status(id, d, **{"x-folder": path})`).
 
 Every key of this source is also in [config.md](config.md#status_dir); the collector contract is in
 [collectors.md](collectors.md).
+
+## Reading Claude Code's own files (no hooks)
+
+The live town's Watcher can also follow Claude Code sessions without any hook, through the
+built-in reader `kind = "claude_code"` (options: `root`, default `~/.claude`; `on_stop`, `"ok"`
+or `"waiting"` as for the hook's `--on-stop`; `days`, default 7; `titles`, `"session"` or
+`"folder"`, see below). It reads, read-only:
+
+- `sessions/<pid>.json`: one per running session, `busy` or `idle`. The reader checks that the
+  process is still alive (and that a reused process id is not taken for it).
+- the session's log under `projects/`: titles, the session folder, the files its `Write` /
+  `Edit` / `MultiEdit` / `NotebookEdit` calls changed, questions and tool calls still waiting
+  for an answer, API errors.
+- its subagents' `.meta.json` and logs: each subagent is a record of its own, with `x-parent`.
+
+It writes the same records as the hook (same ids), so with both you get one record per
+session; a hook's newer state wins, and the reader adds `x-files`. What it maps to what:
+
+| Claude Code | Lamp |
+|---|---|
+| `busy` | `working` |
+| `busy`, a question (`AskUserQuestion`, `ExitPlanMode`) not yet answered | `waiting` "Has a question for you" |
+| `busy`, a quick tool (Read, Edit, Write...) with no result after 30 s, permissions not bypassed | `waiting` "May need your permission" (a guess: permission prompts leave no line in the log; the hook knows for sure) |
+| `busy`, a Bash or MCP tool waiting for permission | `working`, without hooks: a long Bash looks the same as one waiting for you (install the hook to see these prompts) |
+| `idle` | `ok` "Turn finished" (`waiting` "Your turn" with `on_stop = "waiting"`) |
+| the last reply was an API error | `error` |
+| the session exited | `ok` "Session ended" |
+| its process died mid-turn | "Stopped responding" a minute after the reader sees it die, then grey "Gone quiet" |
+| a subagent not finished, its log quiet for 2 min and the call that launched it answered (or gone) | `ok` "Ended" |
+
+With hooks installed too, the hook's sure states (a permission prompt, say) are not overwritten
+by the reader's guesses: the reader's records are timed by the last line that can change the
+state (a reply, a prompt, a tool result), never by other lines or by subagents' lines.
+
+Only names leave the reader: the title, the folder's name (plus the folder itself as
+`x-folder`, for `private_dirs`) and file *counts*. The title is Claude Code's session title,
+which Claude Code writes from your first message (and a subagent's is the task description
+Claude wrote for it), so it can carry words from your prompts. For names only, set
+`titles = "folder"`: sessions are then named by their project folder and subagents by their
+type; or list the folders in `private_dirs` to hide them altogether. A session started in your
+home folder or a drive root shows no folder name. The paths of changed files are kept only as
+salted hashes in the Watcher's saved state. Logs not changed in `days` are never opened; a big
+log is read a little each tick (a live one starts near its end, its history fills in behind).
+
+The first run catches up on up to `days` of history. While any reader is behind, the Watcher
+says so (`TickResult.behind`): the app and `lamptown watch` then tick every second instead of
+every 3 s, and each such tick may read 32 MB (4 MB a file) within a 200 ms reading deadline;
+live sessions are read first. History that no one is writing any more is skimmed: only lines
+that can change a count, a title, an error or a turn's end are parsed. A finished subagent log
+over 64 MB is read by its head and its last 1 MB only (its file count is then a floor).

@@ -53,9 +53,18 @@ TYPE_RE = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
 LABEL_MAX = 32
 TITLE_MAX = 60
 
-TOP_KEYS = {"version", "town", "building"}
+# The live town's own place: not one of the six plots (no lot, plate or lamp of its own), so no
+# building may take its id, its room type or stand on it.
+LIGHTHOUSE = "lighthouse"
+
+TOP_KEYS = {"version", "town", "building", "live"}
 TOWN_KEYS = {"title", "latitude", "longitude", "out"}
 BUILDING_KEYS = {"id", "type", "label", "plot", "enabled", "room_js", "source"}
+LIVE_KEYS = {"enabled", "poll", "history_days", "private_dirs", "status_dir", "reader", "place"}
+PLACE_KEYS = {"dir", "plot"}
+READER_KIND_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+POLL_RANGE = (1.0, 60.0)  # seconds between live ticks
+HISTORY_RANGE = (1, 31)  # days the handover book keeps
 
 # Keys whose string values are paths (rule written in docs/collectors.md).
 PATH_KEYS = {"path", "dir", "file", "glob", "paths", "dirs", "files", "globs", "collector"}
@@ -98,10 +107,32 @@ class Town:
 
 
 @dataclass(frozen=True)
+class Place:
+    """One ``[[live.place]]``: live work in or under ``dir`` walks to ``plot``."""
+
+    dir: str  # absolute (a glob is cut to its static prefix when matched)
+    plot: str
+
+
+@dataclass(frozen=True)
+class Live:
+    """The ``[live]`` table: the live town (a Watcher feeding the page). Off when absent."""
+
+    enabled: bool = False
+    poll: float = 3.0
+    history_days: int = 7
+    private_dirs: tuple[str, ...] = ()  # absolute
+    status_dir: str | None = None  # absolute; None: see livetown.live_status_dir
+    readers: tuple[dict[str, Any], ...] = ()  # {"kind"?, "reader"? (absolute), options...}
+    places: tuple[Place, ...] = ()
+
+
+@dataclass(frozen=True)
 class Config:
     town: Town = field(default_factory=Town)
     buildings: tuple[Building, ...] = ()
     path: Path | None = None  # the file it came from (None: no file, built-in defaults)
+    live: Live = field(default_factory=Live)
 
     @property
     def base_dir(self) -> Path:
@@ -272,6 +303,9 @@ def _check(data: dict[str, Any], path: Path | None, where: str) -> Config:
                 where, f"{key}.id", f"{bid!r} must be 1-40 lower-case letters, digits, '-' or '_'"
             )
         key = f"building {bid!r}"
+        if bid == LIGHTHOUSE:
+            raise _fail(where, f"{key}.id", "'lighthouse' is reserved for the live town's "
+                        "lighthouse; give this building another id")
         if bid in ids:
             raise _fail(where, key, f"the id is used twice (building #{ids[bid]} and #{i})")
         ids[bid] = i
@@ -291,8 +325,14 @@ def _check(data: dict[str, Any], path: Path | None, where: str) -> Config:
             raise _fail(
                 where, f"{key}.type", f"{rtype!r} must be lower-case letters, digits or '_'"
             )
+        if rtype == LIGHTHOUSE:
+            raise _fail(where, f"{key}.type", "the room type 'lighthouse' is reserved for the "
+                        "live town's lighthouse ([live] in this file switches it on)")
         if "plot" in b:
             plot = _str(where, f"{key}.plot", b["plot"])
+            if plot == LIGHTHOUSE:
+                raise _fail(where, f"{key}.plot", "'lighthouse' is the live town's own place, "
+                            f"not a plot (plots: {', '.join(PLOTS)})")
             if plot not in PLOTS:
                 raise _fail(
                     where, f"{key}.plot", f"{plot!r} is not a plot (plots: {', '.join(PLOTS)})"
@@ -333,7 +373,83 @@ def _check(data: dict[str, Any], path: Path | None, where: str) -> Config:
         buildings.append(
             Building(id=bid, type=rtype, label=label, plot=plot, sources=sources, room_js=room_js)
         )
-    return Config(town=town, buildings=tuple(buildings), path=path)
+    live = _live(where, data["live"], base) if "live" in data else Live()
+    return Config(town=town, buildings=tuple(buildings), path=path, live=live)
+
+
+def _paths_list(where: str, key: str, v: Any, base: Path) -> tuple[str, ...]:
+    items = [v] if isinstance(v, str) else v
+    if not isinstance(items, list) or not all(isinstance(x, str) for x in items):
+        raise _fail(where, key, 'must be a path or a list of paths, for example ["~/private"]')
+    return tuple(str(resolve_folder(_str(where, key, x), base)) for x in items)
+
+
+def _live(where: str, raw: Any, base: Path) -> Live:
+    """The ``[live]`` table (docs/config.md, "[live]")."""
+    if not isinstance(raw, dict):
+        raise _fail(where, "live", "must be a table: [live]")
+    _unknown(where, "live", raw, LIVE_KEYS)
+    enabled = raw.get("enabled", True)  # a [live] table switches it on unless it says otherwise
+    if not isinstance(enabled, bool):
+        raise _fail(where, "live.enabled", "must be true or false")
+    poll = raw.get("poll", Live.poll)
+    lo, hi = POLL_RANGE
+    if isinstance(poll, bool) or not isinstance(poll, (int, float)) or not math.isfinite(poll) \
+            or not lo <= poll <= hi:
+        raise _fail(where, "live.poll", f"must be a number of seconds from {lo:g} to {hi:g}")
+    days = raw.get("history_days", Live.history_days)
+    lo_d, hi_d = HISTORY_RANGE
+    if isinstance(days, bool) or not isinstance(days, int) or not lo_d <= days <= hi_d:
+        raise _fail(where, "live.history_days", f"must be a whole number of days from {lo_d} "
+                    f"to {hi_d}")
+    private = (_paths_list(where, "live.private_dirs", raw["private_dirs"], base)
+               if "private_dirs" in raw else ())
+    status_dir = (str(resolve_folder(_str(where, "live.status_dir", raw["status_dir"]), base))
+                  if "status_dir" in raw else None)
+
+    readers_raw = raw.get("reader", [])
+    if not isinstance(readers_raw, list) or not all(isinstance(r, dict) for r in readers_raw):
+        raise _fail(where, "live.reader", "must be an array of tables: [[live.reader]]")
+    readers = []
+    for i, r in enumerate(readers_raw, 1):
+        key = f"live.reader #{i}"
+        bad = sorted(k for k in r if k.startswith("_"))
+        if bad:
+            raise _fail(where, key, f"key {bad[0]!r}: keys starting with '_' are reserved "
+                        "for Lamptown")
+        if "kind" not in r and "reader" not in r:
+            raise _fail(where, key, 'needs kind = "claude-code" (a reader\'s name) or '
+                        'reader = "./my_reader.py"')
+        if "kind" in r:
+            kind = _str(where, f"{key}.kind", r["kind"])
+            if not READER_KIND_RE.match(kind):
+                raise _fail(where, f"{key}.kind", f"{kind!r} must be lower-case letters, "
+                            "digits, '.', '-' or '_'")
+        if "reader" in r:
+            _str(where, f"{key}.reader", r["reader"])
+        entry = resolve_source(r, base)  # its own path options too, as for a source
+        if "reader" in r:
+            entry["reader"] = str(resolve_path(r["reader"], base))
+        readers.append(entry)
+
+    places_raw = raw.get("place", [])
+    if not isinstance(places_raw, list) or not all(isinstance(p, dict) for p in places_raw):
+        raise _fail(where, "live.place", "must be an array of tables: [[live.place]]")
+    places = []
+    for i, p in enumerate(places_raw, 1):
+        key = f"live.place #{i}"
+        _unknown(where, key, p, PLACE_KEYS)
+        if "dir" not in p or "plot" not in p:
+            raise _fail(where, key, 'needs dir = "..." and plot = "..." (work in or under '
+                        "dir walks to that plot)")
+        plot = _str(where, f"{key}.plot", p["plot"])
+        if plot not in PLOTS:
+            raise _fail(where, f"{key}.plot", f"{plot!r} is not a plot (plots: "
+                        f"{', '.join(PLOTS)})")
+        places.append(Place(dir=str(resolve_folder(_str(where, f"{key}.dir", p["dir"]), base)),
+                            plot=plot))
+    return Live(enabled=enabled, poll=float(poll), history_days=days, private_dirs=private,
+                status_dir=status_dir, readers=tuple(readers), places=tuple(places))
 
 
 def _source(where: str, key: str, s: dict[str, Any], base: Path) -> Source:
@@ -361,6 +477,13 @@ def resolve_path(value: str, base: Path) -> Path:
     if not p.is_absolute():
         p = base / p
     return Path(os.path.normpath(p))
+
+
+def resolve_folder(value: str, base: Path) -> Path:
+    """A ``[live]`` folder (``private_dirs``, ``status_dir``, ``[[live.place]] dir``):
+    ``$VARS`` first, then as :func:`resolve_path`. The same order as a ``status_dir`` source's
+    own ``private_dirs`` (``collector._expand``), so one entry means one folder in both."""
+    return resolve_path(os.path.expandvars(value), base)
 
 
 def resolve_source(table: Mapping[str, Any], base: Path) -> dict[str, Any]:

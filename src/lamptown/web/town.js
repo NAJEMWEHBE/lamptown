@@ -125,7 +125,7 @@ const NOTE = ['#ffd36e', '#ff8a9a', '#7fd8ff', '#b8f07a', '#d9d4ff', '#c79bff', 
 function shoreY(x) { return 199 + Math.round(1.6 * Math.sin(x * 0.09) + 1.3 * Math.sin(x * 0.031 + 2)); }
 const TREES = [[100, 40, 6], [121, 62, 5], [112, 18, 5], [268, 42, 5], [281, 60, 4], [300, 18, 5], [12, 40, 5], [10, 64, 4],
   [14, 128, 5], [16, 162, 6], [38, 178, 5], [84, 182, 5], [110, 166, 4], [146, 114, 4], [261, 126, 4],
-  [302, 184, 6], [330, 168, 5], [360, 186, 6], [388, 162, 5], [374, 146, 4], [388, 100, 5], [392, 128, 4], [150, 136, 3]];
+  [302, 184, 6], [306, 166, 5], [364, 170, 4], [388, 162, 5], [374, 146, 4], [388, 100, 5], [392, 128, 4], [150, 136, 3]];   // live: L8 lighthouse: (330,168) and (360,186) stepped aside for it
 
 /* ---------- TRUTH: what is really happening, read from the rooms' data (D.rooms): once at load, again on every
    live data swap (applyData). Every moving thing in town is drawn from this; nothing happening = nothing moves.
@@ -332,6 +332,12 @@ const TH = { x: -1, y: -1 };
 function tipBox(box, lines, back) { (back ? TIPS_BACK : TIPS).push({ box, tip: lines }); }
 /* what the last frame really drew (the town truth tests read this) */
 let SEEN = {};
+// --- live: L8 lighthouse --- drawing hooks for the scripts inlined after this one (web/lighthouse.js): fn(t, still, sky).
+// sea: over the water, under the belts and buildings; scene: after the buildings, under people and the daylight grade;
+// lights: after the lamps and signs (not graded). A hook that throws is logged and skipped, never stops the town.
+const TOWN_LAYERS = { sea: [], scene: [], lights: [] };
+function townLayer(k, t, still, sky) { for (const fn of TOWN_LAYERS[k]) { try { fn(t, still, sky); } catch (e) { console.error(e); } } }
+// --- end live: L8 ---
 /* lights: windows glow at night (and at dawn and dusk) by the real clock; by day they are glass */
 let LIT = true;
 function lit(on, off, day) { return on ? (LIT ? '#ffcf6b' : (day || '#8fb6d2')) : off; }
@@ -838,11 +844,15 @@ function lamps(t, still) {
     else if (lamp === 'amber' && on) glow(GL.amber, x, y, 1);
     else if (lamp === 'red' && on) glow(GL.red, x, y, 1);
     const above = bubbleAbove(plot, y);
-    if (lamp === 'amber') bubble(x, y, t, '#ff9a1f', '#ffc060', above);
+    // --- L7-fix: harbour bubble --- live on: the agents building's "!" rests (its figures on the map say the same); the lamp stays
+    const hush = LIVE.on && !!LIVE.payload && !!partOn(plot) && partOn(plot).type === 'harbour';
+    if (hush) SEEN.hushed = plot;
+    else if (lamp === 'amber') bubble(x, y, t, '#ff9a1f', '#ffc060', above);
+    // --- end L7-fix ---
     else if (lamp === 'red') bubble(x, y, t, '#e03a3a', '#ff8a8a', above);
     const words = LAMPWORDS[lamp], name = nameOn(plot), inside = roomOf(bidOn(plot)) ? 'CLICK THE BUILDING TO WALK IN' : 'CLICK THE BUILDING FOR ITS CARD';
     tipBox([x - 3, y - 3, 7, 7], [name + ' LAMP', words, inside]);
-    if (lamp === 'amber' || lamp === 'red') { tipBox([above ? x - 15 : x + 5, above ? y - 16 : y - 4, 14, 14], [name, words]); }
+    if (!hush && (lamp === 'amber' || lamp === 'red')) { tipBox([above ? x - 15 : x + 5, above ? y - 16 : y - 4, 14, 14], [name, words]); }   // L7-fix: !hush
   }
 }
 function needSign(t, still) {
@@ -952,6 +962,7 @@ function draw(t, still) {
     serpent(t); SEEN.serpent = true;
     tipBox([8, 196, 84, 23], ['THE SEA SERPENT', 'SURFACES ONLY WHEN EVERY BUILDING IS GREEN: ' + (TRUTH.builtCount === 1 ? 'THE ONE BUILDING IS' : 'ALL ' + TRUTH.builtCount + ' ARE') + ' FINE RIGHT NOW']);
   }
+  townLayer('sea', t, still, sky);   // live: L8 lighthouse
   belts(t, still);
   for (const k of ['A', 'B', 'C']) if (beltOn(k)) drawBelt(BELTS[k]);
   for (const k of ['A', 'B', 'C']) if (beltOn(k)) drawItems(BELTS[k]);
@@ -970,6 +981,7 @@ function draw(t, still) {
   tipBox([186, 104, 29, 22], ['FOUNTAIN', 'SCENERY: IT ALWAYS RUNS'], true);
   // lights off over any building whose source is missing
   for (const plot of ORDER) if (built(plot) && !live(plot)) { const [x, y, w, h] = PLOT[plot].dark; R(x, y, w, h, 'rgba(6,8,20,0.42)'); }
+  townLayer('scene', t, still, sky);   // live: L8 lighthouse
   drawWalkers(t, still);
   grade(sky.phase);
   for (const plot of ORDER) plate(plot);
@@ -980,10 +992,12 @@ function draw(t, still) {
   }
   lamps(t, still); needSign(t, still);
   if (bell) bellWaves(t, bell, spark);
+  townLayer('lights', t, still, sky);   // live: L8 lighthouse
   if (sky.phase === 'night') fireflies(t);
   beltTipsAll(); lotTips();
   if (DATA_ERR || D.sample || !TRUTH.builtCount) banner();
   corner();
+  if (TOWN_LAYERS.top) townLayer('top', t, still, sky);   // --- L7-fix: a pinned agent card, over the corner box and the fireflies ---
   townTip();
 }
 /* the town's tooltip: the thing under the pointer says what real thing it is */
@@ -1206,7 +1220,10 @@ function leaveRoom(opts) {
   if (!fromHistory) {
     if (RS.pushed && history.state && history.state.room === RS.id) { // our own history entry: step back (popstate leaves)
       const id = RS.backing = RS.id; history.back();
-      setTimeout(() => { if (RS.id === id && RS.mode === 'room') leaveRoom({ fromHistory: true }); }, 400); // no popstate came
+      setTimeout(() => {   // no popstate came: leave anyway (even mid zoom-in), or stop waiting for one
+        if (RS.backing !== id) return;
+        if (RS.id === id && RS.mode !== 'out') leaveRoom({ fromHistory: true }); else RS.backing = null;
+      }, 400);
       return;
     }
     const q = new URLSearchParams(location.search); [...q.keys()].filter(k => !TOWN_QS.includes(k)).forEach(k => q.delete(k));
@@ -1392,6 +1409,14 @@ const K = (() => {
     leave: () => leaveRoom(), card: openCard,
     open: href => { if (typeof href === 'string' && /^(https?|file):/i.test(href)) window.open(href, '_blank', 'noopener'); },
     part: id => PT[id] || null,
+    // --- L9-fix: room live interface --- (docs/kit-k.md, "Live data"): what a room may use of the live channel
+    live: () => (LIVE.on ? LIVE.payload : null),   // the lamptown-live/1 payload while it is fresh (the corner says LIVE), else null
+    // load town-<name>.js next to the page as the live poll does (one element, same URL); 0 with ?live=0 or in a preview
+    liveScript: (name, done) => (typeof name === 'string' && /^town-[a-z]+\.js$/.test(name) && LIVE.started && !LIVE.off
+      ? liveScript(name, ok => { if (typeof done === 'function') done(ok); }) : 0),
+    pointer: ev => toLogical(ev),   // a mouse event's [x, y] in the room's native pixels
+    redraw: () => kick(),           // draw again now (a still scene draws only when something changed)
+    // --- end L9-fix ---
   });
   Object.defineProperty(k, 'still', { get: stillMode, enumerable: true });
   Object.defineProperty(k, 'demo', { get: () => qs.get('demo') === '1', enumerable: true });
@@ -1467,10 +1492,12 @@ function liveScript(name, done) {   // one script element for name (always the s
 }
 // how old a payload is by the real clock (not nowMs(), which ?at= pretends); no readable `at`: never fresh
 const liveAge = p => { const t = p && typeof p.at === 'string' ? Date.parse(p.at) : NaN; return isNaN(t) ? Infinity : Date.now() - t; };
-function setLive(on) {   // on: a Watcher answered; the corner says LIVE only while its payload is fresh, and turns BUILT when it goes stale
+/* the corner says LIVE while the last payload is fresh, and turns BUILT when it goes stale. Only its age decides: a missed
+   poll (the file mid-replace, or the app pushing payloads itself with no file) is no news about the Watcher */
+function setLive() {
   const age = liveAge(LIVE.payload);
-  on = !!on && age < LIVE_FRESH_MS && age > -LIVE_FRESH_MS;   // a time far ahead is a broken clock, not a heartbeat
-  clearTimeout(LIVE.ageT); LIVE.ageT = on ? setTimeout(() => setLive(LIVE.on), LIVE_FRESH_MS - age + 50) : 0;
+  const on = age < LIVE_FRESH_MS && age > -LIVE_FRESH_MS;   // a time far ahead is a broken clock, not a heartbeat
+  clearTimeout(LIVE.ageT); LIVE.ageT = on ? setTimeout(setLive, LIVE_FRESH_MS - age + 50) : 0;
   if (LIVE.on !== on) { LIVE.on = on; kick(); }
 }
 function schedulePoll() {
@@ -1487,8 +1514,8 @@ function lamptownPoll() {
     LIVE.busy = null;
     const fed = ok && s.dataset.got === 'live';   // it loaded, and it really called lamptownLive
     if (!ok) LIVE.fails++;
-    LIVE.miss = fed ? 0 : LIVE.miss + 1;
-    setLive(fed);
+    LIVE.miss = fed ? 0 : LIVE.miss + 1;   // misses only slow the polling down
+    setLive();
     schedulePoll();
   });
 }
@@ -1497,7 +1524,7 @@ function lamptownLive(p) {
   const s = document.currentScript;
   if (s && s.dataset.live === 'town-live.js') s.dataset.got = 'live';   // the poll's own file (not the app's push)
   LIVE.payload = p;
-  setLive(true);
+  setLive();
   if (typeof p.rev === 'string' && p.rev && p.rev !== LIVE.rev && p.rev !== LIVE.want && p.rev !== LIVE.bad) loadData(p.rev);
   kick();
   return true;
@@ -1549,7 +1576,15 @@ function updateRoom() {
   RS.plot = plot;
   const data = roomData(id);
   if (JSON.stringify(data) === JSON.stringify(RS.data)) return;   // nothing new in this room
-  if (typeof room.update === 'function') { RS.data = data; safe(() => room.update(data)); }
+  if (typeof room.update === 'function') {
+    RS.data = data; safe(() => room.update(data));
+    // --- live: L6 --- the target under the pointer was the old data's (its tip too): pick it again from the new targets
+    if (RS.hover) {
+      const was = RS.hover.id;
+      RS.hover = RS.mx >= 0 ? targetAt(RS.mx, RS.my) : (was && allTargets().find(t => t.id === was)) || null;
+      roomHover(RS.hover);
+    }
+  }
   else {
     try { room.leave && room.leave(); } catch (e) { console.error(e); }
     Object.assign(RS, { data, crash: null, hover: null, hoverKey: '' });

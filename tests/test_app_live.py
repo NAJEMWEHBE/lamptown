@@ -220,22 +220,34 @@ def test_visibility_poll_cannot_wake_a_minimised_window():
 
 
 # ----------------------------------------------------------------------------- Live.tick
-def test_tick_reloads_only_when_the_data_changes(town_uri):
+def test_tick_pushes_only_when_the_data_changes(town_uri):
     w = FakeWindow()
     b = Counter()
-    live = Live(w, b, town_uri, last=fingerprint(b.data))
+    live = Live(w, b, town_uri, data=b.data)
     assert live.tick() is False  # same data
     assert w.js == []
     b.data = dict(b.data, built="Mon 1 Jan, 10:15")  # only the clock moved
     assert live.tick() is False
+    assert w.js == []
     b.data = dict(b.data, rooms={"a": 2})
-    assert live.tick() is True
+    assert live.tick() is False  # pushed, not reloaded
     assert len(w.js) == 1
+    assert w.js[0].startswith("typeof lamptownData === 'function' && lamptownData(")
+    assert json.loads(w.js[0].split("lamptownData(", 1)[1][:-1])["rooms"] == {"a": 2}
+    assert live.tick() is False  # stored: no second push for the same data
+    assert (live.ticks, live.reloads, live.pushes) == (4, 0, 1)
+
+
+def test_tick_reloads_when_the_shape_is_unknown(town_uri):
+    """A Live told only the old fingerprint can't know the page's structure: a change reloads."""
+    w = FakeWindow()
+    b = Counter()
+    live = Live(w, b, town_uri, last="old")
+    assert live.tick() is True
     js = w.js[0]
     assert js.startswith("location.replace(" + json.dumps(town_uri + "?r=")[:-1])
     assert "viewHash()" in js  # reopens the room / card the user had open
-    assert live.tick() is False  # stored: no second reload for the same data
-    assert (live.ticks, live.reloads) == (4, 1)
+    assert live.tick() is False
 
 
 def test_tick_failed_build_keeps_the_page(town_uri):
@@ -433,17 +445,32 @@ def test_builder_keeps_the_last_page_on_a_broken_config(tmp_path):
     assert b() is not None and b.error is None
 
 
-def test_live_with_a_real_build_reloads_once_per_change(tmp_path):
+def test_live_with_a_real_build_pushes_once_per_change(tmp_path):
     cfg = write_config(tmp_path)
     b = Builder(str(cfg), str(tmp_path / "out"), lambda m: None)
     data = b()
     w = FakeWindow(url=b.town.as_uri())
-    live = Live(w, b, b.town.as_uri(), last=fingerprint(data))
+    live = Live(w, b, b.town.as_uri(), data=data)
     assert live.tick() is False
     write_config(tmp_path, done=6)
-    assert live.tick() is True
     assert live.tick() is False
-    assert len(w.js) == 1
+    assert live.tick() is False
+    assert len(w.js) == 1 and "lamptownData(" in w.js[0]
+    assert (live.pushes, live.reloads) == (1, 0)
+    # a new building changes the town's shape: the page reloads (its room script must load)
+    cfg.write_text(CONFIG.format(done=6) + """
+[[building]]
+id = "kiosk"
+type = "kiosk"
+plot = "lab"
+label = "Tea kiosk"
+  [[building.source]]
+  kind = "static"
+  state = "ok"
+""", encoding="utf-8")
+    assert live.tick() is True
+    assert w.js[-1].startswith("location.replace(")
+    assert (live.pushes, live.reloads) == (1, 1)
 
 
 def test_error_page_escapes_the_message():

@@ -52,8 +52,12 @@ Use `ST[row.state] || ST.missing` so unknown states fall back to grey.
 
 ## Text
 
-There is one font: a hand-drawn 3 × 5 pixel font, upper case only. Characters it lacks print as a
-space. Every word on screen uses it.
+There is one font: a hand-drawn 3 × 5 pixel font, upper case only. Every word on screen uses it.
+ASCII characters it lacks print as a space. Other characters don't vanish: an accented letter is
+drawn as its base letter (`CAFÉ` reads `CAFE`), and any other script (Arabic, Greek, Cyrillic, CJK,
+emoji) is drawn in the system's sans-serif at about the same height, cut to whole pixels, in the
+same colour. A right-to-left phrase (Arabic, Hebrew) reads right to left. Such text sits 2 pixels
+above and below the font's 5-pixel line; `textW` counts it.
 
 | Function | Does |
 |---|---|
@@ -143,6 +147,17 @@ something that happened.
 | `part(id)` | Another building's town entry (`lamp`, `state`, `name`, `num`, `links`), or `null`. |
 | `still` | `true` when the scene is still (reduced motion, and no `?motion=1`). |
 | `demo` | `true` when the page was opened with `?demo=1`. |
+| `pointer(event)` | A mouse event's `[x, y]` in the room's native pixels, for a room that listens to the stage itself (a drag). |
+| `redraw()` | Draw again now. A still scene only redraws when something changed; call it after news that came in outside a click or key (a file that loaded, a drag). |
+
+## Live data
+
+With `[live]` on, a Watcher feeds the page (see [status.md](status.md)). A room may read it:
+
+| Member | Does |
+|---|---|
+| `live()` | The newest `lamptown-live/1` payload while it is fresh (under 30 seconds old: the town's corner says LIVE), else `null`. A Watcher that stopped leaves its file behind; this never hands you that stale news. Read it in `draw` and compare it with the one you used: a new object is a new payload. |
+| `liveScript(name, done)` | Load `town-<name>.js` from next to the page, the way the town polls `town-live.js` (classic scripts load from `file://`; the URL never changes). `done(ok)` runs after it ran or failed. Does nothing and returns `0` with `?live=0` and in a preview. Don't load while `document.hidden` is true (a minimised app window): the town doesn't either. |
 
 ## Accessibility you get for free
 
