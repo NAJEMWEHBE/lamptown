@@ -73,12 +73,15 @@ def status_path(status_id: str, directory: str | os.PathLike | None = None) -> P
     return default_dir(directory) / f"{check_id(status_id)}.json"
 
 
-def atomic_write_json(path: Path, data: Any) -> None:
-    """Write ``data`` as UTF-8 JSON to ``path`` through a temp file and an atomic rename."""
+def atomic_write_json(path: Path, data: Any, *, max_bytes: int = MAX_BYTES) -> None:
+    """Write ``data`` as UTF-8 JSON to ``path`` through a temp file and an atomic rename.
+
+    ``max_bytes`` caps the file (status files: :data:`MAX_BYTES`; the Watcher's own state files
+    pass a bigger cap)."""
     path = Path(path)
     payload = (json.dumps(data, ensure_ascii=False, indent=1) + "\n").encode("utf-8")
-    if len(payload) > MAX_BYTES:
-        raise StatusError(f"status file would be {len(payload)} bytes; the limit is {MAX_BYTES}")
+    if len(payload) > max_bytes:
+        raise StatusError(f"status file would be {len(payload)} bytes; the limit is {max_bytes}")
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:

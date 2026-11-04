@@ -348,6 +348,7 @@ required.
 | `enter(data, opts)` | when you walk in | Set up from the building's room data. `opts` is `{demo, state, qs, still, id, part}`: demo mode on, the `&state=` asked for, the page's `URLSearchParams`, reduced motion on, the building id, and its town entry (lamp, plate, links). |
 | `draw(g, t, data)` | every frame (20 fps at most) | Draw the whole room. `g` is the 2D context, `t` the time in seconds (frozen in still mode). |
 | `leave()` | when you walk out | Stop timers and drop anything big. |
+| `update(data)` | when new data arrives while you're inside | Take the building's new room data and keep your view (an open envelope, a scroll). Without it, the room is quietly left and entered again on the new data, so its view starts over. Not called when the room's data didn't change. |
 | `targets()` | on every pointer move and Tab | Return the things you can point at: `[{id, box: [x, y, w, h], tip: [title, line...], label, onClick}]`. They get hover tooltips, Tab focus, Enter and click for free. |
 | `hover(target)` | when the target under the pointer or focus changes | `target` or `null`. |
 | `plate()` | each frame | Override the name plate: `{name?, num?, state?}`. |

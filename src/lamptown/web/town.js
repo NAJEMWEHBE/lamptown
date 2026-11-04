@@ -23,24 +23,28 @@ const SAMPLE = (() => {
       skills: { state: 'ok', rows: [{ name: 'tide-reader', state: 'ok', stage: 'installed' }, { name: 'wren-notes', state: 'working', stage: 'building' }] },
     } };
 })();
+/* town data comes inlined at build time, and later (a Watcher running) live through lamptownData(): the same check for both */
+function checkData(d) {
+  if (!d || typeof d !== 'object' || Array.isArray(d) || !d.parts || typeof d.parts !== 'object' || Array.isArray(d.parts)) throw new Error('it has no buildings table in it');
+  if (!d.rooms || typeof d.rooms !== 'object') d.rooms = {};
+  if (!d.plots || typeof d.plots !== 'object') d.plots = {};
+  for (const [id, p] of Object.entries(d.parts)) if (p && p.plot && !d.plots[p.plot]) d.plots[p.plot] = id;
+  return d;
+}
 let D, DATA_ERR = '';
 try {
-  D = JSON.parse(SLOT);
-  if (!D || typeof D !== 'object' || !D.parts || typeof D.parts !== 'object' || Array.isArray(D.parts)) throw new Error('it has no buildings table in it');
+  D = checkData(JSON.parse(SLOT));
 } catch (e) {
   if (PREVIEW) D = SAMPLE;
   else {
     DATA_ERR = SLOT.includes('%%TOWN_DATA%%') ? 'THIS IS THE EMPTY TEMPLATE: RUN LAMPTOWN BUILD (OR ADD ?PREVIEW=1 FOR A SAMPLE)'
       : String(e && e.message || e).toUpperCase().replace(/[{}"\\]/g, m => ({ '{': '(', '}': ')', '"': "'", '\\': '/' })[m]).slice(0, 120);   // the pixel font has no braces
-    D = { built: '', needs: 0, details: 'town-details.html', parts: {}, plots: {}, rooms: {}, unreadable: DATA_ERR };
+    D = checkData({ built: '', needs: 0, details: 'town-details.html', parts: {}, plots: {}, rooms: {}, unreadable: DATA_ERR });
   }
 }
-if (!D.rooms || typeof D.rooms !== 'object') D.rooms = {};
-if (!D.plots || typeof D.plots !== 'object') D.plots = {};
-const PT = D.parts;
-for (const [id, p] of Object.entries(PT)) if (p && p.plot && !D.plots[p.plot]) D.plots[p.plot] = id;
-const TITLE = String(D.title || 'Lamptown');
-document.title = TITLE; document.getElementById('town-h').textContent = TITLE;
+let PT = D.parts, TITLE = '';
+function setTitle() { TITLE = String(D.title || 'Lamptown'); document.title = TITLE; document.getElementById('town-h').textContent = TITLE; }
+setTitle();
 
 /* the clock: the real one; a --now build counts from its pretend build time; ?at=<ISO time> pretends (tests, screenshots) */
 const AT_MS = (() => { const s = qs.get('at'); if (!s) return null; const d = new Date(s); return isNaN(d) ? null : d.getTime(); })();
@@ -65,14 +69,18 @@ const PLOT = {
   boathouse: { native: 'harbour', hit: [152, 120, 94, 98], lamp: [172, 139, 6], dark: [165, 131, 78, 56], door: [204, 180], foot: [166, 146, 76, 40], lot: [166, 152, 76, 36], plate: [204, 162, 80], word: 'boathouse' },
 };
 const ORDER = ['tower', 'library', 'gate', 'lab', 'workshop', 'boathouse'];
+/* every place a building can stand: the six plots, plus places off the plot grid (the lighthouse) added with addPlace().
+   Only the six plots (ORDER) get empty lots, name plates and lamps here, and count for "every building is green". */
+const PLACES = Object.assign({}, PLOT);
 const bidOn = plot => { const id = D.plots[plot]; return typeof id === 'string' && PT[id] && typeof PT[id] === 'object' ? id : null; };
 const partOn = plot => { const id = bidOn(plot); return id ? PT[id] : null; };
 const built = plot => !!bidOn(plot);
 const lampOn = plot => { const p = partOn(plot); return p ? (['green', 'amber', 'red', 'grey'].includes(p.lamp) ? p.lamp : 'grey') : null; };
 const live = plot => { const l = lampOn(plot); return !!l && l !== 'grey'; };
-const nativeOn = plot => { const p = partOn(plot); return !!p && p.type === PLOT[plot].native; };
+const isPlace = plot => typeof plot === 'string' && Object.prototype.hasOwnProperty.call(PLACES, plot);
+const nativeOn = plot => { const p = partOn(plot); return !!p && isPlace(plot) && p.type === PLACES[plot].native; };
 const nameOn = plot => { const p = partOn(plot); return p ? String(p.name || p.label || p.id).toUpperCase() : 'EMPTY LOT'; };
-const plotOf = id => (PT[id] && PLOT[PT[id].plot] ? PT[id].plot : null);
+const plotOf = id => (PT[id] && isPlace(PT[id].plot) ? PT[id].plot : null);   // the plot (or other place) a building stands on
 
 /* ---------- paths (belts + footpaths) ---------- */
 function mkPath(pts) {
@@ -119,14 +127,15 @@ const TREES = [[100, 40, 6], [121, 62, 5], [112, 18, 5], [268, 42, 5], [281, 60,
   [14, 128, 5], [16, 162, 6], [38, 178, 5], [84, 182, 5], [110, 166, 4], [146, 114, 4], [261, 126, 4],
   [302, 184, 6], [330, 168, 5], [360, 186, 6], [388, 162, 5], [374, 146, 4], [388, 100, 5], [392, 128, 4], [150, 136, 3]];
 
-/* ---------- TRUTH: what is really happening, read once from the rooms' data (D.rooms). Every moving thing in
-   town is drawn from this; nothing happening = nothing moves. A plot's own animations follow its data only
-   when the building on it has the plot's native room type (a custom room on a plot keeps lamp + plate). ---------- */
+/* ---------- TRUTH: what is really happening, read from the rooms' data (D.rooms): once at load, again on every
+   live data swap (applyData). Every moving thing in town is drawn from this; nothing happening = nothing moves.
+   A plot's own animations follow its data only when the building on it has the plot's native room type
+   (a custom room on a plot keeps lamp + plate). ---------- */
 const STC = { ok: '#3ddc7a', waiting: '#ffb020', working: '#36d3e6', error: '#ff4a4a', missing: '#4a4e62' };   // = ST[state].lamp
 const STWORD = { ok: 'RUNNING FINE', waiting: 'NEEDS YOU', working: 'RUNNING NOW', error: 'SOMETHING IS WRONG', missing: "CAN'T SEE IT" };
 const SOFL = { green: 'ok', amber: 'waiting', red: 'error', grey: 'missing' };
 const WALK_CAP = 6, WALK_V = 9;
-const TRUTH = (() => {
+function computeTruth() {
   const arr = v => (Array.isArray(v) ? v : []).filter(x => x && typeof x === 'object');
   const obj = v => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
   const str = (v, n) => String(v == null ? '' : v).replace(/\s+/g, ' ').trim().slice(0, n || 120);
@@ -186,7 +195,8 @@ const TRUTH = (() => {
     ledgerState, ledgerRed: lrows.filter(r => r.state === 'error').length,
     allGreen: !DATA_ERR && !D.sample && builtPlots.length > 0 && builtPlots.every(p => lampOn(p) === 'green'), builtCount: builtPlots.length,
   };
-})();
+}
+let TRUTH = computeTruth();
 /* the bell rings while a job runs, and in the minute a job is due */
 function bellNow(ms) {
   if (TRUTH.running.length) return { job: TRUTH.running[0], why: 'running' };
@@ -197,12 +207,9 @@ function nextDue(ms) { return TRUTH.due.find(j => j.at >= ms - 6e4) || null; }
 
 /* ---------- SKY: the real local clock. Sun times for [town] latitude / longitude (default: a mid latitude and the
    longitude of your UTC offset), the moon's phase from the mean synodic month. Computed here, no network. ---------- */
-const SKYD = D.sky && typeof D.sky === 'object' ? D.sky : {};
-const SKY_LAT = Number.isFinite(SKYD.lat) ? SKYD.lat : 40, TWI = 40 * 6e4;   // dawn and dusk: 40 min either side of sunrise and sunset
+const TWI = 40 * 6e4;   // dawn and dusk: 40 min either side of sunrise and sunset
+let SKYD = {}, SKY_LAT = 40, SKY_PLACE = '';
 const skyLon = d0 => (Number.isFinite(SKYD.lon) ? SKYD.lon : -d0.getTimezoneOffset() / 4);
-const SKY_PLACE = Number.isFinite(SKYD.lat) && Number.isFinite(SKYD.lon)
-  ? Math.abs(SKYD.lat).toFixed(1) + (SKYD.lat >= 0 ? 'N ' : 'S ') + Math.abs(SKYD.lon).toFixed(1) + (SKYD.lon >= 0 ? 'E' : 'W')
-  : 'APPROXIMATE: SET LATITUDE AND LONGITUDE IN LAMPTOWN.TOML';
 const SYNODIC = 29.530588853, NEW_MOON_2000 = Date.UTC(2000, 0, 6, 18, 14);
 function moonPhase(ms) {
   const cyc = ((((ms - NEW_MOON_2000) / 864e5) / SYNODIC) % 1 + 1) % 1, illum = (1 - Math.cos(2 * Math.PI * cyc)) / 2;
@@ -220,6 +227,15 @@ function sunDay(ms) {   // sunrise, solar noon, sunset (ms) of the local day hol
   return { rise: d0.getTime() + (noon - 4 * ha) * 6e4, noon: d0.getTime() + noon * 6e4, set: d0.getTime() + (noon + 4 * ha) * 6e4 };
 }
 let SKYC = { key: -1 };
+function readSky() {   // from D.sky: at load and on a live data swap
+  SKYD = D.sky && typeof D.sky === 'object' ? D.sky : {};
+  SKY_LAT = Number.isFinite(SKYD.lat) ? SKYD.lat : 40;
+  SKY_PLACE = Number.isFinite(SKYD.lat) && Number.isFinite(SKYD.lon)
+    ? Math.abs(SKYD.lat).toFixed(1) + (SKYD.lat >= 0 ? 'N ' : 'S ') + Math.abs(SKYD.lon).toFixed(1) + (SKYD.lon >= 0 ? 'E' : 'W')
+    : 'APPROXIMATE: SET LATITUDE AND LONGITUDE IN LAMPTOWN.TOML';
+  SKYC = { key: -1 };
+}
+readSky();
 function skyAt(ms) {   // cached per minute
   const key = Math.floor(ms / 6e4); if (SKYC.key === key) return SKYC;
   const s = sunDay(ms), m = moonPhase(ms);
@@ -879,15 +895,28 @@ function banner() {
   rows.forEach((r, i) => text(r, x + Math.round((w - textW(r)) / 2), y + 5 + i * 8, i ? c1 : c0));
   SEEN.banner = rows[0];
 }
-/* corner: when the page was built, and the way into the details page */
+/* the live channel's state (see "live data" at the end): on = a Watcher feeds the page now (its last payload is fresh) */
+/* rev: the data shown; want: the rev being loaded; bad: a rev not to load again; every: ms between polls; slow: ms between
+   polls after `miss` misses in a row (no Watcher); next: the delay of the poll scheduled now */
+const LIVE = { on: false, payload: null, rev: typeof D.rev === 'string' && D.rev ? D.rev : null, want: null, bad: null, every: 5000,
+  slow: 30000, next: 0, miss: 0, ageT: 0, started: false, off: false, timer: 0, busy: null, seq: 0,
+  polls: 0, fails: 0, loads: 0, swaps: 0 };
+/* corner: LIVE while a Watcher feeds the page, else when the page was built; and the way into the details page */
 const CORNER = { det: 'DETAILS >' };
-function cornerBuilt() { return DATA_ERR ? 'NO DATA' : D.sample ? 'SAMPLE' : (isApp() ? 'LIVE - UPDATED ' : 'BUILT ') + String(D.built || '').toUpperCase().replace(/,/g, ''); }
+function cornerBuilt() {
+  if (DATA_ERR) return 'NO DATA';
+  if (D.sample) return 'SAMPLE';
+  if (LIVE.on) return 'LIVE';
+  return (isApp() ? 'LIVE - UPDATED ' : 'BUILT ') + String(D.built || '').toUpperCase().replace(/,/g, '');
+}
 function corner() {
-  const built = cornerBuilt(), bw = textW(built), dw = textW(CORNER.det), w = Math.max(bw, dw) + 6, x = W - w - 2, y = H - 17;
+  const built = cornerBuilt(), live = built === 'LIVE', bw = textW(built) + (live ? 5 : 0), dw = textW(CORNER.det), w = Math.max(bw, dw) + 6, x = W - w - 2, y = H - 17;
   R(x, y, w, 16, 'rgba(8,10,22,0.72)');
-  text(built, x + w - 3 - bw, y + 2, '#9aa3d8');
+  if (live) { R(x + w - 3 - bw, y + 3, 3, 3, '#3ddc7a'); P(x + w - 3 - bw, y + 3, '#d8ffe6'); }   // a small steady lamp: fed live
+  text(built, x + w - 3 - bw + (live ? 5 : 0), y + 2, live ? '#7cf0a8' : '#9aa3d8');
   text(CORNER.det, x + w - 3 - dw, y + 9, '#ffd36e');
   CORNER.hit = [x + w - 5 - dw, y + 8, dw + 4, 7];
+  SEEN.corner = built;
 }
 function lotTips() {
   for (const plot of ORDER) if (!built(plot)) {
@@ -914,7 +943,7 @@ function grade(ph) {
 }
 const WARM = { library: [200, 76], lab: [86, 145], workshop: [306, 147], boathouse: [204, 188] };
 function draw(t, still) {
-  TIPS = []; TIPS_BACK = []; SEEN = { plates: {}, lots: ORDER.filter(p => !built(p)) };
+  TIPS = []; TIPS_BACK = []; SEEN = { plates: {}, lots: ORDER.filter(p => !built(p)), live: LIVE.payload, liveOn: LIVE.on };
   const ms = nowMs(), sky = skyAt(ms), bell = live('tower') && nativeOn('tower') ? bellNow(ms) : null;
   LIT = sky.lights; SEEN.phase = sky.phase;
   g.drawImage(bgFor(sky.phase), 0, 0);
@@ -1010,24 +1039,49 @@ function lampIcon(lamp) {
 const ROOMS = {};   // room type -> room (filled by registerRoom, from the room scripts after this one)
 const roomOf = id => (id && PT[id] && ROOMS[PT[id].type]) || null;
 function plotLabel(plot) { const p = partOn(plot); return p ? String(p.label || p.name || p.id) : 'Empty lot (' + plot + ' plot)'; }
-for (const plot of ORDER) {
-  const p = partOn(plot), [x, y, w, h] = PLOT[plot].hit, b = document.createElement('button');
-  b.className = 'hit'; b.dataset.plot = plot; if (p) b.dataset.id = bidOn(plot);
+/* one button per place, made once; syncHits() writes what stands there now (at load, once the rooms are in, on a swap) */
+const HIT = {};
+function hitFor(plot) {
+  const [x, y, w, h] = PLACES[plot].hit, b = HIT[plot] || document.createElement('button');
   Object.assign(b.style, { left: x + 'px', top: y + 'px', width: w + 'px', height: h + 'px' });
-  b.setAttribute('aria-label', p ? plotLabel(plot) + (p.num && lampOn(plot) !== 'grey' ? ', ' + p.num : '') + ', ' + WORD[lampOn(plot)] : plotLabel(plot));
-  b.setAttribute('aria-haspopup', 'dialog');
+  if (HIT[plot]) return b;
+  b.className = 'hit'; b.dataset.plot = plot;
   b.addEventListener('click', e => { e.stopPropagation(); const id = bidOn(plot); if (roomOf(id)) enterRoom(id); else openPanel(plot, b); }); // a room: walk inside
-  hits.appendChild(b);
+  hits.insertBefore(b, hits.querySelector('.det'));   // the plots, then any other place, then the details link
+  return (HIT[plot] = b);
 }
-{ // the "Details" corner link
-  const a = document.createElement('a');
-  draw(T_START, true);
+function syncHits() {
+  for (const plot of Object.keys(PLACES)) {
+    if (!PLACES[plot].hit) continue;
+    const b = hitFor(plot), p = partOn(plot), id = bidOn(plot), room = !!roomOf(id);
+    if (id) b.dataset.id = id; else delete b.dataset.id;
+    b.hidden = !p && !PLOT[plot];   // a place off the plot grid has no empty lot: no building there, no button
+    b.setAttribute('aria-label', p ? plotLabel(plot) + (p.num && lampOn(plot) !== 'grey' ? ', ' + p.num : '') + ', ' + WORD[lampOn(plot)] + (room ? '. Press Enter to walk inside.' : '') : plotLabel(plot));
+    if (room) b.removeAttribute('aria-haspopup'); else b.setAttribute('aria-haspopup', 'dialog');
+  }
+}
+/* a place off the six plots (the lighthouse): { hit: [x, y, w, h] click box, door: [x, y] the walk-in dives to, word }.
+   A building stands there when its part says plot = <name>; it opens like any plot (card or room). */
+function addPlace(name, place) {
+  if (typeof name !== 'string' || !/^[a-z][a-z0-9_]{0,39}$/.test(name) || isPlace(name) && PLOT[name] || !place || !Array.isArray(place.hit)) return false;
+  PLACES[name] = Object.assign({ door: [place.hit[0] + (place.hit[2] >> 1), place.hit[1] + place.hit[3]], word: name }, place);
+  syncHits(); return true;
+}
+// the details page: a path next to the town, or an http(s)/file URL; never another scheme (javascript:, data:, ...).
+// The URL parser drops tabs and newlines anywhere and spaces at the ends, so the scheme is read with those gone.
+const detHref = h => {
+  const u = typeof h === 'string' ? h.replace(/[\x00-\x20]/g, '') : '';
+  return u && (/^(https?|file):/i.test(u) || !/^[a-z][a-z0-9+.-]*:/i.test(u)) ? h : 'town-details.html';
+};
+const DET = document.createElement('a');   // the "Details" corner link
+DET.className = 'hit det'; DET.style.display = 'block'; hits.appendChild(DET);
+function syncDetails() {
   const [x, y, w, h] = CORNER.hit;
-  a.className = 'hit det'; a.href = D.details || 'town-details.html'; a.setAttribute('aria-label', 'Details page (built ' + (D.built || '') + ')');
-  Object.assign(a.style, { left: x + 'px', top: y + 'px', width: w + 'px', height: h + 'px', display: 'block' });
-  hits.appendChild(a);
+  DET.href = detHref(D.details); DET.setAttribute('aria-label', 'Details page (built ' + (D.built || '') + ')');
+  Object.assign(DET.style, { left: x + 'px', top: y + 'px', width: w + 'px', height: h + 'px' });
 }
-{ // for screen readers: what moves in town, in words (the same facts the animations follow)
+syncHits(); draw(T_START, true); syncDetails();
+function srText() { // for screen readers: what moves in town, in words (the same facts the animations follow)
   const T = TRUTH, s = [];
   if (DATA_ERR) s.push("The town can't read its data: " + DATA_ERR.toLowerCase() + '.');
   const lots = ORDER.filter(p => !built(p));
@@ -1043,10 +1097,17 @@ for (const plot of ORDER) {
   if (T.allGreen) s.push('Every building is green.');
   document.getElementById('town-sr').textContent = s.length ? s.join(' ') : 'Nothing is moving in town: nothing is running and nothing waits on a belt.';
 }
+srText();
 function openPanel(plot, from) {
-  if (!PLOT[plot]) return;
-  const p = partOn(plot);
+  if (!isPlace(plot) || (!PLOT[plot] && !partOn(plot))) return;
   openPlot = plot; opener = from || document.querySelector('.hit[data-plot="' + plot + '"]');
+  fillPanel(plot);
+  panel.hidden = false;
+  placePanel(plot);
+  pClose.focus({ preventScroll: true });
+}
+function fillPanel(plot) {   // the card's words, from the data now (a live swap refills an open card)
+  const p = partOn(plot);
   pTitle.replaceChildren(pixelLabel(p ? nameOn(plot) : 'EMPTY LOT', 3, p ? '#eef1ff' : '#a9aec8'));
   pTitle.setAttribute('aria-label', plotLabel(plot));
   pLamp.replaceChildren(lampIcon(p ? lampOn(plot) : 'grey'));
@@ -1064,16 +1125,13 @@ function openPanel(plot, from) {
       .map(l => '<a href="' + esc(l.href) + '"' + (l.label === 'Details' ? '' : ' target="_blank" rel="noopener"') + '>' + esc(l.label) + '</a>').join('');
   }
   pBody.innerHTML = rows.map(([k, v]) => '<dt>' + k + '</dt><dd>' + v + '</dd>').join('');
-  panel.hidden = false;
-  placePanel(plot);
-  pClose.focus({ preventScroll: true });
 }
 function placePanel(plot) {
   if (RS.id) { // inside a room: the card sits in the middle of the window
     panel.style.left = Math.round(Math.max(16, (window.innerWidth - panel.offsetWidth) / 2)) + 'px';
     panel.style.top = Math.round(Math.max(16, (window.innerHeight - panel.offsetHeight) / 2)) + 'px'; return;
   }
-  const [x, y, w, h] = PLOT[plot].hit, r = stage.getBoundingClientRect();
+  const [x, y, w, h] = PLACES[plot].hit, r = stage.getBoundingClientRect();
   const bx = r.left + x * SCALE, by = r.top + y * SCALE, bw = w * SCALE, bh = h * SCALE;
   const pw = panel.offsetWidth, ph = panel.offsetHeight, vw = window.innerWidth, vh = window.innerHeight, m = 16;
   let left = bx + bw + m;
@@ -1113,12 +1171,13 @@ function registerRoom(type, room) {
 /* ---------- scene: town / zooming in / room / zooming out ---------- */
 const ZOOM_MS = 600, SPLIT = 0.62, ZMAX = 12;
 const RS = { id: null, plot: null, room: null, data: null, mode: 'town', t0: 0, frozen: null, pushed: false,
-  mx: -1, my: -1, hover: null, hoverKey: '', focus: -1, toast: null, crash: null, opener: null };
+  mx: -1, my: -1, hover: null, hoverKey: '', focus: -1, toast: null, crash: null, opener: null, backing: null };
 const stillMode = () => RM.matches && !FORCE_MOTION();
 const TB = document.createElement('canvas'); TB.width = W; TB.height = H;   // town / room buffers for the zoom
 const RB = document.createElement('canvas'); RB.width = W; RB.height = H;
 const srRoom = document.getElementById('room-sr');
 function roomData(id) { const r = D.rooms && D.rooms[id]; return r && typeof r === 'object' ? r : { state: 'missing', missing: true }; }
+function roomCtx(id) { return { demo: qs.get('demo') === '1', state: qs.get('state'), qs, still: stillMode(), id, part: PT[id] }; }
 function announce(s) { if (srRoom) srRoom.textContent = s; }
 
 function enterRoom(id, opts) {
@@ -1129,7 +1188,7 @@ function enterRoom(id, opts) {
   TH.x = TH.y = -1;
   RS.opener = document.querySelector('.hit[data-plot="' + plot + '"]');
   Object.assign(RS, { id, plot, room, data: roomData(id), hover: null, hoverKey: '', focus: -1, toast: null, crash: null, frozen: null });
-  try { room.enter && room.enter(RS.data, { demo: qs.get('demo') === '1', state: qs.get('state'), qs, still: stillMode(), id, part: PT[id] }); }
+  try { room.enter && room.enter(RS.data, roomCtx(id)); }
   catch (e) { RS.crash = e; console.error(e); }
   hits.hidden = true; stage.focus({ preventScroll: true });
   SFX.unlock(); SFX.door(true);
@@ -1141,11 +1200,12 @@ function enterRoom(id, opts) {
 }
 const TOWN_QS = ['motion', 't', 'at'];   // the town's own URL params; every other one belongs to a room and goes when you leave it
 function leaveRoom(opts) {
-  if (!RS.id || RS.mode === 'out') return;
+  const fromHistory = !!(opts && opts.fromHistory);
+  if (!RS.id || RS.mode === 'out' || RS.backing && !fromHistory) return;   // already stepping back: once is enough
   if (!panel.hidden) closePanel();
-  if (!(opts && opts.fromHistory)) {
+  if (!fromHistory) {
     if (RS.pushed && history.state && history.state.room === RS.id) { // our own history entry: step back (popstate leaves)
-      const id = RS.id; history.back();
+      const id = RS.backing = RS.id; history.back();
       setTimeout(() => { if (RS.id === id && RS.mode === 'room') leaveRoom({ fromHistory: true }); }, 400); // no popstate came
       return;
     }
@@ -1160,7 +1220,7 @@ function leaveRoom(opts) {
 function finishLeave(quiet) {
   try { RS.room && RS.room.leave && RS.room.leave(); } catch (e) { console.error(e); }
   const back = RS.opener;
-  Object.assign(RS, { id: null, plot: null, room: null, data: null, mode: 'town', hover: null, focus: -1, toast: null, crash: null });
+  Object.assign(RS, { id: null, plot: null, room: null, data: null, mode: 'town', hover: null, focus: -1, toast: null, crash: null, backing: null });
   hits.hidden = false; stage.style.cursor = '';
   if (!quiet) { announce('Back in town.'); if (back) back.focus({ preventScroll: true }); }
 }
@@ -1260,7 +1320,7 @@ function drawZoom(p, t, still) {
   // 0..SPLIT: the camera dives through the building's door; SPLIT..1: the room opens up out of the dark
   main.imageSmoothingEnabled = false;
   if (p < SPLIT) {
-    const u = p / SPLIT, e = u * u, [dx, dy] = PLOT[RS.plot].door, s = 1 + (ZMAX - 1) * e;
+    const u = p / SPLIT, e = u * u, [dx, dy] = PLACES[RS.plot].door, s = 1 + (ZMAX - 1) * e;
     const cx = dx + (W / 2 - dx) * e, cy = dy + (H / 2 - dy) * e;
     g = TB.getContext('2d'); draw(t, still); g = main;
     R(0, 0, W, H, '#05060e');
@@ -1368,9 +1428,8 @@ function kick() {
   }, 0);
 }
 function bootRooms() { // runs after the room scripts have registered
-  for (const b of hits.querySelectorAll('.hit[data-id]')) if (roomOf(b.dataset.id)) {
-    b.removeAttribute('aria-haspopup'); b.setAttribute('aria-label', b.getAttribute('aria-label') + '. Press Enter to walk inside.');
-  }
+  syncHits();   // the buttons of buildings with a room now say so
+  startLive();
   const qr = qs.get('room'), hr = /^#room=([\w-]+)(?:&open=([\w-]+))?/.exec(location.hash);
   const id = qr && roomOf(qr) ? qr : hr && roomOf(hr[1]) ? hr[1] : null;
   if (!id) return;
@@ -1380,6 +1439,135 @@ function bootRooms() { // runs after the room scripts have registered
   if (hr && hr[2] && plotOf(hr[2])) openPanel(plotOf(hr[2]), stage);
   kick();
 }
+
+/* ======================= LIVE DATA: the town changes in place, never by reloading =======================
+   A Watcher (the desktop app, or `lamptown watch`) writes two small scripts next to town.html:
+     town-live.js   lamptownLive({spec: 'lamptown-live/1', at, rev, need, agents, projects, ...}): rewritten when anything changes
+                    and at least every ~10 s even when nothing does (a heartbeat); `at` = when it was written (ISO time);
+     town-data.js   lamptownData(<the town data, as inlined in this page, with the same rev>), rewritten when that data changes.
+   While the page shows, it adds a script element for town-live.js every 5 s (classic scripts load from file://; fetch does
+   not), and not at all while it is hidden. The URL never changes: a file:// script is read from disk on every load, and a new
+   URL per load would cost memory for good (Chrome keeps about 1 KB per script URL a page has loaded). After 3 misses in a
+   row (no Watcher) it looks every 30 s instead, and every 5 s again once one lands or the page shows again.
+   A payload whose rev differs from the data shown loads town-data.js, which swaps the data in place: no reload, so a walk in
+   progress finishes. The corner says LIVE only while the last payload is fresh (its `at` under 30 s old by the real clock):
+   a Watcher that stops leaves its file behind, but no heartbeat. No Watcher: the page keeps the data inlined at build time
+   and the corner says BUILT.
+   The app may call lamptownPoll() right after it writes, or lamptownData(D) / lamptownLive(p) itself. ?live=0: no polling. */
+const LIVE_SPEC = 'lamptown-live/1', LIVE_FRESH_MS = 30000, LIVE_MISSES = 3;
+function liveScript(name, done) {   // one script element for name (always the same URL); done(loaded, n, element) when it has run (or failed)
+  const s = document.createElement('script'), n = ++LIVE.seq;
+  let over = false;
+  const end = ok => { if (over) return; over = true; clearTimeout(cap); s.remove(); done(ok, n, s); };
+  const cap = setTimeout(() => end(false), 15000);   // neither load nor error came: give up on this one
+  s.onload = () => end(true); s.onerror = () => end(false);
+  s.dataset.live = name; s.src = name;
+  document.head.appendChild(s);
+  return n;
+}
+// how old a payload is by the real clock (not nowMs(), which ?at= pretends); no readable `at`: never fresh
+const liveAge = p => { const t = p && typeof p.at === 'string' ? Date.parse(p.at) : NaN; return isNaN(t) ? Infinity : Date.now() - t; };
+function setLive(on) {   // on: a Watcher answered; the corner says LIVE only while its payload is fresh, and turns BUILT when it goes stale
+  const age = liveAge(LIVE.payload);
+  on = !!on && age < LIVE_FRESH_MS && age > -LIVE_FRESH_MS;   // a time far ahead is a broken clock, not a heartbeat
+  clearTimeout(LIVE.ageT); LIVE.ageT = on ? setTimeout(() => setLive(LIVE.on), LIVE_FRESH_MS - age + 50) : 0;
+  if (LIVE.on !== on) { LIVE.on = on; kick(); }
+}
+function schedulePoll() {
+  clearTimeout(LIVE.timer); LIVE.timer = 0; LIVE.next = 0;
+  if (LIVE.off || document.hidden) return;   // hidden: none until it shows again
+  LIVE.next = LIVE.miss >= LIVE_MISSES ? LIVE.slow : LIVE.every;
+  LIVE.timer = setTimeout(lamptownPoll, LIVE.next);
+}
+function lamptownPoll() {
+  clearTimeout(LIVE.timer); LIVE.timer = 0; LIVE.next = 0;
+  if (LIVE.busy) return;   // one poll at a time; it schedules the next one when it ends
+  LIVE.polls++;
+  LIVE.busy = liveScript('town-live.js', (ok, n, s) => {
+    LIVE.busy = null;
+    const fed = ok && s.dataset.got === 'live';   // it loaded, and it really called lamptownLive
+    if (!ok) LIVE.fails++;
+    LIVE.miss = fed ? 0 : LIVE.miss + 1;
+    setLive(fed);
+    schedulePoll();
+  });
+}
+function lamptownLive(p) {
+  if (!p || typeof p !== 'object' || Array.isArray(p) || p.spec !== LIVE_SPEC) { console.warn('lamptown: not a ' + LIVE_SPEC + ' payload'); return false; }
+  const s = document.currentScript;
+  if (s && s.dataset.live === 'town-live.js') s.dataset.got = 'live';   // the poll's own file (not the app's push)
+  LIVE.payload = p;
+  setLive(true);
+  if (typeof p.rev === 'string' && p.rev && p.rev !== LIVE.rev && p.rev !== LIVE.want && p.rev !== LIVE.bad) loadData(p.rev);
+  kick();
+  return true;
+}
+function loadData(rev) {
+  LIVE.want = rev; LIVE.loads++;
+  liveScript('town-data.js', (ok, n, s) => {
+    if (LIVE.want === rev) LIVE.want = null;
+    // it ran but brought nothing usable, or data without a rev: don't ask for this rev again.
+    // It brought another rev (the Watcher is still writing it): the next poll asks again.
+    if (ok && LIVE.rev !== rev && s.dataset.got !== 'other') LIVE.bad = rev;
+  });
+}
+/* new town data. From town-data.js (the poll) it is used only when its rev is the one the page asked for, so an older file
+   that lands late can't replace newer data; data without a rev is used but says nothing about which rev is shown.
+   The app's own push (no script element) is always used. */
+function lamptownData(d) {
+  const s = document.currentScript, file = !!(s && s.dataset.live === 'town-data.js');
+  const rev = d && typeof d.rev === 'string' && d.rev ? d.rev : null;
+  if (file && rev && rev !== LIVE.want) { s.dataset.got = 'other'; return false; }
+  if (!applyData(d)) return false;
+  if (file) s.dataset.got = rev ? 'rev' : 'norev';
+  if (rev || !file) LIVE.rev = rev;
+  return true;
+}
+/* swap the town's data in place: everything read from D is read again; the scene, an open room and an open card follow */
+function applyData(d) {
+  try { d = checkData(d); } catch (e) { console.warn('lamptown: new town data ignored: ' + (e && e.message || e)); return false; }
+  const lotsWere = ORDER.map(built).join();
+  D = d; PT = D.parts; DATA_ERR = '';
+  setTitle(); readSky();
+  TRUTH = computeTruth();
+  if (ORDER.map(built).join() !== lotsWere) for (const k of Object.keys(BGS)) delete BGS[k];   // empty lots and shadows are in the background
+  syncHits(); srText();
+  LIVE.swaps++;
+  if (RS.id) updateRoom();
+  if (!panel.hidden && openPlot) {
+    if (PLOT[openPlot] || partOn(openPlot)) { fillPanel(openPlot); placePanel(openPlot); } else closePanel();
+  }
+  if (!running) render(FIXED !== null ? FIXED : OFF, stillMode());   // a still scene redraws now; a moving one on its next frame
+  syncDetails();
+  return true;
+}
+/* the open room after a swap: room.update(data) if it has one; else it walks in again quietly (no door, no zoom) on the
+   new data and its own view starts over. A building that went away or changed its room type sends you back to town. */
+function updateRoom() {
+  const id = RS.id, room = roomOf(id), plot = plotOf(id);
+  if (!room || room !== RS.room || !plot) { leaveRoom(); return; }
+  RS.plot = plot;
+  const data = roomData(id);
+  if (JSON.stringify(data) === JSON.stringify(RS.data)) return;   // nothing new in this room
+  if (typeof room.update === 'function') { RS.data = data; safe(() => room.update(data)); }
+  else {
+    try { room.leave && room.leave(); } catch (e) { console.error(e); }
+    Object.assign(RS, { data, crash: null, hover: null, hoverKey: '' });
+    try { room.enter && room.enter(data, roomCtx(id)); } catch (e) { RS.crash = e; console.error(e); }
+  }
+  if (RS.focus >= allTargets().length) RS.focus = -1;
+}
+function startLive() {
+  if (LIVE.started) return;
+  LIVE.started = true; LIVE.off = PREVIEW || qs.get('live') === '0';
+  if (LIVE.off) return;
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) { clearTimeout(LIVE.timer); LIVE.timer = 0; LIVE.next = 0; }
+    else { LIVE.miss = 0; lamptownPoll(); }   // showing again: look now, and every 5 s again
+  });
+  if (!document.hidden) lamptownPoll();
+}
+
 RM.addEventListener && RM.addEventListener('change', start);
 fit(); start();
 { const hm = /^#open=([\w-]+)/.exec(location.hash); if (hm && plotOf(hm[1])) openPanel(plotOf(hm[1])); }
