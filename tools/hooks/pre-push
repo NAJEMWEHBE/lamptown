@@ -1,16 +1,32 @@
 #!/bin/sh
-# Lamptown pre-push hook: run the privacy gate over every commit, file name and file
-# this push would send that the remote does not have yet.
+# Lamptown pre-push hook: run the privacy gate over every commit, file name, file, ref name
+# and annotated tag this push would send that the remote does not have yet.
 #
-# With pre-commit, `pre-commit install` already sets this up (see .pre-commit-config.yaml).
-# Without pre-commit, copy this file to .git/hooks/pre-push and make it executable.
+# Maintainers: `git config core.hooksPath tools/hooks` runs this file (and pre-commit and
+# commit-msg next to it). With pre-commit, `pre-commit install` sets up the same check instead
+# (see .pre-commit-config.yaml). Without either, copy this file to .git/hooks/pre-push.
+#
+# The private deny-list is required: point LAMPTOWN_DENYLIST at it. A GUI git client or a
+# shell that doesn't have the variable would otherwise push with that check skipped.
+# Outside contributors have no deny-list: set LAMPTOWN_NO_DENYLIST=1 to push without it
+# (every other check still runs, and CI checks the pull request again).
 #
 # git passes the remote name as $1 and one "<local ref> <sha> <remote ref> <sha>" line
 # per ref on stdin; the gate reads both.
 root=$(git rev-parse --show-toplevel) || exit 2
+require=--require-denylist
+if [ "${LAMPTOWN_NO_DENYLIST:-}" = 1 ]; then
+  require=
+fi
 for py in python3 python py; do
   if "$py" -c 'import sys; sys.exit(sys.version_info < (3, 11))' >/dev/null 2>&1; then
-    exec "$py" "$root/tools/privacy_gate.py" --root "$root" --pre-push "$1"
+    "$py" "$root/tools/privacy_gate.py" --root "$root" --pre-push "$1" $require
+    status=$?
+    if [ "$status" -eq 2 ] && [ -n "$require" ]; then
+      echo "pre-push: set LAMPTOWN_DENYLIST to the private deny-list's path, or, if you have" \
+           "no deny-list (outside contributors), push with LAMPTOWN_NO_DENYLIST=1" >&2
+    fi
+    exit "$status"
   fi
 done
 echo "pre-push: Python 3.11+ not found, so the privacy gate could not run" >&2

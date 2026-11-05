@@ -114,6 +114,10 @@ town's data. Installed packages can add collectors and rooms through entry point
 
 ## Keeping secrets out of this repository
 
-Every commit, push and pull request runs the privacy gate (`tools/privacy_gate.py`: personal paths,
-e-mail addresses, a private deny-list, image metadata) and gitleaks (secrets). See
+With the hooks set up (`pre-commit install`, or `git config core.hooksPath tools/hooks`), every
+commit, commit message and push runs the privacy gate (`tools/privacy_gate.py`: personal paths,
+e-mail addresses and commit identities, a private deny-list, file names, ref names and annotated
+tags, image metadata), and every commit runs gitleaks (secrets) when it is installed. CI runs the
+gate over the tree and the full history, and gitleaks, on every push to `main`, every release tag
+and every pull request. See
 [CONTRIBUTING.md](CONTRIBUTING.md#the-privacy-gate).

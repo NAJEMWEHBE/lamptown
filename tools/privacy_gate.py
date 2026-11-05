@@ -33,12 +33,25 @@ any term inside a file name or revealed snippet is masked the same way, so CI lo
 Deny-list format: one term per line; blank lines and lines starting with "#" are ignored.
 A line "!author: <text>" allows that exact author/committer name or e-mail (case-insensitive)
 in commit identities only, for example the owner's public noreply identity.
+
+Commit, tag and push identities: the e-mail must be a noreply address (noreply@..., no-reply@...,
+or a forge's per-user noreply host such as <id>+<name>@users.noreply.github.com) or an
+example/reserved one; anything else fails, also a bare login, user@PCNAME and user@host.(none).
+
+Baseline (tools/privacy_gate_baseline.txt, in the repo): reviewed, fictional user-path and
+e-mail hits inside blobs that are already public and can't be rewritten (test fixtures written
+before the gate learned a path form). One entry per line: "<blob sha> <line or -> <check>",
+then an optional "# comment". An entry only covers that exact file content (the blob sha), that
+line and that check, so an edited file or a new leak is never covered. Deny-list, image and
+identity hits are never baselined. --suggest-baseline prints entries for the current hits;
+review every one before adding it.
 """
 
 from __future__ import annotations
 
 import argparse
 import bisect
+import hashlib
 import os
 import re
 import subprocess
@@ -46,9 +59,11 @@ import sys
 import zlib
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePath, PurePosixPath
 
 ENV_DENYLIST = "LAMPTOWN_DENYLIST"
+BASELINE_FILE = "tools/privacy_gate_baseline.txt"
+BASELINE_CHECKS = ("user-path", "email")
 MEDIA_DIR = "docs/media/"
 APP_ICON_DIR = "src/lamptown/app/assets/"   # the app icons (tools/make_icon.py), nothing else
 APP_ICON_EXTS = {".png", ".ico", ".icns"}
@@ -66,15 +81,30 @@ ZERO_SHA = "0" * 40
 
 # ----------------------------------------------------------------------------- patterns
 
-_NAME = r"[^\\/\s\"'`<>|:*?,;()\[\]{}]+"
+_SEP = r"(?:[\\/]|%5[Cc]|%2[Ff])"      # a path separator, also URL-encoded
+_NAME = r"[^\\/\s\"'`<>|:*?,;()\[\]{}%]+"
+_USER_PATH_PREFIXES = "|".join([
+    r"[A-Za-z](?::|%3A)",                                      # C:  C%3A
+    _SEP + r"+(?:mnt|cygdrive)" + _SEP + r"+[A-Za-z](?=" + _SEP + ")",   # /mnt/c (WSL, Cygwin)
+    _SEP + r"+[A-Za-z](?=" + _SEP + ")",                       # /c (Git Bash, MSYS)
+    _SEP + r"+var(?=" + _SEP + ")",                            # /var/home (Fedora Atomic)
+    _SEP + r"{2,}wsl(?:\$|\.localhost)" + _SEP + "+" + _NAME,  # \\wsl$\<distro>
+])
+# The lookbehind applies to the start of the prefix, so ".../c/Users/x" inside a URL stays clean.
 USER_PATH_RE = re.compile(
-    r"(?<![A-Za-z0-9.~_-])(?:[A-Za-z]:)?[\\/]+"
-    r"(?:Users|Documents and Settings|home)[\\/]+(?P<name>" + _NAME + ")",
+    r"(?<![A-Za-z0-9.~_-])(?:" + _USER_PATH_PREFIXES + ")?" + _SEP
+    + r"+(?:Users|Documents and Settings|home)" + _SEP + r"+(?P<name>" + _NAME + ")",
     re.IGNORECASE,
 )
-# Lower-case drive + "/" is skipped: it reads like minified JS ("x?a:/re/.test(s)").
 DRIVE_PATH_RE = re.compile(
-    r"(?<![A-Za-z0-9])(?:[A-Z]:[\\/]+|[a-z]:\\+)(?P<seg>" + _NAME + ")",
+    r"(?<![A-Za-z0-9])(?:[A-Z](?::|%3[Aa])" + _SEP + r"+"
+    r"|[a-z](?::\\+|%3[Aa](?:%5[Cc]|%2[Ff])+))(?P<seg>" + _NAME + ")",
+)
+# A lower-case drive + "/" reads like minified JS ("x?a:/re/.test(s)", "{k:/re/gi.test(s)}"), so
+# it only counts after a space, quote, "=", "(", "[", "<", ">" or "/" (never "?", ":", "," or "{",
+# where JS puts a regex literal) and only with a further path segment that doesn't start with ".".
+DRIVE_SLASH_RE = re.compile(
+    r"(?<![^\s\"'`=(\[<>/])[a-z]:/+(?P<seg>" + _NAME + r")(?=/+[^\s/\\\"'`<>|*?,;()\[\]{}.:])",
 )
 SYSTEM_DRIVE_DIRS = ("windows", "program", "users", "documents and settings")
 EMAIL_RE = re.compile(
@@ -82,23 +112,81 @@ EMAIL_RE = re.compile(
     r"(?P<domain>[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?"
     r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*\.[A-Za-z]{2,})(?![\w-])"
 )
+# A whole identity e-mail: the local part may hold more than EMAIL_RE finds in prose, such as
+# GitHub's bot noreply "<id>+github-actions[bot]@users.noreply.github.com"; the domain needs a
+# dotted, letters-only top-level label (so "user@PCNAME" and "user@host.(none)" don't parse).
+IDENTITY_EMAIL_RE = re.compile(
+    r"(?P<local>[^\s@<>]+)@(?P<domain>(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\.)+[A-Za-z]{2,})"
+)
 EXAMPLE_DOMAINS = ("example.com", "example.org", "example.net")
 RESERVED_TLDS = ("example", "test", "invalid", "localhost")
 NOREPLY_LABELS = ("noreply", "no-reply")
+# Hosts whose every address is a per-user noreply alias (any local part is fine there).
+NOREPLY_HOSTS = ("users.noreply.github.com", "users.noreply.gitlab.com", "noreply.codeberg.org")
 
 
 def _placeholder_name(name: str) -> bool:
     return name.lower() == "you" or name[0] in "$%" or set(name) == {"."}
 
 
-def _allowed_email(local: str, domain: str) -> bool:
+def _noreply_email(local: str, domain: str) -> bool:
+    """A plain noreply@ / no-reply@ address, or any address on a forge's noreply host."""
+    return local.lower() in NOREPLY_LABELS or domain.lower() in NOREPLY_HOSTS
+
+
+def _reserved_domain(domain: str, *, localhost: bool = True) -> bool:
     d = domain.lower()
-    labels = d.split(".")
     if any(d == e or d.endswith("." + e) for e in EXAMPLE_DOMAINS):
         return True
-    if labels[-1] in RESERVED_TLDS:
+    tld = d.rsplit(".", 1)[-1]
+    return tld in RESERVED_TLDS and (localhost or tld != "localhost")
+
+
+def _allowed_email(local: str, domain: str) -> bool:
+    return _reserved_domain(domain) or _noreply_email(local, domain)
+
+
+def allowed_identity_email(value: str) -> bool:
+    """The e-mail of a commit, tag or push identity is an allow-list: a noreply address or an
+    example/reserved one. Anything else fails, also what EMAIL_RE would not see as an address
+    (a bare login, user@PCNAME, git's user@host.(none)): those leak a login and a machine name.
+    An empty e-mail holds nothing and passes."""
+    if not value:
         return True
-    return local.lower() in NOREPLY_LABELS or any(lbl in NOREPLY_LABELS for lbl in labels)
+    m = IDENTITY_EMAIL_RE.fullmatch(value.strip())
+    return bool(m) and (_noreply_email(m.group("local"), m.group("domain"))
+                        or _reserved_domain(m.group("domain"), localhost=False))
+
+
+def generic_matches(text: str) -> Iterable[tuple[int, int, str, str]]:
+    """Yield (start, end, check, detail) for every personal path or e-mail address in text."""
+    for m in USER_PATH_RE.finditer(text):
+        if not _placeholder_name(m.group("name")):
+            yield (m.start(), m.end(), "user-path",
+                   "absolute personal path (use ~ or the placeholder 'you')")
+    for rx in (DRIVE_PATH_RE, DRIVE_SLASH_RE):
+        for m in rx.finditer(text):
+            if not m.group("seg").lower().startswith(SYSTEM_DRIVE_DIRS):
+                yield (m.start(), m.end(), "user-path",
+                       "absolute drive-letter path (use ~ or a config value)")
+    for m in EMAIL_RE.finditer(text):
+        if not _allowed_email(m.group("local"), m.group("domain")):
+            yield (m.start(), m.end(), "email",
+                   "e-mail address (use @example.com or a noreply address)")
+
+
+def mask_generic(text: str) -> str:
+    """Hide every personal path and e-mail in a display label (a file or ref name)."""
+    spans = sorted((s, e, check) for s, e, check, _ in generic_matches(text))
+    out, pos = [], 0
+    for start, end, check in spans:
+        if start < pos:
+            continue
+        out.append(text[pos:start])
+        out.append("[e-mail]" if check == "email" else "[path]")
+        pos = end
+    out.append(text[pos:])
+    return "".join(out)
 
 
 # ----------------------------------------------------------------------------- deny-list
@@ -188,6 +276,7 @@ class Hit:
     check: str          # user-path | email | deny-list | image
     detail: str         # never contains matched deny-list text
     snippet: str = ""   # redacted matched text, shown only with --reveal
+    blob: str = ""      # git blob sha of the content the hit is in (baseline key), if any
 
     def format(self, reveal: bool) -> str:
         loc = self.where if self.line is None else f"{self.where}:{self.line}"
@@ -196,11 +285,49 @@ class Hit:
             text += f"  -> {self.snippet}"
         return text
 
+    def baseline_entry(self) -> str:
+        return f"{self.blob} {'-' if self.line is None else self.line} {self.check}  # {self.where}"
+
+
+def blob_ids(data: bytes) -> tuple[str, ...]:
+    """The git blob sha of data, plus that of its LF form when it has CRLF line ends (a
+    Windows checkout of an LF blob), so a baseline entry matches either way."""
+    def sha(b: bytes) -> str:
+        return hashlib.sha1(b"blob %d\0" % len(b) + b, usedforsecurity=False).hexdigest()
+    ids = (sha(data),)
+    return ids + (sha(data.replace(b"\r\n", b"\n")),) if b"\r\n" in data else ids
+
+
+def load_baseline(root: Path) -> frozenset[tuple[str, str, str]]:
+    path = root / BASELINE_FILE
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return frozenset()
+    except (OSError, UnicodeDecodeError):
+        raise SetupError(f"{BASELINE_FILE} is unreadable (expected UTF-8 text)") from None
+    out = set()
+    for line_no, line in enumerate(raw.splitlines(), 1):
+        entry = line.split("#", 1)[0].split()
+        if not entry:
+            continue
+        if (len(entry) != 3 or not re.fullmatch(r"[0-9a-f]{40}", entry[0])
+                or not (entry[1] == "-" or entry[1].isdigit())
+                or entry[2] not in BASELINE_CHECKS):
+            raise SetupError(f"{BASELINE_FILE} line {line_no}: expected "
+                             "'<blob sha> <line or -> <user-path|email>'")
+        out.add((entry[0], entry[1], entry[2]))
+    return frozenset(out)
+
 
 class Scanner:
-    def __init__(self, deny: DenyList | None):
+    def __init__(self, deny: DenyList | None,
+                 baseline: frozenset[tuple[str, str, str]] = frozenset()):
         self.deny = deny
+        self.baseline = baseline
+        self.baselined = 0               # hits skipped because the baseline lists them
         self.hits: list[Hit] = []
+        self._blobs: tuple[str, ...] = ()  # blob ids of the content being scanned
 
     # -- helpers
     def display(self, name: str) -> str:
@@ -210,7 +337,14 @@ class Scanner:
         return self.display(text)
 
     def add(self, where: str, line: int | None, check: str, detail: str, snippet: str = ""):
-        self.hits.append(Hit(self.display(where), line, check, detail, self._snippet(snippet)))
+        if self._blobs and check in BASELINE_CHECKS and self.baseline:
+            key = "-" if line is None else str(line)
+            if any((b, key, check) in self.baseline for b in self._blobs):
+                self.baselined += 1
+                return
+        # The location may itself be a file or ref name holding the match: mask it there too.
+        self.hits.append(Hit(self.display(mask_generic(where)), line, check, detail,
+                             self._snippet(snippet), self._blobs[0] if self._blobs else ""))
 
     # -- text
     def scan_text(self, text: str, where: str, *, lines: bool = True, label: str = "") -> None:
@@ -221,35 +355,27 @@ class Scanner:
             return bisect.bisect_right(starts, pos) if lines else None
 
         prefix = f"{label}: " if label else ""
-        for m in USER_PATH_RE.finditer(text):
-            if not _placeholder_name(m.group("name")):
-                self.add(where, line_of(m.start()), "user-path",
-                         prefix + "absolute personal path (use ~ or the placeholder 'you')",
-                         m.group(0))
-        for m in DRIVE_PATH_RE.finditer(text):
-            if not m.group("seg").lower().startswith(SYSTEM_DRIVE_DIRS):
-                self.add(where, line_of(m.start()), "user-path",
-                         prefix + "absolute drive-letter path (use ~ or a config value)",
-                         m.group(0))
-        for m in EMAIL_RE.finditer(text):
-            if not _allowed_email(m.group("local"), m.group("domain")):
-                self.add(where, line_of(m.start()), "email",
-                         prefix + "e-mail address (use @example.com or a noreply address)",
-                         m.group(0))
+        for start, end, check, detail in generic_matches(text):
+            self.add(where, line_of(start), check, prefix + detail, text[start:end])
         if self.deny:
             for line_no, start, _end in self.deny.find(text):
                 self.add(where, line_of(start), "deny-list",
                          prefix + f"deny-list term (deny-list line {line_no})")
 
-    def scan_identity(self, value: str, where: str, field_name: str) -> None:
-        """Check a commit/tag author or committer name or e-mail."""
+    def scan_identity(self, value: str, where: str, field_name: str, *,
+                      email: bool | None = None) -> None:
+        """Check a commit/tag author, committer or tagger name or e-mail.
+
+        An e-mail field (email=True, or a field_name with "e-mail" in it) must be on the
+        allow-list (allowed_identity_email); a name field gets the deny-list check only.
+        """
         if not value:
             return
-        if "@" in value:
-            for m in EMAIL_RE.finditer(value):
-                if not _allowed_email(m.group("local"), m.group("domain")):
-                    self.add(where, None, "email",
-                             f"{field_name} is not a noreply or example address", m.group(0))
+        if email is None:
+            email = "e-mail" in field_name
+        if email and not allowed_identity_email(value):
+            self.add(where, None, "email",
+                     f"{field_name} is not a noreply or example address", value)
         if self.deny and value.strip().lower() not in self.deny.author_allow:
             for line_no, _s, _e in self.deny.find(value):
                 self.add(where, None, "deny-list",
@@ -257,11 +383,10 @@ class Scanner:
 
     # -- names
     def scan_name(self, rel: str) -> None:
-        """Check a repo-relative path (posix form): deny-list terms and image location."""
-        if self.deny:
-            for line_no, _s, _e in self.deny.find(rel):
-                self.add(rel, None, "deny-list", f"file name: deny-list term "
-                         f"(deny-list line {line_no})")
+        """Check a repo-relative path (posix form): the text checks and the image location."""
+        # A file passed from outside the repo: only its own name is the repo's business.
+        shown = PurePath(rel).name if Path(rel).is_absolute() else rel
+        self.scan_text(shown, rel, lines=False, label="file name")
         ext = PurePosixPath(rel).suffix.lower()
         if ext in IMAGE_EXTS:
             if is_app_icon(rel):
@@ -275,7 +400,13 @@ class Scanner:
     # -- file content
     def scan_bytes(self, data: bytes, rel: str, where: str | None = None) -> None:
         """Check file content. rel is the repo path (image rules), where the display label."""
-        where = where or rel
+        outer, self._blobs = self._blobs, blob_ids(data)
+        try:
+            self._scan_bytes(data, rel, where or rel)
+        finally:
+            self._blobs = outer
+
+    def _scan_bytes(self, data: bytes, rel: str, where: str) -> None:
         kind = sniff_image(data)
         ext = PurePosixPath(rel).suffix.lower()
         if is_app_icon(rel) and kind != ext[1:]:
@@ -546,19 +677,15 @@ def scan_history(scanner: Scanner, root: Path, revs: Sequence[str], refs: bool) 
         scanner.scan_identity(ce, where, "committer e-mail")
 
     if refs:
-        raw = git(root, "for-each-ref", "--format=%(refname)%01%(objecttype)%01%(taggername)"
-                  "%01%(taggeremail)%01%(contents)%00")
+        raw = git(root, "for-each-ref", "--format=%(refname)%01%(objectname)%01%(objecttype)%00")
         for raw_rec in raw.decode("utf-8", errors="replace").split("\0"):
             rec = raw_rec.strip("\n")
             if not rec:
                 continue
-            name, otype, tname, temail, contents = (rec.split("\x01", 4) + [""] * 5)[:5]
+            name, sha, otype = (rec.split("\x01", 2) + [""] * 3)[:3]
             scanner.scan_text(name, "ref name", lines=False)
             if otype == "tag":
-                where = "annotated tag"
-                scanner.scan_identity(tname, where, "tagger name")
-                scanner.scan_identity(temail.strip("<>"), where, "tagger e-mail")
-                scanner.scan_text(contents, f"{where} message")
+                scan_tags(scanner, root, sha)
 
     names = git(root, "log", "-z", "-m", "--format=", "--name-only", *revs, "--")
     paths = {n.strip("\n") for n in names.decode("utf-8", errors="replace").split("\0")}
@@ -574,17 +701,54 @@ def scan_history(scanner: Scanner, root: Path, revs: Sequence[str], refs: bool) 
                      stdin="\n".join(first_path).encode() + b"\n")
         blobs = [ln.split()[0] for ln in checks.decode().splitlines() if ln.endswith(" blob")]
     paths.update(first_path[b] for b in blobs)
-    if blobs:
-        out = git(root, "cat-file", "--batch", stdin="\n".join(blobs).encode() + b"\n")
-        pos = 0
-        for sha in blobs:
-            nl = out.index(b"\n", pos)
-            size = int(out[pos:nl].split()[2])
-            data = out[nl + 1:nl + 1 + size]
-            pos = nl + 1 + size + 1
-            scanner.scan_bytes(data, first_path[sha], f"{first_path[sha]} (blob {sha[:10]})")
+    for sha, data in read_blobs(root, blobs):
+        scanner.scan_bytes(data, first_path[sha], f"{first_path[sha]} (blob {sha[:10]})")
     for p in sorted(p for p in paths if p):
         scanner.scan_name(p)
+
+
+def read_blobs(root: Path, shas: Sequence[str]) -> Iterable[tuple[str, bytes]]:
+    """(sha, content) for each blob, read in one `git cat-file --batch`."""
+    if not shas:
+        return
+    out = git(root, "cat-file", "--batch", stdin="\n".join(shas).encode() + b"\n")
+    pos = 0
+    for sha in shas:
+        nl = out.index(b"\n", pos)
+        size = int(out[pos:nl].split()[2])
+        yield sha, out[nl + 1:nl + 1 + size]
+        pos = nl + 1 + size + 1
+
+
+def split_ident(ident: str) -> tuple[str, str]:
+    """'Name <e-mail> [time zone]' -> (name, e-mail)."""
+    m = re.match(r"(.*?)\s*<([^>]*)>", ident)
+    return (m.group(1), m.group(2)) if m else (ident.strip(), "")
+
+
+def scan_tags(scanner: Scanner, root: Path, sha: str) -> None:
+    """If sha is an annotated tag: its tagger, tag name and message, then the same for every
+    tag it points at (a tag of a tag), until the chain reaches a commit, tree or blob."""
+    seen: set[str] = set()
+    while sha and sha not in seen:
+        seen.add(sha)
+        if git(root, "cat-file", "-t", sha).strip() != b"tag":
+            return
+        raw = git(root, "cat-file", "tag", sha).decode("utf-8", errors="replace")
+        head, _, message = raw.partition("\n\n")
+        where = "annotated tag"
+        sha = ""
+        for line in head.splitlines():
+            key, _, value = line.partition(" ")
+            if key == "object":
+                sha = value.strip()
+            elif key == "tag":
+                scanner.scan_text(value, f"{where} name", lines=False)
+            elif key == "tagger":
+                name, mail = split_ident(value)
+                scanner.scan_identity(name, where, "tagger name", email=False)
+                scanner.scan_identity(mail, where, "tagger e-mail", email=True)
+        scanner.scan_text(message, f"{where} message")
 
 
 def git_identity(root: Path, var: str) -> tuple[str, str]:
@@ -592,8 +756,34 @@ def git_identity(root: Path, var: str) -> tuple[str, str]:
         ident = git(root, "var", var).decode("utf-8", errors="replace").strip()
     except SetupError:
         return "", ""
-    m = re.match(r"(.*?)\s*<([^>]*)>", ident)
-    return (m.group(1), m.group(2)) if m else (ident, "")
+    return split_ident(ident)
+
+
+def staged_files(root: Path) -> list[tuple[str, str]]:
+    """(path, blob sha) for every file added, copied, modified, renamed or retyped in the index
+    (the one git uses for this commit: GIT_INDEX_FILE is honoured). Gitlinks are skipped."""
+    raw = git(root, "diff", "--cached", "--name-only", "-z", "--no-renames",
+              "--diff-filter=ACMRT")
+    wanted = {n for n in raw.decode("utf-8", errors="replace").split("\0") if n}
+    if not wanted:
+        return []
+    out = []
+    listing = git(root, "ls-files", "-s", "-z").decode("utf-8", errors="replace")
+    for entry in listing.split("\0"):
+        meta, _, path = entry.partition("\t")
+        parts = meta.split()
+        if path in wanted and len(parts) == 3 and parts[0] != "160000":
+            out.append((path, parts[1]))
+    return sorted(out)
+
+
+def scan_staged(scanner: Scanner, root: Path, only: Sequence[str] = ()) -> None:
+    files = [(p, s) for p, s in staged_files(root) if not only or p in only]
+    path_of = {sha: p for p, sha in files}
+    for path, _sha in files:
+        scanner.scan_name(path)
+    for sha, data in read_blobs(root, list(path_of)):
+        scanner.scan_bytes(data, path_of[sha], f"{path_of[sha]} (staged)")
 
 
 SCISSORS_RE = re.compile(r"^# -+ >8 -+$")
@@ -612,20 +802,40 @@ def commit_message_body(text: str) -> str:
     return "\n".join(kept)
 
 
+def push_refs(stdin_text: str, env: dict[str, str]) -> list[tuple[str, str, str]]:
+    """(local ref, local sha, remote ref) per pushed ref (git pre-push stdin or pre-commit env).
+    Deletes (an all-zero local sha) are left out: they send nothing, and deleting a badly
+    named branch from the remote must stay possible."""
+    if env.get("PRE_COMMIT_TO_REF"):
+        refs = [(env.get("PRE_COMMIT_LOCAL_BRANCH", ""), env["PRE_COMMIT_TO_REF"],
+                 env.get("PRE_COMMIT_REMOTE_BRANCH", ""))]
+    else:
+        refs = [(p[0], p[1], p[2]) for p in (ln.split() for ln in stdin_text.splitlines())
+                if len(p) == 4]
+    return [r for r in refs if r[1] and r[1] != ZERO_SHA]
+
+
 def push_revs(remote: str | None, stdin_text: str, env: dict[str, str]) -> list[str]:
     """Revision arguments for what a push sends (git pre-push stdin or pre-commit env)."""
-    shas = []
+    shas = [sha for _local, sha, _remote in push_refs(stdin_text, env)]
     if env.get("PRE_COMMIT_TO_REF"):
-        shas.append(env["PRE_COMMIT_TO_REF"])
         remote = remote or env.get("PRE_COMMIT_REMOTE_NAME")
-    else:
-        for line in stdin_text.splitlines():
-            parts = line.split()
-            if len(parts) == 4 and parts[1] != ZERO_SHA:
-                shas.append(parts[1])
     if not shas:
         return []
     return [*shas, "--not", f"--remotes={remote}"] if remote else shas
+
+
+def scan_push(scanner: Scanner, root: Path, remote: str | None, stdin_text: str,
+              env: dict[str, str]) -> None:
+    """Everything a push sends: new commits and blobs, both ref names, annotated tags."""
+    revs = push_revs(remote, stdin_text, env)
+    if revs:
+        scan_history(scanner, root, revs, refs=False)
+    for local_ref, sha, remote_ref in push_refs(stdin_text, env):
+        for name in dict.fromkeys((local_ref, remote_ref)):
+            if name:
+                scanner.scan_text(name, "ref name", lines=False)
+        scan_tags(scanner, root, sha)
 
 
 # ----------------------------------------------------------------------------- main
@@ -651,8 +861,14 @@ def build_parser() -> argparse.ArgumentParser:
                    help="scan a commit message file and the author/committer identity")
     p.add_argument("--pre-push", nargs="?", const="", metavar="REMOTE",
                    help="scan what is being pushed (git pre-push hook or pre-commit)")
+    p.add_argument("--staged", action="store_true",
+                   help="scan the staged (index) version of every added or changed file, or of "
+                        "the named ones (git pre-commit hook)")
     p.add_argument("--reveal", action="store_true",
                    help="show the matched path or e-mail (deny-list terms are never shown)")
+    p.add_argument("--suggest-baseline", action="store_true",
+                   help=f"also print {BASELINE_FILE} entries for the path and e-mail hits in "
+                        "file contents (review each one: only fictional, already-public text)")
     return p
 
 
@@ -671,9 +887,12 @@ def run(argv: Sequence[str] | None = None, *, stdin_text: str | None = None,
         if deny is None:
             print(f"privacy gate: notice: no deny-list (--denylist or ${ENV_DENYLIST}); "
                   "the deny-list check is skipped, all other checks run", file=sys.stderr)
+        elif not deny.terms:
+            print("privacy gate: notice: the deny-list has no terms, so the deny-list check "
+                  "finds nothing; all other checks run", file=sys.stderr)
 
-        scanner = Scanner(deny)
-        mode_set = args.commit_msg is not None or args.pre_push is not None
+        scanner = Scanner(deny, load_baseline(root))
+        mode_set = args.commit_msg is not None or args.pre_push is not None or args.staged
         if args.commit_msg is not None:
             try:
                 text = args.commit_msg.read_text(encoding="utf-8", errors="replace")
@@ -688,9 +907,9 @@ def run(argv: Sequence[str] | None = None, *, stdin_text: str | None = None,
         if args.pre_push is not None:
             if stdin_text is None:
                 stdin_text = "" if env.get("PRE_COMMIT_TO_REF") else sys.stdin.read()
-            revs = push_revs(args.pre_push or None, stdin_text, env)
-            if revs:
-                scan_history(scanner, root, revs, refs=False)
+            scan_push(scanner, root, args.pre_push or None, stdin_text or "", env)
+        if args.staged:
+            scan_staged(scanner, root, expand_paths(args.paths, cwd, root) if args.paths else ())
         if not mode_set:
             if args.paths:
                 for rel in expand_paths(args.paths, cwd, root):
@@ -704,11 +923,25 @@ def run(argv: Sequence[str] | None = None, *, stdin_text: str | None = None,
         print(f"privacy gate: error: {exc}", file=sys.stderr)
         return 2
 
+    if scanner.baselined:
+        print(f"privacy gate: notice: {scanner.baselined} reviewed fixture hit"
+              f"{'s' if scanner.baselined != 1 else ''} skipped ({BASELINE_FILE})",
+              file=sys.stderr)
     if scanner.hits:
         hits = sorted(set(scanner.hits), key=lambda h: (h.where, h.line or 0, h.check, h.detail))
         print(f"privacy gate: FAIL ({len(hits)} hit{'s' if len(hits) != 1 else ''})")
         for hit in hits:
             print("  " + hit.format(args.reveal))
+        if args.suggest_baseline:
+            entries: dict[str, str] = {}
+            for h in hits:
+                if h.blob and h.check in BASELINE_CHECKS:
+                    entry = h.baseline_entry()
+                    entries.setdefault(entry.split("#", 1)[0].strip(), entry)
+            print(f"privacy gate: {BASELINE_FILE} entries for these hits (add only reviewed, "
+                  "fictional, already-public ones):")
+            for entry in entries.values():
+                print(entry)
         return 1
     print("privacy gate: pass")
     return 0

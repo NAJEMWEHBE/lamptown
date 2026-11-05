@@ -30,8 +30,16 @@ pre-commit install
 ```
 
 `pre-commit install` sets up three git hooks: the privacy gate and gitleaks on every commit, the
-gate on every commit message, and the gate on everything a push would send (see
+gate on every commit message and identity, and the gate on everything a push would send (see
 [the privacy gate](#the-privacy-gate)).
+
+**Or use the repo's own hooks** (maintainers do): `git config core.hooksPath tools/hooks`. git
+then skips the hooks `pre-commit install` sets up, and pre-commit refuses to install while that
+setting is on, so `tools/hooks/` holds all three: `pre-commit` and `commit-msg` run pre-commit's
+stages when pre-commit is installed, otherwise the gate directly (over the staged version of each
+file) and gitleaks if it is installed (with a notice if not). `pre-push` runs the gate over
+everything the push sends and **requires the private deny-list**: point `LAMPTOWN_DENYLIST` at it,
+or, if you have none, push with `LAMPTOWN_NO_DENYLIST=1` (every other check still runs).
 
 The `[app]` extra (pywebview) is only needed for the desktop window and its tests. The core uses
 the standard library only: please keep `dependencies` in `pyproject.toml` empty.
@@ -82,17 +90,31 @@ the data. If you add something that moves, add it to that test.
 Lamptown is built to sit on top of private work, so the repository itself must never hold any.
 `tools/privacy_gate.py` blocks:
 
-1. absolute personal paths on any OS (a home folder with a real user name in it). Write `~/...`, or
-   the placeholder user `you`;
-2. e-mail addresses, except `example.com`-style test domains and noreply addresses;
+1. absolute personal paths on any OS (a home folder with a real user name in it, in Windows,
+   macOS, Linux, Git Bash, WSL or URL-encoded form), and drive-letter paths. Write `~/...`, or the
+   placeholder user `you`;
+2. e-mail addresses, except `example.com`-style test domains and noreply addresses. Commit, tag
+   and push identities are stricter: the e-mail must be a noreply address (your GitHub one, see
+   below) or an `example.com`/`.invalid`/`.test` one; a bare login, `you@YOUR-PC` or git's
+   `you@host.(none)` fail;
 3. terms from the maintainers' private deny-list (in file contents, file names, commit messages and
-   identities, and image metadata);
-4. images outside `docs/media/`, and images that are not PNG or GIF;
+   identities, ref names, annotated tags, and image metadata);
+4. images outside `docs/media/`, and images that are not PNG or GIF. The one exception is the
+   desktop app's icons, directly in `src/lamptown/app/assets/` as `.png`, `.ico` or `.icns`
+   (`tools/make_icon.py` makes them; every frame must be a PNG so its metadata is checked too);
 5. secrets (gitleaks).
 
-**You don't need the deny-list.** Without it the gate skips check 3 and runs every other check.
-The list is kept outside the repository and is never shown: a hit names a line number, never the
-term.
+Checks 1 to 3 cover file names as well as file contents, and a push is checked down to its ref
+names and annotated tags (tagger and message).
+
+**You don't need the deny-list.** Without it the gate skips check 3 and runs every other check
+(with `tools/hooks/pre-push`, push with `LAMPTOWN_NO_DENYLIST=1`). The list is kept outside the
+repository and is never shown: a hit names a line number, never the term.
+
+**Old fixtures.** A few test fixtures already in the public history plant invented paths in forms
+the gate learned later. `tools/privacy_gate_baseline.txt` lists those exact hits (file content,
+line and check), so `--history` passes without rewriting history. It never covers a changed file,
+a file name, an identity or a deny-list term: write new fixtures with the placeholder user `you`.
 
 **Your pull request is checked too.** CI runs the gate over the tree and the full history on every
 pull request. Pull requests from forks get no repository secrets, so CI runs every check except the

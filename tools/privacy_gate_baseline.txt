@@ -1,0 +1,52 @@
+# Privacy gate baseline: reviewed, fictional user-path and e-mail hits inside blobs that are
+# already public, so history can't be rewritten to drop them. Each entry covers only that exact
+# file content (the git blob sha), that line and that check; an edited file is never covered,
+# and deny-list, image, file-name and identity hits can't be listed here at all.
+#
+# Format: <blob sha> <line, or - for a whole-file hit> <user-path|email>  # where it was seen
+# Add an entry only after reading the hit (`python tools/privacy_gate.py --history --reveal`)
+# and confirming it is invented text; `--suggest-baseline` prints the lines to paste.
+#
+# 2026-11-05 (0.2.1): the gate learned the Git Bash, WSL, Cygwin, /var/home and lower-case
+# "d:/..." path forms. These test fixtures plant invented names ("Sam Doe", "sam", "kite") and
+# folders ("Work", "a", "old") in exactly those forms on purpose.
+
+2f4993e5d200277426c15ee686d6788d55ebfef1 248 user-path  # tests/test_status_events.py
+2f4993e5d200277426c15ee686d6788d55ebfef1 249 user-path  # tests/test_status_events.py
+2f4993e5d200277426c15ee686d6788d55ebfef1 250 user-path  # tests/test_status_events.py
+2f4993e5d200277426c15ee686d6788d55ebfef1 251 user-path  # tests/test_status_events.py
+2f4993e5d200277426c15ee686d6788d55ebfef1 301 user-path  # tests/test_status_events.py
+2f4993e5d200277426c15ee686d6788d55ebfef1 304 user-path  # tests/test_status_events.py
+2f4993e5d200277426c15ee686d6788d55ebfef1 318 user-path  # tests/test_status_events.py
+2f4993e5d200277426c15ee686d6788d55ebfef1 357 user-path  # tests/test_status_events.py
+2f4993e5d200277426c15ee686d6788d55ebfef1 469 user-path  # tests/test_status_events.py
+2f4993e5d200277426c15ee686d6788d55ebfef1 487 user-path  # tests/test_status_events.py
+41cafeb0d586391a76315fe83ad27acd5f726572 248 user-path  # tests/test_status_events.py
+41cafeb0d586391a76315fe83ad27acd5f726572 249 user-path  # tests/test_status_events.py
+41cafeb0d586391a76315fe83ad27acd5f726572 250 user-path  # tests/test_status_events.py
+41cafeb0d586391a76315fe83ad27acd5f726572 251 user-path  # tests/test_status_events.py
+41cafeb0d586391a76315fe83ad27acd5f726572 301 user-path  # tests/test_status_events.py
+41cafeb0d586391a76315fe83ad27acd5f726572 304 user-path  # tests/test_status_events.py
+41cafeb0d586391a76315fe83ad27acd5f726572 318 user-path  # tests/test_status_events.py
+41cafeb0d586391a76315fe83ad27acd5f726572 357 user-path  # tests/test_status_events.py
+41cafeb0d586391a76315fe83ad27acd5f726572 469 user-path  # tests/test_status_events.py
+41cafeb0d586391a76315fe83ad27acd5f726572 487 user-path  # tests/test_status_events.py
+904623db4a1fb3a434bfee3933230f7cc3ce0b3a 248 user-path  # tests/test_status_events.py
+904623db4a1fb3a434bfee3933230f7cc3ce0b3a 249 user-path  # tests/test_status_events.py
+904623db4a1fb3a434bfee3933230f7cc3ce0b3a 250 user-path  # tests/test_status_events.py
+904623db4a1fb3a434bfee3933230f7cc3ce0b3a 251 user-path  # tests/test_status_events.py
+904623db4a1fb3a434bfee3933230f7cc3ce0b3a 301 user-path  # tests/test_status_events.py
+904623db4a1fb3a434bfee3933230f7cc3ce0b3a 304 user-path  # tests/test_status_events.py
+904623db4a1fb3a434bfee3933230f7cc3ce0b3a 319 user-path  # tests/test_status_events.py
+95f64a803c198037a683acf0aaeb95b37ee734da 79 user-path  # tests/test_fix2_privacy.py
+a4e545c6326676511f4d4560fb169cf1cd893f83 44 user-path  # tests/data/title_privacy.txt
+a4e545c6326676511f4d4560fb169cf1cd893f83 45 user-path  # tests/data/title_privacy.txt
+a4e545c6326676511f4d4560fb169cf1cd893f83 46 user-path  # tests/data/title_privacy.txt
+a4e545c6326676511f4d4560fb169cf1cd893f83 47 user-path  # tests/data/title_privacy.txt
+a4e545c6326676511f4d4560fb169cf1cd893f83 82 user-path  # tests/data/title_privacy.txt
+a4e545c6326676511f4d4560fb169cf1cd893f83 85 user-path  # tests/data/title_privacy.txt
+a4e545c6326676511f4d4560fb169cf1cd893f83 101 user-path  # tests/data/title_privacy.txt
+a4e545c6326676511f4d4560fb169cf1cd893f83 115 user-path  # tests/data/title_privacy.txt
+a4e545c6326676511f4d4560fb169cf1cd893f83 169 user-path  # tests/data/title_privacy.txt
+a4e545c6326676511f4d4560fb169cf1cd893f83 188 user-path  # tests/data/title_privacy.txt
+a4e545c6326676511f4d4560fb169cf1cd893f83 290 user-path  # tests/data/title_privacy.txt

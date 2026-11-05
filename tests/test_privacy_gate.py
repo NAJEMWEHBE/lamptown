@@ -7,6 +7,8 @@ stays clean when the gate scans the repo. The deny-list terms below are invented
 from __future__ import annotations
 
 import importlib.util
+import os
+import shutil
 import struct
 import subprocess
 import sys
@@ -168,6 +170,22 @@ PLANTED = {
     "lower-case drive-letter path": "e:" + BS + "work" + BS + "secretproject",
     "drive-letter path, forward slashes": "E:" + FS + "work" + FS + "secretproject",
     "personal e-mail": "mail " + email("dana.fake", "fakemail.io") + " today",
+    "e-mail on a company noreply host": email("dana.fake", "noreply.bigcorp-fake.com"),
+    "git bash user folder": FS + "c" + FS + "Users" + FS + "dana" + FS + "notes",
+    "wsl user folder": "cd " + FS + "mnt" + FS + "c" + FS + "Users" + FS + "dana",
+    "cygwin user folder": FS + "cygdrive" + FS + "c" + FS + "Users" + FS + "dana",
+    "fedora atomic home folder": FS + "var" + FS + "home" + FS + "dana" + FS + "x",
+    "wsl share home folder": BS * 2 + "wsl$" + BS + "Ubuntu" + BS + "home" + BS + "dana",
+    "wsl.localhost home folder": BS * 2 + "wsl.localhost" + BS + "Debian" + BS + "home" + BS
+    + "dana",
+    "wsl share, json-escaped": BS * 4 + "wsl$" + BS * 2 + "Ubuntu" + BS * 2 + "home" + BS * 2
+    + "dana",
+    "url-encoded user folder": "?p=C" + "%3A%5CUsers%5Cdana%5Cnotes",
+    "url-encoded user folder, slashes": "?p=C" + "%3a%2fUsers%2fdana",
+    "url-encoded drive-letter path": "?p=E" + "%3A%5Cwork%5Csecretproject",
+    "lower-case drive, forward slashes": "open d:" + FS + "work" + FS + "client",
+    "lower-case drive in a file url": "file:" + FS * 3 + "d:" + FS + "work" + FS + "client",
+    "lower-case drive in a quoted value": 'dir = "e:' + FS + "clients" + FS + 'acme"',
 }
 
 
@@ -207,6 +225,18 @@ ALLOWED = [
     "Zorblax only, Quentaro only",
     "re.compile(r'[A-Za-z]:[\\\\/]+') and 'key: value'",
     "const ok = s ? a:/^lot-[0-9]+$/.test(id) : b;",  # minified JS, not a drive path
+    "x?a:/re/.test(s)", "{k:/re/gi.test(s)}", "x?a:/re/g.test(s)", "b?a:/x/y.test(a)",
+    "f(a,b){return b?a:/x/u/.exec(a)}",
+    "open d:" + FS + "work and e:" + FS + "x",   # one segment only: not enough to be a path
+    FS + "c" + FS + "Users" + FS + "you" + FS + "notes",
+    FS + "mnt" + FS + "c" + FS + "Users" + FS + "you",
+    FS + "var" + FS + "home" + FS + "you",
+    BS * 2 + "wsl$" + BS + "Ubuntu" + BS + "home" + BS + "you",
+    "C%3A%5CUsers%5C%25USERNAME%25",
+    FS + "work" + FS + "client" + FS + "notes and " + FS + "work" + FS + "paper-kite",
+    "https://example.org/c/Users/list and https://example.org/var/home/x",
+    "a" + FS + "c" + FS + "Users" + FS + "list",
+    email("kitequill", "users.noreply.github.com") + " " + email("no-reply", "bots.dev"),
 ]
 
 
@@ -661,3 +691,433 @@ def test_pre_push_from_pre_commit_env(root, deny, gate, git_env):
 def test_history_on_empty_repo_passes(root, deny, gate, git_env):
     init_repo(root)
     assert gate(root, "--denylist", str(deny), "--history")[0] == 0
+
+
+# ----------------------------------------------------------------------------- 0.2.1 review fixes
+# Commit identities: the e-mail field is an allow-list (noreply, example and reserved addresses).
+
+BAD_IDENTITY_EMAILS = {
+    "login at a PC name": "dana@" + "DANAPC",
+    "git's unknown-host form": "dana@" + "danapc.(none)",
+    "bare login": "dana",
+    "localhost": "dana@" + "localhost",
+    "localhost subdomain": "dana@" + "danapc.localhost",
+    "company noreply host": email("dana.fake", "noreply.bigcorp-fake.com"),
+    "personal mailbox": email("dana.fake", "fakemail.io"),
+    "address inside angle brackets": "<" + email("dana.fake", "fakemail.io") + ">",
+}
+GOOD_IDENTITY_EMAILS = [
+    FAKE_NOREPLY,
+    "41898341+github-actions[bot]@users.noreply.github.com",  # .github/workflows/media.yml
+    "49699333+dependabot[bot]@users.noreply.github.com",
+    email(FAKE_HANDLE, "users.noreply.github.com"),
+    email("noreply", "github.com"),
+    email("no-reply", "vendor.io"),
+    email("dana", "example.com"),
+    email("dana", "dev.example.org"),
+    email("dana", "host.invalid"),
+    email("dana", "pc.test"),
+    email("dana", "box.example"),
+    "",  # no e-mail at all: nothing to leak (lightweight or old tags have no tagger)
+]
+
+
+@pytest.mark.parametrize("label", sorted(BAD_IDENTITY_EMAILS))
+def test_identity_email_outside_the_allow_list_fails(label):
+    scanner = pg.Scanner(None)
+    scanner.scan_identity(BAD_IDENTITY_EMAILS[label], "commit identity", "author e-mail")
+    assert [h.check for h in scanner.hits] == ["email"], label
+
+
+@pytest.mark.parametrize("value", GOOD_IDENTITY_EMAILS)
+def test_identity_email_on_the_allow_list_passes(value):
+    scanner = pg.Scanner(None)
+    scanner.scan_identity(value, "commit identity", "author e-mail")
+    assert scanner.hits == []
+
+
+def test_identity_names_are_not_e_mail_checked():
+    scanner = pg.Scanner(None)
+    scanner.scan_identity("Dana", "commit identity", "author name")
+    assert scanner.hits == []
+
+
+def test_dotless_author_e_mail_in_history_fails(root, gate, git_env):
+    init_repo(root, mail="dana@" + "DANAPC")
+    sha = commit_all(root, "Initial skeleton")
+    code, out = gate(root, "--history", "--no-tree")
+    assert code == 1, out
+    assert f"commit {sha[:10]}: [email] author e-mail" in out
+    assert "DANAPC" not in out
+
+
+def test_dotless_identity_in_commit_msg_mode_fails(root, gate, git_env, tmp_path):
+    init_repo(root, mail="dana@" + "danapc.(none)")
+    msg = tmp_path / "COMMIT_EDITMSG"
+    msg.write_text("Add the room\n", encoding="utf-8")
+    code, out = gate(root, "--commit-msg", str(msg))
+    assert code == 1, out
+    assert "author e-mail" in out and "committer e-mail" in out
+
+
+# File names get the same path and e-mail checks as file contents, without showing the match.
+
+def test_e_mail_in_a_file_name_fails_and_is_masked(root, gate):
+    name = email("wren", "fictional-mail.org") + ".md"
+    (root / "docs").mkdir()
+    (root / "docs" / name).write_text("clean\n", encoding="utf-8")
+    code, out = gate(root)
+    assert code == 1, out
+    assert "[email] file name" in out
+    assert "fictional-mail" not in out
+
+
+def test_e_mail_in_a_deleted_file_name_fails_in_history(root, gate, git_env):
+    init_repo(root)
+    name = email("wren", "fictional-mail.org") + ".txt"
+    (root / name).write_text("clean\n", encoding="utf-8")
+    commit_all(root, "Add a note")
+    (root / name).unlink()
+    commit_all(root, "Remove the note")
+    assert gate(root)[0] == 0
+    code, out = gate(root, "--history", "--no-tree")
+    assert code == 1, out
+    assert "[email] file name" in out
+    assert "fictional-mail" not in out
+
+
+def test_deny_term_in_file_name_still_reports_its_line(root, deny, gate):
+    (root / (TERM_WORD + ".txt")).write_text("clean\n", encoding="utf-8")
+    code, out = gate(root, "--denylist", str(deny))
+    assert code == 1
+    assert "[deny-list] file name: deny-list term (deny-list line 3)" in out
+    assert_no_term_leak(out)
+
+
+def test_the_repo_tree_still_passes(gate):
+    code, out = gate(GATE_PATH.parents[1])
+    assert code == 0, out
+
+
+# Pre-push: annotated tags (tagger, message, nested tags) and the pushed ref names.
+
+def tag(root: Path, name: str, target: str, message: str, tagger_mail: str | None = None) -> str:
+    pre = ["-c", "user.email=" + tagger_mail] if tagger_mail else []
+    git(root, *pre, "tag", "-a", name, target, "-m", message)
+    return git(root, "rev-parse", name)
+
+
+def test_pre_push_checks_the_annotated_tag_tagger_and_message(root, gate, git_env):
+    init_repo(root)
+    commit_all(root, "Initial skeleton")
+    sha = tag(root, "v1", "HEAD", "release by " + email("dana.fake", "fakemail.io"),
+              tagger_mail=email("dana.fake", "fakemail.io"))
+    stdin = f"refs/tags/v1 {sha} refs/tags/v1 {pg.ZERO_SHA}\n"
+    code, out = gate(root, "--pre-push", "origin", stdin_text=stdin)
+    assert code == 1, out
+    assert "annotated tag: [email] tagger e-mail" in out
+    assert "annotated tag message:1: [email]" in out
+
+
+def test_pre_push_checks_a_tag_of_a_tag(root, gate, git_env):
+    init_repo(root)
+    commit_all(root, "Initial skeleton")
+    tag(root, "inner", "HEAD", "inner", tagger_mail="dana@" + "DANAPC")
+    outer = tag(root, "outer", "inner", "outer")
+    stdin = f"refs/tags/outer {outer} refs/tags/outer {pg.ZERO_SHA}\n"
+    code, out = gate(root, "--pre-push", "origin", stdin_text=stdin)
+    assert code == 1, out
+    assert "tagger e-mail" in out
+
+
+def test_pre_push_clean_annotated_tag_passes(root, gate, git_env):
+    init_repo(root)
+    commit_all(root, "Initial skeleton")
+    sha = tag(root, "v1", "HEAD", "Lamptown 1.0")
+    stdin = f"refs/tags/v1 {sha} refs/tags/v1 {pg.ZERO_SHA}\n"
+    code, out = gate(root, "--pre-push", "origin", stdin_text=stdin)
+    assert code == 0, out
+
+
+@pytest.mark.parametrize("side", ["local", "remote"])
+def test_pre_push_checks_ref_names(side, root, deny, gate, git_env):
+    init_repo(root)
+    sha = commit_all(root, "Initial skeleton")
+    bad = "refs/heads/client-" + TERM_WORD
+    local, remote = (bad, "refs/heads/main") if side == "local" else ("refs/heads/main", bad)
+    stdin = f"{local} {sha} {remote} {pg.ZERO_SHA}\n"
+    code, out = gate(root, "--denylist", str(deny), "--pre-push", "origin", stdin_text=stdin)
+    assert code == 1, out
+    assert "ref name: [deny-list]" in out
+    assert_no_term_leak(out)
+
+
+def test_pre_push_can_delete_a_badly_named_branch(root, deny, gate, git_env):
+    init_repo(root)
+    sha = commit_all(root, "Initial skeleton")
+    stdin = f"(delete) {pg.ZERO_SHA} refs/heads/client-{TERM_WORD} {sha}\n"
+    code, out = gate(root, "--denylist", str(deny), "--pre-push", "origin", stdin_text=stdin)
+    assert code == 0, out
+
+
+def test_pre_push_from_pre_commit_env_checks_tag_and_branch_names(root, deny, gate, git_env):
+    init_repo(root)
+    commit_all(root, "Initial skeleton")
+    sha = tag(root, "v1", "HEAD", "Lamptown 1.0", tagger_mail="dana@" + "DANAPC")
+    env = {"PRE_COMMIT_TO_REF": sha, "PRE_COMMIT_REMOTE_NAME": "origin",
+           "PRE_COMMIT_LOCAL_BRANCH": "refs/tags/" + TERM_WORD,
+           "PRE_COMMIT_REMOTE_BRANCH": "refs/tags/v1"}
+    code, out = gate(root, "--denylist", str(deny), "--pre-push", env=env)
+    assert code == 1, out
+    assert "tagger e-mail" in out
+    assert "ref name: [deny-list]" in out
+    assert_no_term_leak(out)
+
+
+def test_history_checks_nested_tags(root, gate, git_env):
+    init_repo(root)
+    commit_all(root, "Initial skeleton")
+    tag(root, "inner", "HEAD", "inner", tagger_mail="dana@" + "DANAPC")
+    tag(root, "outer", "inner", "outer")
+    git(root, "tag", "-d", "inner")
+    code, out = gate(root, "--history", "--no-tree")
+    assert code == 1, out
+    assert "tagger e-mail" in out
+
+
+# Deny-list setup: a list with no terms says so.
+
+def test_empty_denylist_prints_a_notice(root, gate, tmp_path):
+    empty = tmp_path / "empty-list.txt"
+    empty.write_text("# nothing yet\n!author: " + FAKE_HANDLE + "\n", encoding="utf-8")
+    code, out = gate(root, "--denylist", str(empty))
+    assert code == 0
+    assert "deny-list has no terms" in out
+
+
+# --staged: the index version of each added or changed file (what the commit will hold).
+
+def test_staged_scans_the_index_not_the_working_tree(root, gate, git_env):
+    init_repo(root)
+    commit_all(root, "Initial skeleton")
+    (root / "a.txt").write_text(PLANTED["personal e-mail"] + "\n", encoding="utf-8")
+    git(root, "add", "a.txt")
+    (root / "a.txt").write_text("cleaned in the working tree only\n", encoding="utf-8")
+    code, out = gate(root, "--staged")
+    assert code == 1, out
+    assert "a.txt (staged):1: [email]" in out
+    git(root, "add", "a.txt")
+    (root / "a.txt").write_text(PLANTED["personal e-mail"] + "\n", encoding="utf-8")
+    code, out = gate(root, "--staged")
+    assert code == 0, out
+
+
+def test_staged_checks_names_images_and_the_first_commit(root, gate, git_env):
+    init_repo(root)
+    (root / "docs").mkdir()
+    (root / "docs" / "shot.png").write_bytes(png())
+    (root / (email("wren", "fictional-mail.org") + ".txt")).write_text("x\n", encoding="utf-8")
+    git(root, "add", "-A")
+    code, out = gate(root, "--staged")
+    assert code == 1, out
+    assert "docs/shot.png: [image]" in out
+    assert "[email] file name" in out
+
+
+def test_staged_ignores_deleted_files(root, gate, git_env):
+    init_repo(root)
+    (root / "old.txt").write_text("clean\n", encoding="utf-8")
+    commit_all(root, "Add")
+    git(root, "rm", "-q", "old.txt")
+    assert gate(root, "--staged")[0] == 0
+
+
+# Baseline: reviewed fictional hits in blobs that are already public (history can't change).
+
+FIXTURE = "cases\n" + PLANTED["git bash user folder"] + "\n" + PLANTED["wsl user folder"] + "\n"
+
+
+def write_baseline(root: Path, *entries: str) -> None:
+    path = root / pg.BASELINE_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("# reviewed fixtures\n" + "".join(e + "\n" for e in entries),
+                    encoding="utf-8")
+
+
+def blob_of(root: Path, rel: str) -> str:
+    return git(root, "hash-object", rel)
+
+
+def test_baseline_covers_only_the_listed_blob_line_and_check(root, gate, git_env):
+    init_repo(root)
+    (root / "fixture.txt").write_text(FIXTURE, encoding="utf-8")
+    commit_all(root, "Add fixture")
+    blob = blob_of(root, "fixture.txt")
+    code, out = gate(root, "--history", "--suggest-baseline")
+    assert code == 1, out
+    assert f"{blob} 2 user-path" in out and f"{blob} 3 user-path" in out
+    write_baseline(root, f"{blob} 2 user-path  # fixture.txt", f"{blob} 3 email")
+    code, out = gate(root, "--history")
+    assert code == 1, out          # line 3 is listed for the wrong check
+    assert "fixture.txt:3: [user-path]" in out and "fixture.txt:2:" not in out
+    write_baseline(root, f"{blob} 2 user-path", f"{blob} 3 user-path")
+    code, out = gate(root, "--history")
+    assert code == 0, out
+    assert "reviewed fixture hits skipped" in out
+
+
+def test_baseline_never_covers_changed_content(root, gate, git_env):
+    init_repo(root)
+    (root / "fixture.txt").write_text(FIXTURE, encoding="utf-8")
+    blob = blob_of(root, "fixture.txt")
+    write_baseline(root, f"{blob} 2 user-path", f"{blob} 3 user-path")
+    assert gate(root)[0] == 0
+    (root / "fixture.txt").write_text(FIXTURE + "\n", encoding="utf-8")  # one byte more
+    code, out = gate(root)
+    assert code == 1, out
+    (root / "fixture.txt").write_bytes(FIXTURE.replace("\n", "\r\n").encode())  # CRLF checkout
+    assert gate(root)[0] == 0
+
+
+def test_baseline_never_covers_deny_list_hits_or_file_names(root, deny, gate, git_env):
+    (root / "fixture.txt").write_text("cases\n" + TERM_WORD + "\n", encoding="utf-8")
+    blob = blob_of(root, "fixture.txt")
+    write_baseline(root, f"{blob} 2 deny-list")
+    code, out = gate(root, "--denylist", str(deny))
+    assert code == 2, out              # deny-list entries are refused outright
+    (root / "fixture.txt").unlink()
+    name = email("wren", "fictional-mail.org") + ".txt"
+    (root / name).write_text("", encoding="utf-8")
+    write_baseline(root, f"{blob_of(root, name)} - email")
+    code, out = gate(root)
+    assert code == 1, out              # a file name is not file content
+    assert "[email] file name" in out
+
+
+def test_malformed_baseline_is_a_setup_error(root, gate):
+    write_baseline(root, "not-a-sha 2 user-path")
+    code, out = gate(root)
+    assert code == 2
+    assert "privacy_gate_baseline.txt line 2" in out
+
+
+def test_the_real_baseline_lists_only_public_blobs():
+    """Every entry must name a blob that exists in this repo's history (no stale entries)."""
+    repo = GATE_PATH.parents[1]
+    entries = pg.load_baseline(repo)
+    if not entries or not (repo / ".git").exists():
+        pytest.skip("no baseline or not a git checkout")
+    shas = sorted({e[0] for e in entries})
+    out = subprocess.run(["git", "-C", str(repo), "cat-file", "--batch-check"], check=True,
+                         capture_output=True, text=True, input="\n".join(shas) + "\n").stdout
+    assert "missing" not in out, out
+
+
+# ----------------------------------------------------------------------------- tools/hooks
+# The maintainer's clone runs `git config core.hooksPath tools/hooks`, which makes git skip the
+# hooks `pre-commit install` would set up. These tests drive real git commands through the hooks.
+
+HOOKS_DIR = GATE_PATH.parent / "hooks"
+
+
+@pytest.fixture
+def hooked(tmp_path: Path, git_env, monkeypatch) -> Path:
+    repo = tmp_path / "hooked"
+    (repo / "tools" / "hooks").mkdir(parents=True)
+    shutil.copy2(GATE_PATH, repo / "tools" / "privacy_gate.py")
+    for name in ("pre-commit", "commit-msg", "pre-push"):
+        shutil.copy2(HOOKS_DIR / name, repo / "tools" / "hooks" / name)
+        (repo / "tools" / "hooks" / name).chmod(0o755)
+    init_repo(repo)
+    (repo / ".git" / "info" / "exclude").write_text("tools/\n.pre-commit-config.yaml\n",
+                                                    encoding="utf-8")
+    git(repo, "config", "core.hooksPath", "tools/hooks")
+    bare = tmp_path / "remote.git"
+    git(tmp_path, "init", "-q", "--bare", str(bare))
+    git(repo, "remote", "add", "origin", str(bare))
+    monkeypatch.setenv("PATH", str(Path(sys.executable).parent) + os.pathsep
+                       + os.environ.get("PATH", ""))
+    for var in ("LAMPTOWN_DENYLIST", "LAMPTOWN_NO_DENYLIST"):
+        monkeypatch.delenv(var, raising=False)
+    return repo
+
+
+def run_git(repo: Path, *args: str, env: dict | None = None) -> tuple[int, str]:
+    proc = subprocess.run(["git", "-C", str(repo), *args], check=False, capture_output=True,
+                          text=True, env={**os.environ, **(env or {})}, timeout=120)
+    return proc.returncode, proc.stdout + proc.stderr
+
+
+def test_hook_pre_commit_blocks_a_staged_leak(hooked):
+    (hooked / "a.txt").write_text(PLANTED["personal e-mail"] + "\n", encoding="utf-8")
+    git(hooked, "add", "a.txt")
+    (hooked / "a.txt").write_text("cleaned, but not staged\n", encoding="utf-8")
+    code, out = run_git(hooked, "commit", "-q", "-m", "Add a note")
+    assert code != 0, out
+    assert "privacy gate: FAIL" in out
+    git(hooked, "add", "a.txt")
+    code, out = run_git(hooked, "commit", "-q", "-m", "Add a note")
+    assert code == 0, out
+
+
+def test_hook_commit_msg_blocks_message_and_identity(hooked):
+    (hooked / "a.txt").write_text("clean\n", encoding="utf-8")
+    git(hooked, "add", "a.txt")
+    code, out = run_git(hooked, "commit", "-q", "-m",
+                        "Thanks " + email("dana.fake", "fakemail.io"))
+    assert code != 0, out
+    assert "commit message:1: [email]" in out
+    code, out = run_git(hooked, "-c", "user.email=dana@" + "DANAPC", "commit", "-q", "-m", "Add")
+    assert code != 0, out
+    assert "author e-mail" in out
+
+
+def test_hook_pre_push_requires_the_denylist(hooked, deny, tmp_path):
+    (hooked / "a.txt").write_text("clean\n", encoding="utf-8")
+    commit_all(hooked, "Add a note")
+    code, out = run_git(hooked, "push", "-q", "origin", "main")
+    assert code != 0, out
+    assert "LAMPTOWN_NO_DENYLIST" in out
+    empty = tmp_path / "empty-list.txt"
+    empty.write_text("# nothing\n", encoding="utf-8")
+    code, out = run_git(hooked, "push", "-q", "origin", "main",
+                        env={"LAMPTOWN_DENYLIST": str(empty)})
+    assert code != 0, out
+    code, out = run_git(hooked, "push", "-q", "origin", "main",
+                        env={"LAMPTOWN_DENYLIST": str(deny)})
+    assert code == 0, out
+    (hooked / "b.txt").write_text("clean\n", encoding="utf-8")
+    commit_all(hooked, "Add another note")
+    code, out = run_git(hooked, "push", "-q", "origin", "main", env={"LAMPTOWN_NO_DENYLIST": "1"})
+    assert code == 0, out
+    assert "deny-list check is skipped" in out
+
+
+def test_hook_pre_push_blocks_a_leaky_tag(hooked):
+    (hooked / "a.txt").write_text("clean\n", encoding="utf-8")
+    commit_all(hooked, "Add a note")
+    tag(hooked, "v1", "HEAD", "v1", tagger_mail="dana@" + "DANAPC")
+    code, out = run_git(hooked, "push", "-q", "origin", "v1", env={"LAMPTOWN_NO_DENYLIST": "1"})
+    assert code != 0, out
+    assert "tagger e-mail" in out
+
+
+def test_hooks_hand_over_to_pre_commit_when_it_is_set_up(hooked, tmp_path):
+    """With pre-commit installed and configured, the hooks run its stages (gitleaks included)."""
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    log = tmp_path / "pre-commit-calls.txt"
+    fake = fake_bin / "pre-commit"
+    fake.write_text('#!/bin/sh\necho "$*" >> "$FAKE_PRE_COMMIT_LOG"\nexit 0\n',
+                    encoding="utf-8", newline="\n")
+    fake.chmod(0o755)
+    (hooked / ".pre-commit-config.yaml").write_text("repos: []\n", encoding="utf-8")
+    env = {"PATH": str(fake_bin) + os.pathsep + os.environ["PATH"],
+           "FAKE_PRE_COMMIT_LOG": str(log)}
+    (hooked / "a.txt").write_text(PLANTED["personal e-mail"] + "\n", encoding="utf-8")
+    git(hooked, "add", "a.txt")
+    code, out = run_git(hooked, "commit", "-q", "-m", "Add", env=env)
+    assert code == 0, out  # the fake pre-commit passes everything
+    calls = log.read_text(encoding="utf-8").splitlines()
+    assert calls[0] == "run --hook-stage pre-commit"
+    assert calls[1].startswith("run --hook-stage commit-msg --commit-msg-filename ")

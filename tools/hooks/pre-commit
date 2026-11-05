@@ -1,0 +1,32 @@
+#!/bin/sh
+# Lamptown pre-commit hook for clones that use `git config core.hooksPath tools/hooks`.
+#
+# That setting makes git skip the hooks `pre-commit install` would set up (and pre-commit
+# refuses to install while it is set), so this file runs the same checks:
+# - with pre-commit installed and .pre-commit-config.yaml present: its pre-commit stage
+#   (the privacy gate over the staged files, and gitleaks);
+# - otherwise the privacy gate over the staged (index) version of every added or changed
+#   file, then gitleaks over the staged changes if gitleaks is installed (a notice if not).
+root=$(git rev-parse --show-toplevel) || exit 2
+if [ -f "$root/.pre-commit-config.yaml" ] && command -v pre-commit >/dev/null 2>&1; then
+  exec pre-commit run --hook-stage pre-commit
+fi
+gate_ran=
+for py in python3 python py; do
+  if "$py" -c 'import sys; sys.exit(sys.version_info < (3, 11))' >/dev/null 2>&1; then
+    "$py" "$root/tools/privacy_gate.py" --root "$root" --staged || exit $?
+    gate_ran=1
+    break
+  fi
+done
+if [ -z "$gate_ran" ]; then
+  echo "pre-commit: Python 3.11+ not found, so the privacy gate could not run" >&2
+  exit 1
+fi
+if command -v gitleaks >/dev/null 2>&1; then
+  gitleaks git --pre-commit --staged --redact --no-banner "$root" || exit $?
+else
+  echo "pre-commit: notice: gitleaks is not installed, so the secrets scan was skipped" \
+       "(CI runs it; install it from https://github.com/gitleaks/gitleaks)" >&2
+fi
+exit 0
