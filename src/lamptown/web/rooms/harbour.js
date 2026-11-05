@@ -161,7 +161,7 @@ function buildStatic() {
     for (let i = 0; i < 9; i++) P(8 + hash(i, 2, 1) * 19, 108 + hash(i, 3, 1) * 22, '#c9d6ff');
     R(6, 140, 23, 28, '#22314e'); R(9, 143, 5, 6, '#ffcf6b'); R(19, 147, 4, 5, '#ffcf6b'); R(6, 160, 23, 8, '#2b2f48');   // the town through the door
     R(4, 103, 27, 2, '#4a3a5a'); R(4, 103, 1, 65, '#4a3a5a'); R(30, 103, 1, 65, '#4a3a5a');
-    R(3, 92, 31, 9, OL); R(4, 93, 29, 7, '#161b38'); R(4, 93, 29, 1, '#2b336a'); textL('< TOWN', 7, 94, GOLD);
+    K.doorSign(3, 92, { pad: 6 });
     // water in every berth (one sheet when the harbour is empty)
     const spans = LAY.bays.map(b => [b.x, b.w]).concat(LAY.more ? [[LAY.more.x, LAY.more.w]] : []);
     if (!spans.length) spans.push([BAY0, BAYMAX - BAY0]);
@@ -270,7 +270,7 @@ function stack() { // one sheet per item waiting on you (thinner above 24, never
 }
 
 /* ---------- per frame ---------- */
-function pausedBoat(b, t, hov) { // cached per berth (two looks: hovered or not); it bobs one pixel
+function pausedBoat(b, hov) { // cached per berth (two looks: hovered or not); moored and still (0.2.1: paused means nothing moves)
   const k = b.p.id + (hov ? '|h' : '');
   if (!BOATS[k]) BOATS[k] = layer(b.w, 70, () => {
     const L = b.w - 18, x0 = 8, wl = 52, top = x => wl - 12 - (x - x0 > L * 0.75 ? Math.round(4 * Math.pow((x - x0 - L * 0.75) / (L * 0.25), 2)) : 0);
@@ -287,8 +287,7 @@ function pausedBoat(b, t, hov) { // cached per berth (two looks: hovered or not)
     if (b.p.private) { const lx = tx - 6, ly = ty + 1; R(lx, ly + 2, 5, 4, '#8a7a60'); R(lx + 1, ly, 3, 1, '#8a7a60'); P(lx, ly + 1, '#8a7a60'); P(lx + 4, ly + 1, '#8a7a60'); P(lx + 2, ly + 3, OL); }   // a small padlock
     for (let j = 0; j < 6; j++) if (j % 2 === 0) R(x0 + 2 + j, wl + 4 + j * 2, L - 6 - j * 2, 1, 'rgba(90,96,130,0.18)');
   });
-  const bob = K.still ? 0 : Math.floor(t * 0.7 + b.x) % 2;
-  g.drawImage(BOATS[k], b.x, WATER - 52 + 2 + bob);
+  g.drawImage(BOATS[k], b.x, WATER - 52 + 2);
 }
 function nameBoards(t) {
   for (const b of LAY.bays) {
@@ -343,8 +342,9 @@ function shipwright(t) { // on every boat someone is at work on: he lays the nex
   }
 }
 function water(t) {
-  const spans = LAY.bays.map(b => [b.x, b.w, b.capY || 0]).concat(LAY.more ? [[LAY.more.x, LAY.more.w, 0]] : []);
-  for (const [bx, bw, cap] of spans) for (let i = 0; i < 5; i++) { const ph = K.still ? 0.3 : (t * 0.25 + hash(i, bx, 2)) % 1, x = bx + 4 + Math.floor(hash(i, bx, 4) * (bw - 16)), y = WATER + 6 + i * 7;
+  // the ripples run only under a boat someone is at work on (0.2.1: an idle harbour is still); elsewhere they lie where they are
+  const spans = LAY.bays.map(b => [b.x, b.w, b.capY || 0, atWork(b.p)]).concat(LAY.more ? [[LAY.more.x, LAY.more.w, 0, false]] : []);
+  for (const [bx, bw, cap, run] of spans) for (let i = 0; i < 5; i++) { const ph = K.still ? 0.3 : ((run ? t * 0.25 : 0) + hash(i, bx, 2)) % 1, x = bx + 4 + Math.floor(hash(i, bx, 4) * (bw - 16)), y = WATER + 6 + i * 7;
     if (ph < 0.6 && y > cap) R(x + Math.round(ph * 6), y, 3, 1, '#2a5e8a'); }   // never across a caption
 }
 function deskAndBell(t) {
@@ -505,7 +505,6 @@ function hover(tg) { // the town's hover hook (pointer or Tab): the desk rings, 
 /* ---------- demo (?demo=1): the core moment on a timer ---------- */
 const INTRO = { ok: 'EVERY BOAT IS A PROJECT: ALL ON COURSE', waiting: 'SHEETS ON THE DESK WAIT ON YOU', working: 'A SHIPWRIGHT LAYS THE NEXT PLANK',
   error: "A RED FLAG: ITS TASKS.MD CAN'T BE READ", missing: 'A DUST SHEET: ITS FOLDER IS GONE' };
-function drawCursor(x, y) { const rows = ['#.....', '##....', '#.#...', '#..#..', '#...#.', '#..###', '#.#...', '##....']; sprite(rows, x + 1, y + 1, { '#': OL }); sprite(rows, x, y, { '#': '#f4f6ff' }); }
 function runDemo() {
   timers.forEach(clearTimeout); timers = []; caption = ''; cursor = null; demoHov(null);
   const at = (s, f) => timers.push(setTimeout(f, s * 1000)), first = LAY.bays.find(b => b.p.status === 'active'), pz = LAY.bays.find(b => b.p.status === 'paused');
@@ -520,7 +519,7 @@ let DHOV = null;
 function demoHov(id) { DHOV = id; hover(id ? { id } : null); }
 function drawDemoLayer() {
   if (caption) { R(2, 215, 4, 9, AMBER); textL(caption, 9, 217, '#ffd59a'); }
-  if (cursor) drawCursor(cursor[0], cursor[1]);
+  if (cursor) K.cursor(cursor[0], cursor[1]);
   if (DHOV) { const tg = targets().find(o => o.id === DHOV); if (tg && tg.tip && cursor) demoTip(tg.tip, cursor[0], cursor[1]); }
 }
 function demoTip(lines, ax, ay) { // the demo's fake pointer has no real hover, so it draws the same tip the town would
@@ -529,10 +528,6 @@ function demoTip(lines, ax, ay) { // the demo's fake pointer has no real hover, 
   let x = ax + 7, y = ay + 9; if (x + w > W - 2) x = ax - w - 4; if (y + h > H - 2) y = ay - h - 3; x = Math.max(2, Math.min(W - w - 2, x)); y = Math.max(13, Math.min(H - h - 2, y));
   R(x - 1, y - 1, w + 2, h + 2, OL); R(x, y, w, h, '#161b38'); R(x, y, w, 1, '#59629a');
   rows.forEach(([r, f], i) => textL(r, x + 4, y + 3 + i * 7, f ? GOLD : WHITE));
-}
-function drawSampleBadge() {
-  const s = 'SAMPLE: MADE-UP PROJECTS', sw = textW(s) + 8, x = W - sw - 4, y = 203;
-  R(x, y, sw, 9, OL); R(x + 1, y + 1, sw - 2, 7, '#3a2208'); textL(s, x + 4, y + 2, '#ffd36e');
 }
 
 /* ---------- the room ---------- */
@@ -564,13 +559,13 @@ registerRoom('harbour', {
     if (!STATIC) { buildStatic(); if (HOV && !targets().some(o => o.id === HOV)) HOV = null; }   // live: L10-fix: no hover on what went
     g.drawImage(STATIC, 0, 0);
     hoverMarks(); water(t);
-    for (const b of LAY.bays) if (b.p.status === 'paused' && b.p.exists) pausedBoat(b, t, HOV === 'boat:' + b.p.id);
+    for (const b of LAY.bays) if (b.p.status === 'paused' && b.p.exists) pausedBoat(b, HOV === 'boat:' + b.p.id);
     nameBoards(t); lamps(t); shipwright(t); deskAndBell(t);
     glow(glowSp('#7fa8ff', 16, 30, 0.14), 17, 135, M.state === 'missing' ? 0.2 : 0.6);
     quay();   // live: L10 berths
     drawList();
     if (!caption && !QUAY_ON) textL(M.sample ? 'SAMPLE HARBOUR (DEMO). EACH BOAT IS A PROJECT' : 'EACH BOAT IS A PROJECT. HOVER OR CLICK ONE. ESC = BACK TO TOWN', 5, 217, LILAC);
-    if (M.sample) drawSampleBadge();
+    if (M.sample) K.sampleBadge('SAMPLE: MADE-UP PROJECTS', W - 4, 203, { right: true });
     if (demo) drawDemoLayer();
     if (!K.still && LAY.bays.some(b => atWork(b.p)) && t - lastTick > 1.3) { lastTick = t; tick(); }
     if (t < lastTick) lastTick = t;

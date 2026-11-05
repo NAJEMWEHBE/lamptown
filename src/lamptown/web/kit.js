@@ -194,6 +194,48 @@ function worker(x, y, dir, phase, carry, shirt) {
   P(x - 1, y - 3, 'rgba(255,255,255,0.18)');
 }
 
+/* --- room chrome every room shares (one copy; each room keeps its own look through the options) --- */
+// (inside one namespace: a page-level `cursor` or `guard` would clash with a room script's own top-level names)
+const ROOM_CHROME = (() => {
+  // the "< TOWN" sign over a room's door: a 9 px box at (x, y) (o.centre: x is its middle); returns its width.
+  // o.pad: box width past the words (8), o.inset: words from the left edge (4), o.fill: the board ('#161b38'),
+  // o.rim: a 1 px top edge (null: none)
+  function doorSign(x, y, o) {
+    o = o || {};
+    const s = '< TOWN', pad = o.pad === undefined ? 8 : o.pad, w = textW(s) + pad, fill = o.fill || '#161b38';
+    const rim = o.rim === undefined ? '#2b336a' : o.rim, bx = o.centre ? Math.round(x - w / 2) : x;
+    R(bx, y, w, 9, OL); R(bx + 1, y + 1, w - 2, 7, fill); if (rim) R(bx + 1, y + 1, w - 2, 1, rim);
+    textL(s, bx + (o.inset === undefined ? 4 : o.inset), y + 2, '#ffd36e');
+    return w;
+  }
+  // the demo's pointer: an arrow at (x, y); down: pressed (gold), with click marks unless marks === false
+  const CURSOR = ['#.....', '##....', '#.#...', '#..#..', '#...#.', '#..###', '#.#...', '##....'];
+  function cursor(x, y, down, marks) {
+    sprite(CURSOR, x + 1, y + 1, { '#': OL }); sprite(CURSOR, x, y, { '#': down ? '#ffd36e' : '#f4f6ff' });
+    if (down && marks !== false) { R(x - 4, y - 4, 2, 1, '#ffd36e'); R(x + 4, y - 4, 2, 1, '#ffd36e'); R(x - 5, y, 1, 1, '#ffd36e'); }
+  }
+  // the "SAMPLE: ..." badge a demo room wears: s on a dark amber board at (x, y); o.right: x is its right edge;
+  // o.h: its height (9), o.pad: width past the words (8), o.fill: the board ('#3a2208'); returns its width
+  function sampleBadge(s, x, y, o) {
+    o = o || {};
+    const h = o.h || 9, pad = o.pad === undefined ? 8 : o.pad, w = textW(s) + pad, bx = o.right ? x - w : x;
+    R(bx, y, w, h, OL); R(bx + 1, y + 1, w - 2, h - 2, o.fill || '#3a2208'); textL(s, bx + pad / 2, y + Math.ceil((h - 5) / 2), '#ffd36e');
+    return w;
+  }
+  // a town layer that throws logs once and says so in SEEN[key] (tests read it), never on every frame;
+  // guard(key) gives the wrapper for that key; a wrapped hook keeps its function's name (tests find a layer by it)
+  function guard(key) {
+    let err = null;
+    return fn => Object.defineProperty((...a) => {
+      try { return fn(...a); } catch (e) {
+        if (!err) { err = String(e && e.stack || e); console.error(e); }
+        if (typeof SEEN === 'object' && SEEN) SEEN[key] = err;
+      }
+    }, 'name', { value: fn.name });
+  }
+  return { doorSign, cursor, sampleBadge, guard };
+})();
+
 /* ---------- dates: the data holds absolute times only; words like "in 3 d" are counted here (nowMs: town.js) ---------- */
 const DOW = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'], MON = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
 function toDate(iso) { if (!iso) return null; const d = new Date(/^\d{4}-\d\d-\d\d$/.test(iso) ? iso + 'T12:00:00' : iso); return isNaN(d) ? null : d; }
@@ -284,4 +326,5 @@ const KIT = {
   W, H, OL, ST, R, P, sprite, disc, ellipse, hash, hexRGB, mixHex, rgba, glow, glowSp, mkGlow,
   text, textW, textL, textC, fitText, wrapText, label, layer, worker, plural,
   sfx: SFX, dayText, timeText, untilText,
+  ...ROOM_CHROME,   // doorSign, cursor, sampleBadge, guard
 };

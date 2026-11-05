@@ -29,7 +29,7 @@ const WHY_SAY = { missed: 'MISSED ITS RUN', stopped: 'STOPPED HALF-WAY', nosourc
 const WORST = ['error', 'waiting', 'working', 'missing', 'ok'];
 const NOW_T = () => performance.now() / 1000;
 
-let JOBS = [], EXTRA = [], LAY = null, STATIC = null, action = null, pending = null, particles = [], demo = null, timers = [], sample = false, total = 0;
+let JOBS = [], EXTRA = [], STIR = false, LAY = null, STATIC = null, action = null, pending = null, particles = [], demo = null, timers = [], sample = false, total = 0;
 
 /* ---------- data ---------- */
 function shade(hex, k) { return '#' + K.hexRGB(hex).map(v => Math.max(0, Math.min(255, Math.round(v * k))).toString(16).padStart(2, '0')).join(''); }
@@ -144,9 +144,7 @@ function buildStatic() {
     R(dx - 2, dy - 2, dw + 4, dh + 2, OL); R(dx - 1, dy - 1, dw + 2, dh + 1, '#5b3f63'); R(dx, dy, dw, dh, '#5e3b2a');
     for (let i = 4; i < dw; i += 5) R(dx + i, dy, 1, dh, '#4a2d20');
     R(dx, dy + 8, dw, 1, '#3a2218'); R(dx, dy + dh - 9, dw, 1, '#3a2218'); R(dx + dw - 6, dy + 20, 2, 2, '#ffcf4a');
-    const sw = textW('< TOWN') + 8, sx2 = Math.round(dx + dw / 2 - sw / 2);
-    R(sx2, dy - 13, sw, 9, OL); R(sx2 + 1, dy - 12, sw - 2, 7, '#161b38'); R(sx2 + 1, dy - 12, sw - 2, 1, '#2b336a');
-    textL('< TOWN', sx2 + 4, dy - 11, '#ffd36e');
+    K.doorSign(dx + dw / 2, dy - 13, { centre: true });
   });
 }
 function drawMore() { // the chalk board for the jobs past the eighth window
@@ -247,7 +245,7 @@ function hookTrumpet(x, y, job, t) {
   for (const [dx, dy, w, h] of parts) R(x + dx - 1, y + dy - 1, w + 2, h + 2, OL);
   for (const [dx, dy, w, h, c] of parts) R(x + dx, y + dy, w, h, c);
   R(x, y + 5, 1, 17, BRL); R(x - 1, y + 10, 1, 4, BR); R(x + 2, y + 10, 1, 4, BR); R(x - 4, y + 26, 10, 1, BRD);
-  const right = x < 200, bx = x + (right ? 3 : -11), sway = K.still ? 0 : Math.round(Math.sin(t * 1.3 + x) * 0.6);   // the job's banner
+  const right = x < 200, bx = x + (right ? 3 : -11), sway = K.still || !STIR ? 0 : Math.round(Math.sin(t * 1.3 + x) * 0.6);   // the job's banner (stirs only while a job runs)
   R(bx - 1, y + 4, 11, 13, OL); R(bx, y + 5, 9, 11, job.banner); R(bx, y + 14, 9, 1, job.bannerD);
   for (let i = 0; i < 9; i += 2) P(bx + i + sway, y + 16, job.bannerD);
   R(bx + 3, y + 7, 3, 1, '#fff6e0'); R(bx + 4, y + 7, 1, 5, '#fff6e0'); R(bx + 3, y + 11, 3, 1, '#fff6e0');
@@ -416,7 +414,7 @@ function drawTrumpeterNow(t) {
       if (!K.still && Math.floor(t * 2) % 3 === 0 && Math.random() < 0.15) spawnNote(rest.x + rest.dir * 14, rest.y - 15, rest.dir, '#6fe6ff');
     } else {
       drawTrumpeter(rest.x, rest.y, 1, 'sit', t);
-      const zz = K.still ? 0.3 : (t * 0.6) % 1; textL('Z', rest.x + 5 + Math.round(zz * 4), 158 - Math.round(zz * 10), zz < 0.8 ? '#9aa3d8' : '#4a4e72');
+      textL('Z', rest.x + 8, 150, '#9aa3d8');   // asleep: one still Z over him, clear of the plates (0.2.1: an idle room is still)
     }
     return;
   }
@@ -462,7 +460,8 @@ function nextJob() { // the soonest next run of every job, shown or past the eig
 }
 function drawClock(t) {
   const cx = 200, cy = 42, now = new Date(K.nowMs());
-  gear(176, 32, 11, t * 0.25, '#4a3a2a', '#6a5238'); gear(226, 55, 7, -t * 0.4, '#4a3a2a', '#6a5238');   // the works (mechanism, not data)
+  const gt = STIR && !K.still ? t : 0;   // the works turn only while a job runs (an idle room is still)
+  gear(176, 32, 11, gt * 0.25, '#4a3a2a', '#6a5238'); gear(226, 55, 7, -gt * 0.4, '#4a3a2a', '#6a5238');
   glow(glowSp('#ffd36e', 30, 26, 0.2), cx, cy);
   if (!FACE) FACE = layer(43, 43, () => {   // the dial is static: cache it
     const c = 21; disc(c, c, 21, OL); disc(c, c, 20, '#d6a24a'); disc(c, c, 18, '#a87a30'); disc(c, c, 17, '#e9dcb8'); disc(c - 3, c - 3, 10, '#f3ead0');
@@ -480,9 +479,9 @@ function drawClock(t) {
   const l2 = K.timeText(nx.next); textC(l2, pc + 4, py + 11, '#ffd36e'); textC(K.untilText(nx.next), pc, py + 19, '#eef1ff');
   const bx = Math.round(pc + 4 - textW(l2) / 2 - 7); R(bx - 1, py + 10, 6, 7, OL); R(bx, py + 11, 4, 5, nx.banner); R(bx, py + 15, 4, 1, nx.bannerD);
 }
-function drawDust(t) {
+function drawDust(t0) {
   LAY.wins.forEach((wn, i) => {
-    const st = JOBS[i].state, n = st === 'missing' ? 7 : 5;
+    const st = JOBS[i].state, n = st === 'missing' ? 7 : 5, t = st === 'working' ? t0 : 0;   // dust drifts only in a running job's light
     for (let k = 0; k < n; k++) {
       const sx = wn.ox + 4 + hash(k, i, 1) * (wn.ow - 8), sy = wn.compact ? 186 + hash(i, k, 2) * 12 : 160 + hash(i, k, 2) * 26;
       const x = sx + Math.sin(t * 0.3 + k) * 3, y = sy + (st === 'missing' ? Math.sin(t * 0.2 + k) : ((t * 2 + k * 7) % 30 - 15) * (wn.compact ? 0.5 : 1));
@@ -493,11 +492,6 @@ function drawDust(t) {
 
 /* ---------- demo (?demo=1): the core moment on a timer, for screenshots and first-time viewers ---------- */
 let caption = '', cursor = null;
-function drawCursor(x, y, down) {
-  const rows = ['#.....', '##....', '#.#...', '#..#..', '#...#.', '#..###', '#.#...', '##....'];
-  sprite(rows, x + 1, y + 1, { '#': OL }); sprite(rows, x, y, { '#': down ? '#ffd36e' : '#f4f6ff' });
-  if (down) { R(x - 4, y - 4, 2, 1, '#ffd36e'); R(x + 4, y - 4, 2, 1, '#ffd36e'); R(x - 5, y, 1, 1, '#ffd36e'); }
-}
 const CAPTION = { ok: 'HE PLAYS THE FULL CALL: LAST RUN OK', waiting: 'THE CALL ENDS ON A QUESTION: OVER TO YOU', working: 'STILL PLAYING: THE JOB IS RUNNING',
   error: 'TWO NOTES, THEN IT CRACKS: LAST RUN FAILED', missing: 'NO CALL: NO RUN ON RECORD' };
 function runDemo() {
@@ -520,11 +514,7 @@ function runDemo() {
 }
 function drawDemoLayer() {
   if (caption) { const cw = textW(caption) + 12, x = Math.round(200 - cw / 2); R(x - 1, 196, cw + 2, 13, OL); R(x, 197, cw, 11, '#161b38'); R(x, 197, cw, 1, '#ffd36e'); textL(caption, x + 6, 200, '#ffd36e'); }
-  if (cursor) drawCursor(cursor[0], cursor[1], cursor[2]);
-}
-function drawSampleBadge() {
-  const s = 'SAMPLE: MADE-UP JOBS', sw = textW(s) + 8, y = H - 13;
-  R(4, y, sw, 9, OL); R(5, y + 1, sw - 2, 7, '#3a2208'); textL(s, 8, y + 2, '#ffd36e');
+  if (cursor) K.cursor(cursor[0], cursor[1], cursor[2]);
 }
 
 /* ---------- hover / click targets ---------- */
@@ -603,13 +593,14 @@ registerRoom('jobs', {
   draw(ctx, t) {
     if (!STATIC) buildStatic();
     g.drawImage(STATIC, 0, 0);
+    STIR = JOBS.some(j => j.state === 'working') || EXTRA.some(j => j.state === 'working');   // 0.2.1: what moves stands for a running job
     drawClock(t);
-    if (LAY.candle) { const fl = K.still ? 0 : Math.floor(t * 7) % 3; R(199, 117 + (fl === 1 ? 1 : 0), 1, 3, '#ffd36e'); P(199, 116 + (fl === 2 ? 1 : 0), '#fff6c0'); glow(glowSp('#ffb45a', 22, 16, 0.22), 199, 124, 0.9 + fl * 0.05); }
+    if (LAY.candle) { const fl = K.still || !STIR ? 0 : Math.floor(t * 7) % 3; R(199, 117 + (fl === 1 ? 1 : 0), 1, 3, '#ffd36e'); P(199, 116 + (fl === 2 ? 1 : 0), '#fff6c0'); glow(glowSp('#ffb45a', 22, 16, 0.22), 199, 124, 0.9 + fl * 0.05); }
     JOBS.forEach((job, i) => {   // lanterns, floor light, the trumpet (or its absence)
       const wn = LAY.wins[i], st = job.state, c = ST[st], [lx, ly] = wn.lantern;
       R(lx - 1, ly - 6, 3, 1, '#3a2d3a'); R(lx, ly - 5, 1, 2, '#3a2d3a');
       R(lx - 2, ly - 3, 5, 7, OL); R(lx - 1, ly - 2, 3, 5, st === 'missing' ? '#3a3e52' : c.lamp); if (st !== 'missing') P(lx - 1, ly - 2, c.hi);
-      const fl = K.still ? 1 : st === 'error' ? (Math.sin(t * 9) > 0.2 ? 1 : 0.55) : 0.85 + Math.sin(t * 3 + i) * 0.1;
+      const fl = K.still ? 1 : st === 'error' ? (Math.sin(t * 9) > 0.2 ? 1 : 0.55) : st === 'working' ? 0.85 + Math.sin(t * 3 + i) * 0.1 : 1;   // steady unless running or failed
       if (c.glow) { glow(glowSp(c.glow, 15, 13, st === 'ok' ? 0.4 : 0.55), lx, ly, fl); glow(glowSp(c.glow, Math.min(40, wn.ow - 6), 10, st === 'ok' ? 0.12 : 0.24), wn.cx - 10 * wn.side, 200, fl); }
       if (fallen(job)) glow(glowSp('#ff3a3a', 18, 8, 0.35), wn.floorT[0] + 7, 183, fl);
       if (wn.slate) { const [sx, sy, sw] = wn.slate; R(sx + sw - 8, sy + 3, 5, 5, OL); R(sx + sw - 7, sy + 4, 3, 3, c.lamp); if (c.glow) { P(sx + sw - 7, sy + 4, c.hi); glow(glowSp(c.glow, 6, 6, 0.4), sx + sw - 6, sy + 5); } }
@@ -623,7 +614,7 @@ registerRoom('jobs', {
     drawTrumpeterNow(t);
     drawParticles();
     if (!K.still) drawDust(t);
-    if (sample) drawSampleBadge();
+    if (sample) K.sampleBadge('SAMPLE: MADE-UP JOBS', 4, H - 13);
     if (demo) drawDemoLayer();
   },
   targets,

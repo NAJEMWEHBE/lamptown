@@ -17,7 +17,7 @@
    &items=1..80 (sample count), keys 1-5 switch the state. */
 (() => {
 'use strict';
-const { W, H, OL, ST, R, P, sprite, disc, hash, glow, glowSp, rgba, textW, textL, textC, fitText, wrapText, layer, sfx } = K;
+const { W, H, OL, ST, R, P, disc, hash, glow, glowSp, rgba, textW, textL, textC, fitText, wrapText, layer, sfx } = K;
 const FLOOR = 166;
 const NOW_T = () => performance.now() / 1000;
 const STAGE_STATE = { installed: 'ok', broken: 'error', staged: 'waiting', building: 'working' };
@@ -283,8 +283,7 @@ function drawDoor() {
   R(x - 2, y - 2, w + 4, FLOOR - y + 2, OL); R(x - 1, y - 1, w + 2, FLOOR - y + 1, '#4a2d20'); R(x, y, w, FLOOR - y, '#5e3b2a');
   R(x + 3, y + 3, 7, 16, '#4a2d20'); R(x + 12, y + 3, 7, 16, '#4a2d20'); R(x + 3, y + 22, 7, 20, '#4a2d20'); R(x + 12, y + 22, 7, 20, '#4a2d20');
   R(x + w - 4, y + 24, 2, 2, '#ffd36e'); R(x + 2, y - 1, w - 4, 1, 'rgba(255,211,110,0.5)');
-  const s = '< TOWN', sw = textW(s) + 8, sx = Math.round(x + w / 2 - sw / 2), sy = y - 14;
-  R(sx, sy, sw, 9, OL); R(sx + 1, sy + 1, sw - 2, 7, '#161b38'); R(sx + 1, sy + 1, sw - 2, 1, '#2b336a'); textL(s, sx + 4, sy + 2, '#ffd36e');
+  K.doorSign(x + w / 2, y - 14, { centre: true });
 }
 function drawMast() {
   R(MAST - 1, 15, 4, FLOOR - 15, OL); R(MAST, 15, 2, FLOOR - 15, '#7a5a40'); R(MAST, 15, 1, FLOOR - 15, '#9a7a58');
@@ -374,7 +373,8 @@ function live() { return !!hov && hov.last >= lastDraw; }
 function drawRoom(t) {
   g.drawImage(STATIC, 0, 0);
   const still = K.still, lit = M.found;
-  for (let i = 0; i < STARS.length; i++) if (still || Math.sin(t * 1.3 + i * 2.1) > -0.4) P(STARS[i][0], STARS[i][1], i % 3 ? '#9fb4ff' : '#ffffff');   // skylight
+  const calm = still || !BENCH.length;   // 0.2.1: the skylight twinkles only while a flag is being sewn (an idle room is still)
+  for (let i = 0; i < STARS.length; i++) if (calm || Math.sin(t * 1.3 + i * 2.1) > -0.4) P(STARS[i][0], STARS[i][1], i % 3 ? '#9fb4ff' : '#ffffff');   // skylight
   glow(glowSp('#7fa8ff', 40, 10, 0.12), 200, 14, 1);
   if (lit) { glow(glowSp('#ffb45a', 70, 40, 0.16), 92, 92, 1); glow(glowSp('#ffb45a', 16, 8, 0.25), 168, 67, 1); }
   // header: lamp + one plain line under the name plate (the plate in the top bar carries the installed count)
@@ -415,7 +415,7 @@ function drawRoom(t) {
     textC("CAN'T SEE THE " + NOUN() + 'S FOLDER', CAB.x + CAB.w / 2, 194, '#b8bdd8'); textC('-', MAST + 30, 60, '#59629a');
     statusLamp(14, 21, 'missing', true); textL(fitText(M.say, 150), 22, 19, ST.missing.txt);
   }
-  if (M.sample) { const s = 'SAMPLE: MADE-UP FLAGS', sw = textW(s) + 8, y = H - 13; R(4, y, sw, 9, OL); R(5, y + 1, sw - 2, 7, '#3a2208'); textL(s, 8, y + 2, '#ffd36e'); }
+  if (M.sample) K.sampleBadge('SAMPLE: MADE-UP FLAGS', 4, H - 13);
 }
 
 /* what the last frame showed (read by the tests: every moving or lit thing follows the data) */
@@ -462,7 +462,10 @@ function chestTarget() {
 function targets() {
   const out = [];
   if (!M.found) {
-    out.push({ id: 'padlock', box: [CAB.x, CAB.y, CAB.w, CAB.h], tip: ["The " + noun() + "s folder: can't see it", M.folder || 'No folder set up', 'Nothing to show until it is back.'], label: 'The locker is padlocked: the folder can\'t be found.', onClick: () => K.toast(NOUN() + 'S FOLDER NOT FOUND. NOTHING TO OPEN.') });
+    // 0.2.1: the folder by its name only (the collector sends the leaf name; a path from older data is cut to its leaf too)
+    const leaf = M.folder.split(/[\\/]+/).filter(Boolean).pop() || '';
+    out.push({ id: 'padlock', box: [CAB.x, CAB.y, CAB.w, CAB.h], tip: leaf ? ['The ' + noun() + 's folder ' + leaf + ": can't see it", 'Check its path in the settings.']
+      : ['The ' + noun() + "s folder: can't see it", 'No folder set up: add its path in the settings.'], label: 'The locker is padlocked: the folder can\'t be found.', onClick: () => K.toast(NOUN() + 'S FOLDER NOT FOUND. NOTHING TO OPEN.') });
   } else {
     for (const c of CELLS) {
       const it = c.it; if (!it || it.stage === 'staged') continue;
@@ -482,10 +485,6 @@ function targets() {
 /* ---------- demo (?demo=1): the core moment on a timer, for screenshots and first-time viewers ---------- */
 const INTRO = { ok: 'EVERY ITEM IS A ROLLED FLAG IN ITS CUBBY', waiting: 'NEW FLAGS WAIT IN BASKETS: VET THEM', working: 'A NEW FLAG IS BEING SEWN ON THE BENCH',
   error: "A TORN FLAG: THIS FOLDER CAN'T BE READ", missing: 'THE LOCKER IS PADLOCKED: NO FOLDER' };
-function drawCursor(x, y) {
-  const rows = ['#.....', '##....', '#.#...', '#..#..', '#...#.', '#..###', '#.#...', '##....'];
-  sprite(rows, x + 1, y + 1, { '#': OL }); sprite(rows, x, y, { '#': '#f4f6ff' });
-}
 function demoSeq() {
   const inst = M.installed.filter(i => CELLS.some(c => c.it === i));
   let seq = ['kite-knots', 'lantern-check', 'tide-reader', 'harbour-map'].map(id => inst.find(i => i.id === id)).filter(Boolean);
@@ -512,7 +511,7 @@ function runDemo() {
 }
 function drawDemoLayer() {
   if (caption) { const cw = textW(caption) + 12, x = Math.round(232 - cw / 2); R(x - 1, 180, cw + 2, 13, OL); R(x, 181, cw, 11, '#161b38'); R(x, 181, cw, 1, '#ffd36e'); textL(caption, x + 6, 184, '#ffd36e'); }
-  if (cursor) drawCursor(cursor[0], cursor[1]);
+  if (cursor) K.cursor(cursor[0], cursor[1]);
 }
 
 /* ---------- the room ---------- */

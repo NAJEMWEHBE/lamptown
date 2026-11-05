@@ -198,9 +198,11 @@ function buildStatic() {
     disc(62, 12, 4, '#dfe8ff'); P(60, 10, '#ffffff'); P(63, 13, '#c3d0f0');
   });
 }
+// 0.2.1: an idle room is still: the sea outside and the dust in the lamp's beam move only while a scan runs
+const scanning = () => ROWS.some(r => r.kind === 'scanning');
 function windowView(t) {
   g.drawImage(WIN, 70, 18);
-  const still = K.still;
+  const still = K.still || !scanning();
   for (let i = 0; i < 18; i++) { const x = 71 + hash(i, 1, 3) * 78, y = 19 + hash(i, 2, 3) * 26; if (still || Math.sin(t * 1.3 + i * 2.1) > -0.3) P(x, y, i % 4 ? '#9aa3d8' : '#eef1ff'); }
   glow(glowSp('#cfe0ff', 9, 9, 0.25), 132, 30);
   for (let i = 0; i < 12; i++) { const y = 56 + (i * 5) % 15, x = 70 + ((hash(i, 3, 2) * 80 + (still ? 0 : t) * (2 + i % 3)) % 76); R(x, y, 2 + i % 3, 1, i % 4 ? '#24547e' : '#3b78a8'); }
@@ -509,7 +511,7 @@ function draw(t) {
   quill(nib[0], nib[1]);
   deskLamp(!dark);
   if (!dark) { glow(glowSp('#ffb45a', 120, 52, 0.16), 150, 140, 1);   // warm pool on the ledger, dust in the beam
-    if (!K.still) for (let i = 0; i < 9; i++) { const ph = (t * 0.05 + hash(i, 1, 9)) % 1, x = 70 + hash(i, 2, 9) * 120 + Math.sin(t * 0.4 + i) * 4, y = 88 + ph * 22;
+    if (!K.still && scanning()) for (let i = 0; i < 9; i++) { const ph = (t * 0.05 + hash(i, 1, 9)) % 1, x = 70 + hash(i, 2, 9) * 120 + Math.sin(t * 0.4 + i) * 4, y = 88 + ph * 22;
       if (Math.sin(t * 1.1 + i * 1.7) > 0) P(x, y, 'rgba(255,226,160,0.55)'); } }
   else { g.fillStyle = 'rgba(4,6,16,0.5)'; g.fillRect(0, 12, W, 196);
     for (let i = 0; i < 60; i++) P(56 + hash(i, 1, 21) * 288, 112 + hash(i, 2, 21) * 80, 'rgba(160,160,180,0.25)'); }

@@ -292,7 +292,13 @@ const BERTHS = (() => {
      first words cut to their initials (P. KITE). Nothing fits: no tag (hover tells). Two projects with the very same
      name: the same tag (it is the truth). */
   const words = s => s.split(/\s+/).filter(Boolean);
+  // 0.2.1: the tags only change with the berths, their names or their room: worked out once per change, not every frame
+  let TAGS = { key: null, map: null };
   function tagsFor(rooms) {   // rooms: [[berth, px]] in berth order -> Map id -> tag
+    const key = rooms.map(([b, room]) => b.id + '\u0001' + b.name + '\u0001' + room).join('\u0002') + '\u0003'
+      + S.list.concat(S.over).map(q => q.id + '\u0001' + q.name).join('\u0002');
+    if (TAGS.key === key) return TAGS.map;
+    S.tagsBuilt = (S.tagsBuilt || 0) + 1;
     const all = S.list.concat(S.over).map(q => [q.id, String(q.name).toUpperCase().trim()]), out = new Map(), used = new Set();
     for (const [b, room] of rooms) {
       const nm = String(b.name).toUpperCase().trim(), others = all.filter(o => o[0] !== b.id).map(o => o[1]);
@@ -307,6 +313,7 @@ const BERTHS = (() => {
       if (tag) used.add(tag);
       out.set(b.id, tag);
     }
+    TAGS = { key, map: out };
     return out;
   }
   function lights(t, still) {   // the names on the water, the "+N" tag, the tooltips; SEEN.berths
@@ -383,7 +390,7 @@ const BERTHS = (() => {
   const api = { S, SLOTS, OVER, OVER_W, PITCH, FEET, SHORE, GRACE_MS, TUNE, BERTH_SPOTS, OVER_SPOTS, VISIT_SPOTS,
     sync, spot, view, paintOf, paintFor, boat, figure, coatOf, ownCoat, BOAT_PX, WORD };
   if (typeof LAMPLIGHTERS === 'object' && LAMPLIGHTERS) LAMPLIGHTERS.berth = a => spot(a);
-  function guard(fn) { return (...a) => { try { fn(...a); } catch (e) { if (!S.err) { S.err = String(e && e.stack || e); console.error(e); } SEEN.berthsError = S.err; } }; }
+  const guard = K.guard('berthsError');   // a layer that throws logs once (SEEN.berthsError), not on every frame
   TOWN_LAYERS.sea.push(guard(sea)); TOWN_LAYERS.scene.push(guard(scene)); TOWN_LAYERS.lights.push(guard(lights));
   kick();   // town.js drew its first frame before this script ran: a still scene draws again now, with the layers
   return api;

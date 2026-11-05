@@ -50,6 +50,17 @@ Use `ST[row.state] || ST.missing` so unknown states fall back to grey.
 | `ellipse(cx, cy, rx, ry, colour)` | A filled pixel ellipse. |
 | `worker(x, y, dir, phase, carry, shirt)` | The town's 3 × 7 worker in a hard hat. `dir` is `1` or `-1`, `phase` steps the walk, `carry` holds a note. |
 
+### Room chrome
+
+Every room shares these, so a new room looks like the others. Each one takes options to keep a room's own colours.
+
+| Function | Draws |
+|---|---|
+| `K.doorSign(x, y, o)` | The `< TOWN` sign over the room's door, 9 px high. `o.centre`: `x` is its middle. `o.pad`, `o.inset`, `o.fill`, `o.rim` (`null` for no top edge). Returns its width. |
+| `K.cursor(x, y, down, marks)` | The demo's pointer arrow. `down` draws it pressed (gold) with click marks, unless `marks` is `false`. |
+| `K.sampleBadge(s, x, y, o)` | The `SAMPLE: ...` badge a demo room wears. `o.right`: `x` is its right edge. `o.h`, `o.pad`, `o.fill`. Returns its width. |
+| `K.guard(key)` | A wrapper for a town layer: `K.guard('harbour')(function drawBoats() {...})`. An error is logged once and kept in `SEEN[key]`, not thrown every frame. The wrapped function keeps its name. |
+
 ## Text
 
 There is one font: a hand-drawn 3 × 5 pixel font, upper case only. Every word on screen uses it.

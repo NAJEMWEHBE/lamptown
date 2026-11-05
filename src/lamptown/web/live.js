@@ -118,7 +118,8 @@ const LAMPLIGHTERS = (() => {
   /* ---------- the figures ---------- */
   const S = { figs: new Map(), last: undefined, first: true, recv: 0, atMs: 0, speed: 16, pin: null, hits: [], followAt: new Map(), drawn: [],
     root: new Map(), moreAt: {} };
-  const api = { S, PLACE, NODES, CAP, spotIn, set speed(v) { S.speed = v; }, get speed() { return S.speed; },
+  // shortest: the town's one route graph (lighthouse.js walks its light on it too)
+  const api = { S, PLACE, NODES, CAP, spotIn, shortest, set speed(v) { S.speed = v; }, get speed() { return S.speed; },
     berth: null };   // ticket L10: a function (agent, slot) -> [x, y] or null: the agent's spot at its project's berth
 
   const ageMs = a => { const t = Date.parse(a && a.since); return isNaN(t) ? 0 : Math.max(0, S.atMs - t + (performance.now() - S.recv)); };
@@ -328,7 +329,8 @@ const LAMPLIGHTERS = (() => {
       m(6, 6, 1, 1, skin); lanternPx(m, 9, -1, GLASS[st] || GLASS.working); lx = 10; ly = 1;
     }
     m.ink();
-    return { lamp: [dir > 0 ? ox + lx : ox + 8 - lx - 1, top + ly], box: [fx - 6, top - 3, 13, 15], head: [fx, top], cart };
+    // the click box follows its facing (0.2.1): the lantern side reaches 4 px past the feet one way, 9 px the other
+    return { lamp: [dir > 0 ? ox + lx : ox + 8 - lx - 1, top + ly], box: [dir > 0 ? fx - 4 : fx - 9, top - 3, 13, 15], head: [fx, top], cart };
   }
   function drawSeated(f) {
     const fx = Math.round(f.x), fy = Math.round(f.y), dir = f.face, ox = fx - 3, top = fy - 11, p = slumpOf(f), hd = p, hx = p ? 1 : 0;
@@ -344,7 +346,7 @@ const LAMPLIGHTERS = (() => {
     // the lantern, set down on the step on the door side
     m(8, 6, 1, 1, FRAME); m(7, 7, 3, 1, FRAME); m(7, 8, 3, 2, GLASS.waiting); m(7, 10, 3, 1, FRAME);
     m.ink();
-    return { lamp: [dir > 0 ? ox + 8 : ox - 2, top + 9], box: [fx - 5, top - 3, 13, 15], head: [fx + dir, top + hd - 2], slump: p };
+    return { lamp: [dir > 0 ? ox + 8 : ox - 2, top + 9], box: [dir > 0 ? fx - 5 : fx - 7, top - 3, 13, 15], head: [fx + dir, top + hd - 2], slump: p };
   }
   function drawFollower(h, a, parent, i) {
     const fx = Math.round(h.x), fy = Math.round(h.y), dir = h.face, ox = fx - 2, top = fy - 7, st = a.state === 'ok' ? 'working' : a.state;
@@ -556,7 +558,7 @@ const LAMPLIGHTERS = (() => {
     return n;
   };
   // --- end L10-fix ---
-  function guard(fn) { return (...a) => { try { fn(...a); } catch (e) { if (!S.err) { S.err = String(e && e.stack || e); console.error(e); } SEEN.agentsError = S.err; } }; }
+  const guard = K.guard('agentsError');   // a layer that throws logs once (SEEN.agentsError), not on every frame
   TOWN_LAYERS.scene.push(guard(scene)); TOWN_LAYERS.lights.push(guard(lights));
   (TOWN_LAYERS.top = TOWN_LAYERS.top || []).push(guard(top));   // town.js draws it after its corner box (L7-fix)
   kick();   // town.js drew its first frame before this script ran: a still scene draws again now, with the layers

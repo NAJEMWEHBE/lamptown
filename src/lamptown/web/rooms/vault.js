@@ -49,7 +49,7 @@ const daysSince = iso => { const a = dayStart(iso); return isNaN(a) ? 0 : Math.m
 
 /* ---------- the view model: real data, or the demo's sample ---------- */
 let RAW = null, V = null, LINES = [], UNIT = 1, STATIC = null, demo = null, timers = [], caption = '', roomId = '';
-let ideas = [], fly = null, queue = [], gulpT = -9, belly = { from: 0, to: 0, t0: -9 }, lastDrip = 0;
+let STIR = false, ideas = [], fly = null, queue = [], gulpT = -9, belly = { from: 0, to: 0, t0: -9 }, lastDrip = 0;
 const FISH = new Map(), TRAYF = new Map();
 
 const SAMPLE_FOLDERS = [['field-notes', 'FIELD NOTES', 13], ['kites', 'KITES', 24], ['tides', 'TIDES', 16], ['recipes', 'RECIPES', 4],
@@ -243,7 +243,7 @@ function buildStatic() {
     R(dx, dy, dw, dh, OL); R(dx + 1, dy + 1, dw - 2, dh - 1, '#4a2f24'); R(dx + 1, dy + 1, dw - 2, 1, '#6a4634');
     for (let x = dx + 5; x < dx + dw - 1; x += 6) R(x, dy + 2, 1, dh - 2, '#3a241c');
     R(dx + 22, dy + 16, 2, 3, '#ffd36e');
-    const s = '< TOWN', sw = textW(s) + 6; R(dx + 2, dy + 5, sw, 9, OL); R(dx + 3, dy + 6, sw - 2, 7, '#2b336a'); textL(s, dx + 5, dy + 7, '#ffd36e');
+    K.doorSign(dx + 2, dy + 5, { pad: 6, inset: 3, fill: '#2b336a', rim: null });
     R(266, 117, 132, 5, OL); R(267, 117, 130, 3, '#6a4a36'); R(267, 117, 130, 1, '#8a6448'); R(267, 120, 130, 1, '#3a2620');   // table
     R(270, 122, 4, FLOOR - 122, '#4a3428'); R(390, 122, 4, FLOOR - 122, '#4a3428'); R(273, 122, 1, FLOOR - 122, '#2a1c18'); R(393, 122, 1, FLOOR - 122, '#2a1c18');
     R(270, 160, 124, 2, '#3a2a22');
@@ -292,7 +292,7 @@ function drawFish(t) {
   if (gone()) return;
   LINES.forEach((f, li) => {
     for (const s of fishSpots(f)) {
-      const dx = K.still ? 0 : Math.sin(t * 1.6 - s.x * 0.05 + li * 0.7) > 0.94 ? 1 : 0;   // a breath of wind along the line
+      const dx = K.still || !STIR ? 0 : Math.sin(t * 1.6 - s.x * 0.05 + li * 0.7) > 0.94 ? 1 : 0;   // a breath of wind along the line (only while the review runs)
       g.drawImage(fishSp(f.col, f.dk, s.bundle ? 'bundle' : s.small ? 'small' : 'fish', dx), s.x - 6, s.y);
     }
   });
@@ -313,7 +313,8 @@ function drawTray(t) {
   const age = ageDays(), none = !V.inbox || gone();
   R(TRAY.x - 1, TRAY.y - 1, TRAY.w + 2, 15, OL); R(TRAY.x, TRAY.y, TRAY.w, 14, '#6a7090'); R(TRAY.x, TRAY.y, TRAY.w, 1, '#a8b0d0');
   R(TRAY.x + 2, TRAY.y + 2, TRAY.w - 4, 10, none ? '#2a2c3a' : mixHex('#2e4c70', '#3a3a44', Math.min(1, age / 7)));
-  if (!none && !K.still) for (let i = 0; i < 9; i++) { const x = TRAY.x + 4 + ((i * 37 + Math.floor(t * 3) * 7) % (TRAY.w - 8)), y = TRAY.y + 3 + (i * 5) % 8; if (Math.sin(t * 2 + i) > 0.4) P(x, y, age < 4 ? '#7ab0e0' : '#5a6070'); }
+  const tg = STIR ? t : 0;   // the glints on the brine run only while the review runs
+  if (!none && !K.still) for (let i = 0; i < 9; i++) { const x = TRAY.x + 4 + ((i * 37 + Math.floor(tg * 3) * 7) % (TRAY.w - 8)), y = TRAY.y + 3 + (i * 5) % 8; if (Math.sin(tg * 2 + i) > 0.4) P(x, y, age < 4 ? '#7ab0e0' : '#5a6070'); }
   const ice = none ? 0 : Math.max(0, 6 - age), ICE = [[273, 110], [296, 104], [319, 110], [344, 104], [367, 110], [389, 105]];   // 6 cubes on day 0, none by day 6
   for (let k = 0; k < ice; k++) { const [x, y] = ICE[k]; R(x, y, 4, 3, '#cfeaff'); P(x, y, '#ffffff'); R(x, y + 2, 4, 1, '#8ab8e0'); }
   if (!none) for (let k = ice; k < 6; k++) { const [x, y] = ICE[k]; R(x, y + 2, 4, 1, '#3a5a80'); }
@@ -325,7 +326,8 @@ function drawTray(t) {
   const vis = ideas.filter(d => !d.gone), extra = Math.max(0, vis.length - TRAY.slots);
   if (extra) { const s = '+' + extra; R(394 - textW(s) - 4, 96, textW(s) + 4, 7, OL); textL(s, 394 - textW(s) - 2, 97, '#ffd36e'); }
   const flies = none ? 0 : Math.min(4, Math.floor(age / 2));   // flies come to old fish: one per 2 days
-  for (let k = 0; k < flies; k++) { const a = (K.still ? 1 : t) * (3 + k) + k * 1.7, fx = 300 + k * 22 + Math.cos(a) * 7, fy = 98 + Math.sin(a * 1.3) * 3; P(fx, fy, '#141018'); if (!K.still && Math.sin(t * 30 + k) > 0) P(fx, fy - 1, '#8a8aa8'); }
+  const buzz = !K.still && untriaged() > 0;   // 0.2.1: they buzz while old ideas wait to be sorted; sorted, they rest
+  for (let k = 0; k < flies; k++) { const a = (buzz ? t : 1) * (3 + k) + k * 1.7, fx = 300 + k * 22 + Math.cos(a) * 7, fy = 98 + Math.sin(a * 1.3) * 3; P(fx, fy, '#141018'); if (buzz && Math.sin(t * 30 + k) > 0) P(fx, fy - 1, '#8a8aa8'); }
   const [sx, sy] = SIGN;   // the age sign: the tray's age in plain words
   const s1 = none ? (gone() ? 'NO INBOX' : 'NO INBOX YET') : (V.sample ? 'SAMPLE ' : 'INBOX ') + K.dayText(V.inbox.date).slice(4), s2 = none ? '' : age + (age === 1 ? ' DAY OLD' : ' DAYS OLD');
   const sw = Math.max(textW(s1), textW(s2)) + 8, sh = s2 ? 16 : 10;
@@ -359,7 +361,7 @@ function drawCat(t) {
     ellipse(CAT.cx, CAT.floor - 2, 12, 3, OL); ellipse(CAT.cx, CAT.floor - 2, 11, 2, '#3a2e2a'); textC('-', CAT.cx, 185, '#6a6e84'); return;
   }
   const { rx, ry } = catGeom(), bx = CAT.cx, by = CAT.floor - ry, body = '#3e3656', lite = '#5a5078', tummy = '#8a7ea8';
-  const tw = K.still ? 0 : Math.round(Math.sin(t * 1.5) * 1.5);
+  const eating = !!fly || NOW_T() - gulpT < 0.7, tw = K.still || !eating ? 0 : Math.round(Math.sin(t * 1.5) * 1.5);   // the tail flicks only while it eats
   for (let i = 0; i < 9; i++) { const a = i / 8, xx = bx - rx - Math.round(a * 4), yy = CAT.floor - 2 - Math.round(a * a * 10) + (i > 6 ? tw : 0); P(xx - 1, yy, OL); P(xx, yy, body); }
   ellipse(bx, by, rx + 1, ry + 1, OL); ellipse(bx, by, rx, ry, body); ellipse(bx - 1, by - 2, Math.max(2, rx - 3), Math.max(2, ry - 3), lite);
   ellipse(bx + Math.round(rx * 0.3), by + Math.round(ry * 0.35), Math.max(2, Math.round(rx * 0.55)), Math.max(1, Math.round(ry * 0.5)), tummy);   // the belly
@@ -371,7 +373,7 @@ function drawCat(t) {
   sprite(['#..', '##.', '###'], hx - 4, hy - 7, { '#': OL }); sprite(['.', '#', '#'], hx - 3, hy - 6, { '#': body });
   sprite(['..#', '.##', '###'], hx + 1, hy - 7, { '#': OL }); sprite(['.', '#', '#'], hx + 2, hy - 6, { '#': body });
   P(hx - 3, hy - 5, '#c08aa8'); P(hx + 2, hy - 5, '#c08aa8');
-  const blink = !K.still && (t % 4) < 0.15;
+  const blink = !K.still && eating && (t % 4) < 0.15;
   if (gulping) { sprite(['#.#', '.#.'], hx - 2, hy - 1, { '#': '#d8ff8a' }); sprite(['#.#', '.#.'], hx + 2, hy - 1, { '#': '#d8ff8a' }); }
   else if (!blink) { P(hx - 1, hy - 1, '#d8ff8a'); P(hx + 2, hy - 1, '#d8ff8a'); }
   P(hx + 4, hy + 1, '#f0a0b8');
@@ -469,10 +471,10 @@ function runDemo() {
   timers.push(setTimeout(runDemo, 11000));
 }
 function drawCaption() {
-  const tg = demo.state === 'ok' || demo.state === 'waiting' ? 'SAMPLE REPLAY: NOT A REAL DROP' : 'SAMPLE: MADE-UP NOTEBOOK', tw = textW(tg) + 6;
+  const tg = demo.state === 'ok' || demo.state === 'waiting' ? 'SAMPLE REPLAY: NOT A REAL DROP' : 'SAMPLE: MADE-UP NOTEBOOK';
   const w = caption ? textW(caption) + 12 : 0, x = caption ? Math.max(4, Math.round(130 - w / 2)) : 44, y = 196;
   if (caption) { R(x, y, w, 13, OL); R(x + 1, y + 1, w - 2, 11, '#2a1a3a'); R(x + 1, y + 1, w - 2, 1, '#c48dff'); textL(caption, x + 6, y + 4, '#f0e8ff'); }
-  R(x, y - 9, tw, 8, OL); R(x + 1, y - 8, tw - 2, 6, '#2a1a3a'); textL(tg, x + 3, y - 7, '#ffd36e');
+  K.sampleBadge(tg, x, y - 9, { h: 8, pad: 6, fill: '#2a1a3a' });
 }
 
 /* ---------- hover / click targets ---------- */
@@ -552,7 +554,8 @@ registerRoom('vault', {
     if (!V) return;
     if (!STATIC) buildStatic();
     g.drawImage(STATIC, 0, 0);
-    if (!K.still) for (let i = 0; i < 5; i++) if (Math.sin(t * 1.3 + i * 2.1) > 0.5) P(156 + i * 13, 3 + (i * 5) % 8, '#e8ecff');   // skylight stars
+    STIR = roomState() === 'working';   // 0.2.1: an idle room is still; the wind, the brine and the stars stir only while the review runs
+    if (!K.still) { const ts = STIR ? t : 0; for (let i = 0; i < 5; i++) if (Math.sin(ts * 1.3 + i * 2.1) > 0.5) P(156 + i * 13, 3 + (i * 5) % 8, '#e8ecff'); }   // skylight stars
     glow(glowSp('#b8c4ff', 20, 8, 0.12), 186, 20, 1);
     drawFish(t); drawLantern(t); drawSlate(t); drawBarrel(t); drawTray(t); drawCat(t); drawFly();
     const st = roomState();

@@ -39,33 +39,12 @@ const LH = (() => {
   const BLOCK = ORDER.flatMap(p => { const f = PLOT[p].foot, [cx, y, mw] = PLOT[p].plate; return [f, [cx - (mw >> 1) - 1, y - 1, mw + 2, 11]]; });
   const blocked = (x, y) => BLOCK.some(([bx, by, bw, bh]) => x >= bx && x < bx + bw && y >= by && y < by + bh);
   const key = p => p[0] + ',' + p[1];
-  let G = null;
-  function graph() {   // ROUTES as a graph: each point a node, a segment split wherever another node lies on it
-    if (G) return G;
-    const N = new Map(), A = new Map(), segs = [], add = p => { if (!N.has(key(p))) N.set(key(p), p.slice()); };
-    for (const r of ROUTES) { r.pts.forEach(add); for (let i = 1; i < r.pts.length; i++) segs.push([r.pts[i - 1], r.pts[i]]); }
-    for (const p of ORDER) add(way(p).join);
-    const onSeg = (p, a, b) => (b[0] - a[0]) * (p[1] - a[1]) === (b[1] - a[1]) * (p[0] - a[0])
-      && p[0] >= Math.min(a[0], b[0]) && p[0] <= Math.max(a[0], b[0]) && p[1] >= Math.min(a[1], b[1]) && p[1] <= Math.max(a[1], b[1]);
-    const link = (a, b) => { for (const [u, v] of [[a, b], [b, a]]) { if (!A.has(key(u))) A.set(key(u), []); A.get(key(u)).push([key(v), Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1])]); } };
-    for (const [a, b] of segs) {
-      const on = [...N.values()].filter(p => onSeg(p, a, b)).sort((p, q) => Math.abs(p[0] - a[0]) + Math.abs(p[1] - a[1]) - Math.abs(q[0] - a[0]) - Math.abs(q[1] - a[1]));
-      for (let i = 1; i < on.length; i++) link(on[i - 1], on[i]);
-    }
-    return (G = { N, A });
-  }
-  function shortest(from, to) {   // node keys -> the points after `from`, up to and with `to` (Dijkstra; a couple of dozen nodes)
-    const { N, A } = graph(), dist = new Map([[from, 0]]), prev = new Map(), done = new Set();
-    for (;;) {
-      let u = null, best = Infinity;
-      for (const [k, d] of dist) if (!done.has(k) && d < best) { best = d; u = k; }
-      if (u === null || u === to) break;
-      done.add(u);
-      for (const [v, l] of A.get(u) || []) if (!dist.has(v) || dist.get(v) > best + l) { dist.set(v, best + l); prev.set(v, u); }
-    }
-    if (!dist.has(to)) return [N.get(to)];
-    const out = []; for (let u = to; u !== from; u = prev.get(u)) out.unshift(N.get(u));
-    return out;
+  // the way runs on the lamplighters' own route graph (live.js: ROUTES, split at every node, each plot's join),
+  // the one graph the town walks on; read when first needed (live.js loads after this script). Without it: straight there
+  function shortest(from, to) {   // node keys -> the points after `from`, up to and with `to`
+    let L = null;
+    try { L = typeof LAMPLIGHTERS === 'object' && LAMPLIGHTERS && typeof LAMPLIGHTERS.shortest === 'function' ? LAMPLIGHTERS : null; } catch (e) { L = null; }
+    return L ? L.shortest(from, to).map(p => p.slice()) : [to.split(',').map(Number)];
   }
   // a plot's join (where its spur leaves the footpaths) and spur: the lamplighters' own (live.js), read when first needed;
   // without them, the footpath point nearest the door
@@ -148,7 +127,7 @@ const LH = (() => {
     S.targets = wd.concat(doors(S.fails.filter(a => !wset.has(a.plot)), 'fail'));
     for (const plot of [...S.reach.keys()]) if (!S.targets.some(x => x.plot === plot)) S.reach.delete(plot);   // a door let go
     const ids = list => new Set(list.map(a => String(a.id)));
-    const young = a => Date.now() - sinceOf(a) < TUNE.fresh;
+    const young = a => { const t = sinceOf(a); return Number.isFinite(t) && Date.now() - t < TUNE.fresh; };   // 0.2.1: no `since`: not new (no bell on load)
     const fresh = (list, known) => list.filter(a => (known ? !known.has(String(a.id)) : young(a)));
     const newWaits = fresh(S.waits, first ? null : S.known), newFails = fresh(S.fails, first ? null : S.knownFail);
     S.known = ids(S.waits); S.knownFail = ids(S.fails);
@@ -335,11 +314,7 @@ const LH = (() => {
   function place() { if (!isPlace(PLACE) && shown()) addPlace(PLACE, { hit: HIT, door: [CX, 196], word: 'lighthouse' }); }
   place();
   // --- live: rr-fix plot key --- a layer that throws logs once (SEEN.lighthouseError), not on every frame, as live.js does
-  let ERR = null;
-  function guard(fn) {   // the hook keeps its function's name (tests find a layer by it)
-    const g = (...a) => { try { fn(...a); } catch (e) { if (!ERR) { ERR = String(e && e.stack || e); console.error(e); } SEEN.lighthouseError = ERR; } };
-    return Object.defineProperty(g, 'name', { value: fn.name });
-  }
+  const guard = K.guard('lighthouseError');   // the hook keeps its function's name (tests find a layer by it)
   TOWN_LAYERS.sea.push(guard(sea)); TOWN_LAYERS.scene.push(guard(tower)); TOWN_LAYERS.lights.push(guard(lights));
   // --- end rr-fix plot key ---
   return { S, STEP, HIT, BOX, CX, OX, OY, LAND, BLOCK, angTo, routeOf, pathOf, TUNE };

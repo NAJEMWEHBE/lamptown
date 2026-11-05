@@ -840,7 +840,7 @@ function lamps(t, still) {
     const [x, y, post] = PLOT[plot].lamp;
     const on = still || lamp === 'green' || lamp === 'grey' ? true : lamp === 'amber' ? (t % 1.1) < 0.7 : (t % 0.5) < 0.3;
     statusLamp(x, y, post, lamp, on); SEEN.lamps[plot] = lamp;
-    if (lamp === 'green') glow(GL.green, x, y, 0.8 + Math.sin(t * 2 + x) * 0.2);
+    if (lamp === 'green') glow(GL.green, x, y, 0.8);   // 0.2.1: steady, as its words say (only amber and red blink)
     else if (lamp === 'amber' && on) glow(GL.amber, x, y, 1);
     else if (lamp === 'red' && on) glow(GL.red, x, y, 1);
     const above = bubbleAbove(plot, y);

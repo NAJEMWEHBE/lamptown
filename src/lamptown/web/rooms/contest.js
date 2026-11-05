@@ -209,6 +209,7 @@ function drawBottle(G, kind, fill) {
 }
 function bubbles(G, fill, t, seed) { // a slow bubble and a glint on the surface (per frame, two pixels)
   const liqH = fill == null ? 0 : Math.round(fill * (G.bh - 2)); if (liqH <= 4 || K.still) return;
+  if (!(B && B.state === 'working')) t = 0;   // 0.2.1: the bubbles rise only while the judges rank (an idle room is still)
   const ph = (t * 0.5 + seed * 0.37) % 1, bx = G.cx - (G.bw >> 1) + 2 + Math.floor(hash(seed, 3, 1) * (G.bw - 5));
   P(bx, G.base - 2 - Math.floor(ph * (liqH - 2)), '#ffb3c9');
   P(G.cx - (G.bw >> 1) + 1 + Math.floor(((t * 0.6 + seed * 0.13) % 1) * (G.bw - 2)), G.base - liqH, '#ffffff');
@@ -258,7 +259,7 @@ function drawRoomBG() {
   P(px - 4, py - 3, '#ffffff'); P(px + 3, py - 5, '#cfe8ff'); P(px + 5, py - 1, '#9fc8f0'); R(px - 7, py + 3, 15, 1, '#3b78a8');
   R(8, 98, 30, 52, OL); R(10, 100, 26, 50, '#5e3b2a'); R(10, 100, 26, 1, '#7a5038');   // the door back to town
   R(13, 104, 9, 18, '#4a2d20'); R(24, 104, 9, 18, '#4a2d20'); R(13, 126, 9, 20, '#4a2d20'); R(24, 126, 9, 20, '#4a2d20'); R(32, 126, 2, 3, '#ffcf6b');
-  R(9, 88, 28, 9, OL); R(10, 89, 26, 7, '#161b38'); textL('< TOWN', 11, 90, '#ffd36e');
+  K.doorSign(9, 88, { pad: 3, inset: 2, rim: null });
   for (let i = 0; i < 3; i++) R(346, 196 + i * 2, 46, 1, i === 0 ? '#8a5a34' : '#5e3b22');   // the pallet for older contests
   R(345, 195, 48, 1, OL); R(346, 201, 4, 4, '#4a2d20'); R(367, 201, 4, 4, '#4a2d20'); R(388, 201, 4, 4, '#4a2d20');
   for (let x = 348; x < 392; x += 7) R(x, 193, 5, 2, '#8a5a34');
@@ -372,7 +373,8 @@ function drawLamp(t) {
     g.globalAlpha = 0.10 * k; g.fillStyle = '#ffc46a';
     for (let y = 123; y < 166; y += 1) { const hw = 6 + (y - 123) * 0.5; g.fillRect(Math.round(lx - hw), y, Math.round(hw * 2 + 1), 1); }
     g.globalAlpha = 1; glow(glowSp('#ffb45a', 30, 24, 0.3), lx, 144, k); glow(glowSp('#ffc46a', 44, 7, 0.22), lx, 168, k);
-    if (!K.still) for (let i = 0; i < 4; i++) { const ph = (t * 0.15 + i * 0.25) % 1; P(lx - 10 + ((i * 7) % 20), 126 + Math.floor(ph * 38), 'rgba(255,230,170,' + (0.5 * k).toFixed(2) + ')'); }
+    const td = B && B.state === 'working' ? t : 0;   // 0.2.1: the dust in its light drifts only while the judges rank
+    if (!K.still) for (let i = 0; i < 4; i++) { const ph = (td * 0.15 + i * 0.25) % 1; P(lx - 10 + ((i * 7) % 20), 126 + Math.floor(ph * 38), 'rgba(255,230,170,' + (0.5 * k).toFixed(2) + ')'); }
   }
 }
 function drawPickTag() {
@@ -579,10 +581,6 @@ function addCrates(out) {
 }
 
 /* ---------- demo: the core moment on a timer ---------- */
-function drawCursor(x, y, down) {
-  const rows = ['#.....', '##....', '#.#...', '#..#..', '#...#.', '#..###', '#.#...', '##....'];
-  sprite(rows, x + 1, y + 1, { '#': OL }); sprite(rows, x, y, { '#': down ? '#ffd36e' : '#f4f6ff' });
-}
 const CAPTION = { ok: "THE PICK'S LABEL TURNS ROUND UNDER THE WARM LAMP", waiting: 'SEALED: THE AMBER ENVELOPE ASKS: UNBLIND?', pick: 'UNBLINDED: AMBER TAGS ASK YOU TO PICK ONE',
   working: 'THE JUDGES ARE STILL RANKING', error: "A CONTEST FILE CAN'T BE READ: NOTHING IS GUESSED", missing: 'NO CONTEST HAS RUN YET' };
 function runDemo() {
@@ -605,7 +603,7 @@ function runDemo() {
 }
 function drawDemoLayer() {
   if (caption) { const cw = textW(caption) + 12, x = Math.round(206 - cw / 2); R(x - 1, 211, cw + 2, 13, OL); R(x, 212, cw, 11, '#161b38'); R(x, 212, cw, 1, '#ffd36e'); textL(caption, x + 6, 215, '#ffd36e'); }
-  if (cursor) drawCursor(cursor[0], cursor[1], cursor[2]);
+  if (cursor) K.cursor(cursor[0], cursor[1], cursor[2], false);
 }
 
 /* ---------- the room ---------- */
