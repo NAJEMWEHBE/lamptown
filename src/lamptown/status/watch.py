@@ -14,8 +14,10 @@ One :meth:`Watcher.tick` (the app calls it every few seconds; ``lamptown watch``
    and names: only counters (the larger count wins) and the ``x-`` fields hooks never write
    are merged in. That decision is checked against the record read again right before the
    write (a hook that wrote in between is decided against again), and the whole record is
-   written at once. A reader that raises is reported in :attr:`TickResult.errors` and its
-   state is rolled back; the others still run.
+   written at once. That last read and the write hold the record's short write lock
+   (``store.record_lock``, which hooks take too), so no hook lands between them. A reader
+   that raises is reported in :attr:`TickResult.errors` and its state is rolled back; the
+   others still run.
 2. **Folder diff.** The whole status folder is compared with the last tick's snapshot, so every
    state change becomes an event, whoever wrote it: a reader, a hook or a ``status run``
    wrapper. Unchanged files are only ``stat``-ed. Time-based states count as well: a
@@ -68,7 +70,9 @@ no status record and no ``folder`` can't be checked, so with ``private_dirs`` se
 Readers that keep private folders of their own (``git``, ``ci_gh``) get these too
 (:func:`share_private`). The saved state keeps a hash of these rules: when they change (a folder
 made private, or public again), every record is read again, and the projects seen and the open
-``files`` counts of a record that is private now lose its names.
+``files`` counts of a record that is private now lose its names. The event log is rewritten
+too: the lines of a record that is private now are masked in place, and when a rule hides a
+folder it didn't before, so are the lines of agents with no record (:meth:`Watcher._remask_log`).
 """
 
 from __future__ import annotations
@@ -112,11 +116,13 @@ from lamptown.status.store import (
     SPEC,
     StatusBusy,
     StatusError,
+    atomic_write_bytes,
     atomic_write_json,
     default_dir,
     iso,
     read_existing,
     read_status,
+    record_lock,
     safe_reason,
     status_path,
     utcnow,
@@ -183,7 +189,7 @@ class TickResult:
 
 def _fresh_state() -> dict:
     return {"v": STATE_VERSION, "readers": {}, "folder": None, "pending": {}, "flushed": {},
-            "projects": [], "pruned": "", "wrote": {}, "recent": {}, "pr": ""}
+            "projects": [], "pruned": "", "wrote": {}, "recent": {}, "pr": "", "prs": []}
 
 
 def _scrubbed(value: Any) -> Any:
@@ -418,6 +424,12 @@ class Watcher:
         self._rules = hashlib.sha256(
             json.dumps(sorted(self.private_roots)).encode("utf-8")).hexdigest()[:16]
         # --- end review-fix: B2 1 ---
+        # --- review-fix R2b 1 --- a hash of each private folder (no path on disk either): a
+        # rule change that adds one masks what the log can't check (see _remask_log)
+        self._marks = sorted({hashlib.sha256(r.encode("utf-8")).hexdigest()[:16]
+                              for r in self.private_roots})
+        self._remask: tuple[set[str], bool, set[str]] | None = None
+        # --- end review-fix R2b 1 ---
 
     # ------------------------------------------------------------ lock
     def _lock(self) -> str | None:
@@ -516,7 +528,7 @@ class Watcher:
         state = _fresh_state()
         for key, kind in (("readers", dict), ("folder", dict), ("pending", dict),
                           ("flushed", dict), ("projects", list), ("pruned", str),
-                          ("wrote", dict), ("recent", dict), ("pr", str)):
+                          ("wrote", dict), ("recent", dict), ("pr", str), ("prs", list)):
             if isinstance(doc.get(key), kind):
                 state[key] = doc[key]
         state["wrote"] = {k: v for k, v in state["wrote"].items()
@@ -641,6 +653,18 @@ class Watcher:
         # --- end L4-fix ---
 
         folder_events = self._diff(state, now, result)
+        # --- review-fix R2b 1 --- the privacy rules changed: the log's lines of a record that
+        # is private now are masked on disk, before anything else is logged. A failed rewrite
+        # rolls the tick back (the rule change is seen again next tick)
+        remask, self._remask = self._remask, None
+        if remask is not None:
+            try:
+                self._remask_log(*remask)
+            except OSError as exc:
+                result.errors.append(f"event log: {safe_reason(exc)}"[:200])
+                self._rollback(now)
+                return result
+        # --- end review-fix R2b 1 ---
         snapshot = state["folder"] or {}
         mine = [e for e in (self._enrich(raw, snapshot, now) for raw in reader_events) if e]
         claimed = {(e["id"], e["k"]) for e in mine}
@@ -736,20 +760,27 @@ class Watcher:
                 if held:
                     result.kept.append(sid)
                 return
-            try:
-                again = read_existing(path)
-            except StatusBusy:  # it couldn't be read between our read and the write
-                if not force:
-                    self._hold(orig, tries, result)
-                    return
-                again = doc  # held long enough: a still unreadable file is replaced
-            if again != doc:
-                doc = again  # someone wrote it just now: decide again against what is there
-                continue
-            if held:
-                result.kept.append(sid)  # the record was written after the reader's source
-            self._write(sid, path, out, result, ours=ours)
-            return
+            # --- review-fix R2b 2 --- the last read and the write hold the record's lock, so
+            # a hook can't land between them (update_status takes the same lock)
+            with record_lock(path) as locked:
+                try:
+                    again = read_existing(path)
+                except StatusBusy:  # it couldn't be read between our read and the write
+                    if not force:
+                        self._hold(orig, tries, result)
+                        return
+                    again = doc  # held long enough: a still unreadable file is replaced
+                if again != doc:
+                    doc = again  # someone wrote it just now: decide again against what is there
+                    continue
+                if not locked:
+                    result.errors.append(f"status {sid}: its write lock stayed busy, "
+                                         "written without it"[:200])
+                if held:
+                    result.kept.append(sid)  # the record was written after the reader's source
+                self._write(sid, path, out, result, ours=ours)
+                return
+            # --- end review-fix R2b 2 ---
         self._hold(orig, tries, result)
 
     def _plan(self, sid: str, change: dict, at: datetime,
@@ -973,7 +1004,11 @@ class Watcher:
         # --- review-fix: B2 1 ---
         if rebuild:
             self._rules_changed(state, old, new)
+            # review-fix R2b 1: and the log, once this tick's diff is done (see _remask_log)
+            added = bool(set(self._marks) - set(state.get("prs") or []))
+            self._remask = ({sid for sid, e in new.items() if e.get("pv")}, added, set(new))
         state["pr"] = self._rules
+        state["prs"] = list(self._marks)  # review-fix R2b 1
         # --- end review-fix: B2 1 ---
         out.extend(self._new_projects(state, new, now, announce=not first))
         return out
@@ -1023,6 +1058,57 @@ class Watcher:
                 last = flushed.pop(sid)
                 flushed[masked["id"]] = max(last, flushed.get(masked["id"], ""))
     # --- end review-fix: B2 1 ---
+
+    # --- review-fix R2b 1 ---
+    def _remask_log(self, private: set[str], unknown: bool, known: set[str]) -> None:
+        """Mask the logged events of records that are private under the new rules, in place:
+        each such line gets the masked id, "Private agent" and no project, as if the record had
+        always been private (its ``project`` lines go). With ``unknown`` (a rule hides a folder
+        it didn't before) a line for an agent with no record is masked too: nothing says where
+        it ran, so it can't be checked. Already masked lines stay; torn or broken lines (never
+        read) are dropped from a file that is rewritten. Only the Watcher holding the folder
+        appends to the log, so nothing is lost meanwhile; each day file is replaced atomically."""
+        try:
+            paths = sorted(event_log.events_dir(self.dir).iterdir())
+        except FileNotFoundError:
+            return
+        for path in paths:
+            if not event_log.DAY_RE.match(path.name) or path.is_symlink() or not path.is_file():
+                continue
+            out: list[bytes] = []
+            changed = False
+            with open(path, "rb") as fh:
+                for line in fh:
+                    if not line.strip():
+                        continue
+                    event = self._log_line(line)
+                    if event is None:
+                        changed = True  # torn or broken: no reader ever sees it
+                        continue
+                    sid = event["id"]
+                    if not sid.startswith("private-") and (
+                            sid in private or (unknown and sid not in known)):
+                        changed = True
+                        if event["k"] == "project":
+                            continue  # a private record names no project
+                        event = clean_event(self._mask(event))
+                        if event is None:
+                            continue
+                    out.append(event_log.encode(event))
+            if changed:
+                atomic_write_bytes(path, b"".join(out))
+        self._seen = {}  # the day files' keys changed
+
+    @staticmethod
+    def _log_line(line: bytes) -> dict | None:
+        if len(line.rstrip(b"\r\n")) >= event_log.MAX_LINE:
+            return None
+        try:
+            raw = json.loads(line.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            return None
+        return clean_event(raw) if isinstance(raw, dict) else None
+    # --- end review-fix R2b 1 ---
 
     # --- release-fix: ENG (engine 2) ---
     def _tidy(self, path: Path, entry: dict, sig: list[int] | None, now: datetime) -> bool:

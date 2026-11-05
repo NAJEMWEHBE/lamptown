@@ -8,10 +8,13 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
 import re
 import tempfile
+import threading
 import time
+from collections.abc import Generator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -154,11 +157,17 @@ def atomic_write_json(path: Path, data: Any, *, max_bytes: int = MAX_BYTES) -> N
 
     ``max_bytes`` caps the file (status files: :data:`MAX_BYTES`; the Watcher's own state files
     pass a bigger cap). Lone surrogates are written as U+FFFD (:func:`scrub_text`)."""
-    path = Path(path)
     text = scrub_text(json.dumps(data, ensure_ascii=False, indent=1))  # review-fix B1
     payload = (text + "\n").encode("utf-8")
     if len(payload) > max_bytes:
         raise StatusError(f"status file would be {len(payload)} bytes; the limit is {max_bytes}")
+    atomic_write_bytes(path, payload)
+
+
+def atomic_write_bytes(path: str | os.PathLike, payload: bytes) -> None:
+    """Write ``payload`` to ``path`` through a temp file in the same folder and an atomic
+    rename (R2b: the Watcher rewrites event day files with it too)."""
+    path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
@@ -179,6 +188,88 @@ def atomic_write_json(path: Path, data: Any, *, max_bytes: int = MAX_BYTES) -> N
         with contextlib.suppress(OSError):
             os.unlink(tmp)
         raise
+
+
+# --- review-fix R2b 2: the per-record write lock ---
+LOCK_SUFFIX = ".lock"
+LOCK_WAIT = 0.5  # seconds a writer waits for a record's lock at most, then writes without it
+LOCK_STALE = 2.0  # seconds: a lock file older than this was left by a writer that died
+LOCK_POLL = 0.005  # seconds between tries while the lock is taken
+_log = logging.getLogger("lamptown.status")
+
+
+def lock_path(path: str | os.PathLike) -> Path:
+    """The lock file beside a record: ``.<id>.json.lock`` (hidden, so no scan reads it)."""
+    path = Path(path)
+    return path.with_name(f".{path.name}{LOCK_SUFFIX}")
+
+
+def _drop_stale(lock: Path, stale: float) -> None:
+    try:
+        age = time.time() - lock.stat().st_mtime
+    except OSError:
+        return  # gone already (or can't be looked at): just try again
+    if age > stale:
+        with contextlib.suppress(OSError):
+            lock.unlink()
+
+
+@contextlib.contextmanager
+def record_lock(path: str | os.PathLike) -> Generator[bool]:
+    """Hold a record's short write lock while reading, deciding and writing it, so two writers
+    (a hook and the Watcher) never lose each other's change. Yields whether the lock is held.
+
+    The lock is a file made with ``O_CREAT | O_EXCL`` beside the record (:func:`lock_path`),
+    holding a token of this writer's own. One older than :data:`LOCK_STALE` is broken (its
+    writer died). A writer waits :data:`LOCK_WAIT` at most; then it writes without the lock, as
+    before there was one, and says so in the ``lamptown.status`` log (no path). Leaving, it
+    removes the lock only while it still holds its own token."""
+    lock = lock_path(path)
+    token = f"{os.getpid()}-{threading.get_ident()}-{time.monotonic_ns()}\n".encode()
+    deadline = time.monotonic() + max(0.0, LOCK_WAIT)
+    held = made = False
+    while True:
+        try:
+            fd = os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0),
+                         0o600)
+        except FileNotFoundError:  # no folder yet: make it, then try once more
+            if made:
+                break
+            made = True
+            try:
+                lock.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            except OSError:
+                break
+            continue
+        except (FileExistsError, PermissionError):  # taken (Windows: or being removed)
+            _drop_stale(lock, LOCK_STALE)
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(LOCK_POLL)
+            continue
+        except OSError:
+            break  # a folder that can't hold the lock: write as before
+        try:
+            held = os.write(fd, token) == len(token)
+        except OSError:
+            held = False
+        finally:
+            os.close(fd)
+        if not held:  # a full disk: no lock, and no lock file without our token left behind
+            with contextlib.suppress(OSError):
+                lock.unlink()
+        break
+    if not held:
+        _log.warning("lamptown: a status record's write lock stayed busy for %.1f s; "
+                     "it is written without the lock", LOCK_WAIT)
+    try:
+        yield held
+    finally:
+        if held:
+            with contextlib.suppress(OSError):
+                if lock.read_bytes() == token:  # never someone else's (ours broken as stale)
+                    lock.unlink()
+# --- end review-fix R2b 2 ---
 
 
 def read_status(path: str | os.PathLike) -> dict:
@@ -240,8 +331,20 @@ def update_status(
     If it still can't be read, it is replaced (``replace_unreadable``, the default: a broken
     file is fixed), or :class:`StatusBusy` is raised and nothing is written (the Watcher: a
     record held open for a moment must not be rewritten with only the change).
+
+    The read, merge and write hold the record's :func:`record_lock` (R2b), so a Watcher
+    deciding the same record meanwhile never writes over this change.
     """
     path = status_path(status_id, directory)
+    with record_lock(path):  # review-fix R2b 2
+        return _update_locked(path, status_id, directory, now=now,
+                              replace_unreadable=replace_unreadable, defaults=defaults,
+                              changes=changes)
+
+
+def _update_locked(path: Path, status_id: str, directory: str | os.PathLike | None, *,
+                   now: datetime | None, replace_unreadable: bool,
+                   defaults: dict[str, Any] | None, changes: dict[str, Any]) -> dict:
     doc: dict = {}
     # --- release-fix: ENG (engine 4) ---
     try:

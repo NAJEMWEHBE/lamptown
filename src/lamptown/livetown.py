@@ -726,9 +726,38 @@ def history_payload(events: Iterable[Any], cfg: Config, now: datetime,
 
 def read_history(cfg: Config, now: datetime, tz: tzinfo | None = None,
                  ctx: LiveContext | None = None) -> list:
-    """The event log's last ``history_days`` days, as :func:`history_payload` takes them."""
+    """The event log's last ``history_days`` days, as :func:`history_payload` takes them.
+    Events of a record that is private now are masked (:func:`mask_private_history`)."""
     ctx = ctx or context(cfg)
-    return read_days(ctx.status_dir, cfg.live.history_days, now=now, tz=tz)
+    days = read_days(ctx.status_dir, cfg.live.history_days, now=now, tz=tz)
+    return mask_private_history(days, ctx)  # review-fix R2b 1
+
+
+# --- review-fix R2b 1 ---
+def mask_private_history(days: list, ctx: LiveContext) -> list:
+    """``days`` (``[(date, events)]``) with each event of a record that is private under the
+    config's rules now shown as that record's masked self (masked id, "Private agent", no
+    project; its ``project`` events dropped), as the Watcher masks the log when the rules
+    change. So a build that runs before the Watcher has seen a folder made private (the app
+    closed, the config just edited) never puts that folder's names in ``town-history.js``."""
+    if not ctx.roots:
+        return days
+    hidden = {doc["id"] for doc in read_records(ctx.status_dir)
+              if ctx.private(doc.get("x-folder"), doc.get("x-project"))}
+    if not hidden:
+        return days
+    out = []
+    for day, events in days:
+        kept = []
+        for e in events:
+            if not (isinstance(e, Mapping) and e.get("id") in hidden):
+                kept.append(e)
+            elif e.get("k") != "project":
+                kept.append({**e, "id": private_id(ctx.status_dir, e["id"]),
+                             "title": PRIVATE_NAME, "project": ""})
+        out.append((day, kept))
+    return out
+# --- end review-fix R2b 1 ---
 
 
 # ----------------------------------------------------------------------------- the lighthouse
