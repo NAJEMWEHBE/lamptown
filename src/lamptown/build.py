@@ -27,12 +27,15 @@ from typing import Any
 from lamptown import __version__, livetown
 from lamptown.collectors import (
     TIMEOUT,
+    clean,
+    clean_text,
     error_result,
     merge,
     run_sources,
     safe_href,
     source_paths,
 )
+from lamptown.collectors.jobs_schedule import LOCAL
 from lamptown.collectors.schema import room_schema, validate
 from lamptown.config import LIGHTHOUSE, PLOTS, Building, Config, user_data_dir
 
@@ -342,7 +345,7 @@ def _cell(v: Any) -> str:
             local = t.astimezone() if t.tzinfo else t
             shown = f"{local:%a} {local.day} {local:%b} {local:%H:%M}"
             return f'<time datetime="{_e(v)}">{_e(shown)}</time>'
-        except ValueError:
+        except (ValueError, OverflowError, OSError):  # 0001-01-01T00:00+05:00 has no local time
             return _e(v)
     if isinstance(v, dict):
         if set(v) >= {"done", "total"}:
@@ -671,7 +674,7 @@ def write_atomic(out: Path, text: str) -> None:
     fd, tmp = tempfile.mkstemp(prefix=out.name + ".", suffix=".tmp", dir=out.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
-            f.write(text)
+            f.write(clean_text(text))  # review-fix C2: the last wall (the data is clean already)
         for attempt in range(REPLACE_TRIES):
             try:
                 os.replace(tmp, out)
@@ -721,9 +724,9 @@ class LiveFiles:
 def _history(config: Config, now: dt.datetime, tz: dt.tzinfo | None,
              ctx: livetown.LiveContext, warnings: list[str]) -> dict[str, Any]:
     """The history payload; an event log that can't be read gives empty days and a warning."""
-    try:
-        return livetown.history_payload(livetown.read_history(config, now, tz, ctx), config,
-                                        now, tz)
+    try:  # review-fix C2: clean(): a status title may hold a lone surrogate
+        return clean(livetown.history_payload(livetown.read_history(config, now, tz, ctx),
+                                              config, now, tz))
     except Exception as e:  # the book is a nicety: the town is built without it
         warnings.append(f"live history: the event log can't be read ({type(e).__name__}: "
                         f"{e}); the lighthouse's book is empty this time"[:300])
@@ -781,8 +784,8 @@ def write_live_files(
     if rev is None:
         rev = read_rev(out)
     records = livetown.read_records(ctx.status_dir, cache)
-    payload = livetown.live_payload(records, config, clock, rev=rev, ctx=ctx,
-                                    at=dt.datetime.now(dt.UTC))
+    payload = clean(livetown.live_payload(records, config, clock, rev=rev, ctx=ctx,
+                                          at=dt.datetime.now(dt.UTC)))  # review-fix C2
     _write_live(out / LIVE_JS, js_call("lamptownLive", payload), warnings)
     return LiveFiles(live=out / LIVE_JS, payload=payload, history=wrote_history,
                      warnings=warnings)
@@ -801,10 +804,10 @@ def build(
     with ``[live]`` on, ``town-history.js`` and ``town-live.js``). Returns where they went.
     ``tz``: the zone the handover book's days are in (default: this computer's)."""
     fixed = now is not None
-    if now is None:
-        now = dt.datetime.now().astimezone().replace(microsecond=0)
+    if now is None:  # review-fix C6: the local zone, so schedules follow clock changes
+        now = dt.datetime.now(LOCAL).replace(microsecond=0)
     elif now.tzinfo is None:
-        now = now.astimezone()
+        now = now.replace(tzinfo=LOCAL)
     out = Path(out_dir) if out_dir else default_out_dir(config)
     warnings: list[str] = []
     rooms = collect_rooms(config, now, timeout)
@@ -816,7 +819,8 @@ def build(
     ctx = None
     if config.live.enabled:
         ctx = livetown.context(config)
-        live = livetown.live_payload(livetown.read_records(ctx.status_dir), config, now, ctx=ctx)
+        live = clean(livetown.live_payload(livetown.read_records(ctx.status_dir), config, now,
+                                           ctx=ctx))  # review-fix C2
         hist = _history(config, now, tz, ctx, warnings)  # L3-fix: never a failed build
     scripts = room_scripts(config, warnings)  # pr1-review: first, so the data says which
     data = town_data(config, rooms, now, fixed_clock=fixed, live=live,

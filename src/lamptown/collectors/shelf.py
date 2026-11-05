@@ -127,6 +127,12 @@ def _uri(p: Path) -> str:
         return ""
 
 
+def _leaf(p: Path) -> str:
+    """A folder's own name, from a path written for any OS (the town shows names, not paths)."""
+    parts = [x for x in re.split(r"[\\/]+", str(p)) if x]
+    return parts[-1][:120] if parts else ""
+
+
 def _paths(v: Any) -> list[Path]:
     if isinstance(v, str) and v.strip():
         return [Path(v)]
@@ -467,7 +473,7 @@ def collect(paths: dict, now: dt.datetime) -> dict[str, Any]:
         "counts": counts,
         "rows": rows,
         "bundles": bundles,
-        "folder": str(dirs[0]) if dirs else "",
+        "folder": _leaf(dirs[0]) if dirs else "",  # review-fix C5: its name, never its path
         "folderHref": _uri(found_dirs[0]) if found else "",
         "stagingFound": staging_found,
         "stagingHref": _uri(staging[0]) if staging_found else "",

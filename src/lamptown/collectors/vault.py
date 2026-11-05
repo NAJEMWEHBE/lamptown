@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Any
 
 from lamptown.collectors.jobs import clip, file_uri, iso, mtime, regex
+from lamptown.collectors.jobs_schedule import LOCAL
 from lamptown.collectors.jobs_schedule import parse as parse_schedule
 
 MAX_FILES = 20000  # notes counted at most (the walk stops there)
@@ -135,6 +136,14 @@ def shelves(root: Path, skip: set[str], labels: dict, budget: list[int],
     return out
 
 
+def _items(item: re.Pattern[str], text: str) -> list[str]:
+    """The text after each ``item`` match, up to the next one. Not ``item.split()``: a pattern
+    with a group (``^(##|###)\\s+``) would add each captured heading mark as an item."""
+    starts = list(item.finditer(text))
+    return [text[m.end():(starts[i + 1].start() if i + 1 < len(starts) else len(text))]
+            for i, m in enumerate(starts)]
+
+
 def read_inbox(path: Path, paths: dict, tz: dt.tzinfo | None) -> dict[str, Any]:
     item = regex(paths, "item") or re.compile(ITEM, re.M)
     triage = regex(paths, "triage") or re.compile(TRIAGE, re.M | re.I)
@@ -144,7 +153,7 @@ def read_inbox(path: Path, paths: dict, tz: dt.tzinfo | None) -> dict[str, Any]:
     except OSError:
         text = None
     items = []
-    for part in item.split(text or "")[1:]:
+    for part in _items(item, text or ""):
         chunk = re.split(r"^---\s*$", part, maxsplit=1, flags=re.M)[0]
         lines = chunk.splitlines()
         title = re.sub(r"^\d+[.)]?\s*", "", lines[0] if lines else "").strip().strip("*_ ")
@@ -182,10 +191,24 @@ def read_inbox(path: Path, paths: dict, tz: dt.tzinfo | None) -> dict[str, Any]:
     return out
 
 
-def newest(pattern: Path | None) -> Path | None:
+def _glob(pattern: Path, root: Path | None = None) -> list[str]:
+    """``glob`` on a pattern; inside the vault, the vault's own path is escaped first (a vault
+    folder named ``kites [north]`` is a name, not a pattern). Review-fix C6."""
+    text = str(pattern)
+    if root is not None:
+        try:
+            rel = pattern.relative_to(root)
+        except ValueError:
+            pass
+        else:
+            text = os.path.join(globmod.escape(str(root)), str(rel))
+    return globmod.glob(text, recursive=True)
+
+
+def newest(pattern: Path | None, root: Path | None = None) -> Path | None:
     if pattern is None:
         return None
-    files = [Path(f) for f in globmod.glob(str(pattern), recursive=True) if Path(f).is_file()]
+    files = [Path(f) for f in _glob(pattern, root) if Path(f).is_file()]
     if not files:
         return None
 
@@ -201,7 +224,7 @@ def last_review(root: Path, paths: dict) -> tuple[dt.date | None, Path | None, b
     pat, log = _inside(root, paths.get("reviews")), _inside(root, paths.get("log"))
     days: list[tuple[dt.date, Path | None]] = []
     if pat is not None:
-        for f in globmod.glob(str(pat), recursive=True):
+        for f in _glob(pat, root):
             d = _DAY.search(Path(f).stem)
             if d and _day(d.group(1)):
                 days.append((_day(d.group(1)), Path(f)))
@@ -236,7 +259,7 @@ def changed_since(root: Path, since: dt.datetime, skip: Path | None, tz) -> bool
 
 def collect(paths: dict, now: dt.datetime) -> dict[str, Any]:
     if now.tzinfo is None:
-        now = now.astimezone()
+        now = now.replace(tzinfo=LOCAL)  # review-fix C6: slots follow the local clock
     if not paths.get("path"):
         raise ValueError('needs path = "..." (the vault folder)')
     root = Path(str(paths["path"]))
@@ -274,7 +297,7 @@ def collect(paths: dict, now: dt.datetime) -> dict[str, Any]:
         gone = _md_files(dropped_dir, budget) if dropped_dir.is_dir() else []
         out["dropped"] = {"n": len(gone), "names": [f.stem[:80] for f in gone[:MAX_NAMES]],
                           "href": file_uri(dropped_dir) if dropped_dir.is_dir() else ""}
-    ib = newest(inbox_pat)
+    ib = newest(inbox_pat, root)
     inbox = read_inbox(ib, paths, now.tzinfo) if ib else None
     if inbox:
         out["inbox"] = inbox

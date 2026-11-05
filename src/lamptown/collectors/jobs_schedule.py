@@ -30,6 +30,52 @@ GRACE = 0.15  # a run is missed once it is this share of a period late
 _TIME = r"([01]?\d|2[0-3]):([0-5]\d)"
 
 
+# --- review-fix C6: this computer's zone, clock changes and all ---
+class LocalZone(dt.tzinfo):
+    """This computer's time zone with its daylight-saving changes (stdlib only: no zone name
+    needed, so it works on Windows without tzdata).
+
+    ``datetime.now().astimezone()`` gives a fixed offset, right only for today: a schedule slot
+    reached by adding days across a clock change came out an hour off. A time in this zone
+    keeps its wall-clock time under arithmetic and takes the offset of its own date."""
+
+    @staticmethod
+    def _fixed(d: dt.datetime) -> dt.datetime:
+        try:
+            return d.replace(tzinfo=None).astimezone()
+        except (OverflowError, OSError, ValueError):  # past what the OS can convert
+            return dt.datetime.now().astimezone()
+
+    def utcoffset(self, d: dt.datetime | None) -> dt.timedelta | None:
+        return None if d is None else self._fixed(d).utcoffset()
+
+    def dst(self, d: dt.datetime | None) -> dt.timedelta | None:
+        return None  # not known without the zone's rules; utcoffset() is what counts
+
+    def tzname(self, d: dt.datetime | None) -> str | None:
+        return None if d is None else self._fixed(d).tzname()
+
+    def fromutc(self, d: dt.datetime) -> dt.datetime:
+        try:
+            fixed = d.replace(tzinfo=dt.UTC).astimezone()
+        except (OverflowError, OSError, ValueError):  # past what the OS can convert
+            return d + (dt.datetime.now().astimezone().utcoffset() or dt.timedelta(0))
+        out = fixed.replace(tzinfo=self)
+        if out.utcoffset() != fixed.utcoffset():  # the second time round when clocks go back
+            out = out.replace(fold=1)
+        return out
+
+    def __repr__(self) -> str:
+        return "LocalZone()"
+
+    def __reduce__(self):
+        return (LocalZone, ())
+
+
+LOCAL = LocalZone()  # the build's clock; a naive ``now`` given to a collector means this zone
+# --- end review-fix C6 ---
+
+
 @dataclass(frozen=True)
 class Schedule:
     text: str

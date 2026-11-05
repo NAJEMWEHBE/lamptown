@@ -145,7 +145,8 @@ as written: `done = 'Done:\s*(.+)$'`.
 
 ### Schedules
 
-`schedule` (jobs and vault) is one short line, read in the build's local time zone:
+`schedule` (jobs and vault) is one short line, read in the build's local time zone (a run
+after a daylight-saving change keeps its clock time: `daily 03:00` is 03:00 on both sides):
 
 | Text | Runs |
 |---|---|

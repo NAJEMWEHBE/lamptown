@@ -2,16 +2,19 @@
 
 No questions are asked: flags choose everything, and the defaults give a working town. The only
 file written is the target ``lamptown.toml`` (plus a ``.bak`` of an old one next to it with
-``--force``). Agent setups are found by folder existence alone (:mod:`lamptown.onboarding.agents`);
-no file outside the target is opened or changed. Hooks are printed for you to paste, never
-installed.
+``--force``; ``.bak.1``, ``.bak.2`` ... when older backups are there, which are never
+replaced). Agent setups are found by folder existence alone
+(:mod:`lamptown.onboarding.agents`); no file outside the target is opened or changed. Hooks
+are printed for you to paste, never installed.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
+import re
 import shutil
 import sys
 from dataclasses import dataclass
@@ -25,8 +28,13 @@ DEFAULT_TITLE = "Lamptown"
 
 
 def _q(text: str) -> str:
-    """A TOML basic string (JSON's escapes are a subset of TOML's)."""
-    return json.dumps(text, ensure_ascii=True)
+    """A TOML basic string. JSON's escapes are a subset of TOML's, but not its ``\\ud83e``
+    surrogate escapes (TOML wants the character itself), so non-ASCII text is written as is;
+    DEL, the one control character JSON leaves bare, is escaped; a lone surrogate half (no
+    character at all) becomes U+FFFD."""
+    from lamptown.collectors import clean_text  # here: registering `init` stays light
+
+    return json.dumps(clean_text(text), ensure_ascii=False).replace("\x7f", "\\u007f")
 
 
 def tilde(path: Path, home: Path | None = None) -> str:
@@ -37,6 +45,21 @@ def tilde(path: Path, home: Path | None = None) -> str:
     except (ValueError, OSError):
         return str(path)
     return "~" if not rel.parts else "~/" + rel.as_posix()
+
+
+def tilde_text(text: str, home: Path | None = None) -> str:
+    """``text`` (an error message) with every path inside the home folder written as
+    :func:`tilde` writes it: ``C:\\Users\\you\\town\\lamptown.toml: ...`` -> ``~/town/...``."""
+    home = Path(os.path.expanduser("~")) if home is None else home
+    forms = {str(home)}
+    with contextlib.suppress(OSError):
+        forms.add(str(home.resolve()))
+    flags = re.IGNORECASE if os.name == "nt" else 0
+    for h in sorted((f.rstrip("/\\") for f in forms if len(f.rstrip("/\\")) > 3), key=len,
+                    reverse=True):
+        text = re.sub(re.escape(h) + r"(?![^\\/\s,:;'\"])([^\s,:;'\"]*)",
+                      lambda m: "~" + m.group(1).replace("\\", "/"), text, flags=flags)
+    return text
 
 
 @dataclass(frozen=True)
@@ -142,8 +165,38 @@ def _status_dir(args: argparse.Namespace, home: Path, config_dir: Path) -> str:
     return rel.as_posix() if rel.parts else "."
 
 
+BACKUPS_MAX = 1000  # lamptown.toml.bak, then .bak.1 ... .bak.999
+
+
+def backup_name(path: Path) -> Path:
+    """Where the next backup of ``path`` goes: ``.bak``, else the first free ``.bak.N``. An old
+    backup is never replaced (the first one holds the config the user wrote)."""
+    for n in range(BACKUPS_MAX):
+        p = path.with_name(path.name + ".bak" + (f".{n}" if n else ""))
+        if not p.exists() and not p.is_symlink():
+            return p
+    raise FileExistsError(f"{path.name}.bak.1 to .bak.{BACKUPS_MAX - 1} all exist; "
+                          "delete some old backups")
+
+
+def _backup(path: Path) -> Path:
+    """Copy ``path`` to :func:`backup_name`, created exclusively (two runs at once never write
+    the same backup)."""
+    for _ in range(BACKUPS_MAX):
+        dest = backup_name(path)
+        try:
+            with open(path, "rb") as src, open(dest, "xb") as out:
+                shutil.copyfileobj(src, out)
+        except FileExistsError:
+            continue  # taken between the look and the open: take the next one
+        shutil.copystat(path, dest)
+        return dest
+    raise FileExistsError(f"can't find a free backup name next to {path.name}")
+
+
 def _write(path: Path, text: str, force: bool) -> Path | None:
-    """Write atomically; with ``force`` keep the old file as ``.bak``. Returns that backup.
+    """Write atomically; with ``force`` keep the old file as a backup (:func:`backup_name`).
+    Returns that backup.
 
     The old file is copied (not moved) before the new one replaces it in one step, so a failed
     write leaves the old config where it was."""
@@ -154,8 +207,7 @@ def _write(path: Path, text: str, force: bool) -> Path | None:
         with open(tmp, "x", encoding="utf-8", newline="\n") as f:
             f.write(text)
         if path.exists() and force:
-            backup = path.with_name(path.name + ".bak")
-            shutil.copyfile(path, backup)
+            backup = _backup(path)  # review-fix C4: never over an older backup
         os.replace(tmp, path)
     finally:
         if tmp.exists():
@@ -235,9 +287,12 @@ def cmd_init(args: argparse.Namespace) -> int:
         print(f"lamptown init: {target} is a folder", file=sys.stderr)
         return EXIT_WRITE
     if target.exists() and not args.force:
-        print(f"lamptown init: {target} already exists. Use --force to replace it (the old "
-              f"file is kept as {target.name}.bak), or --print to see the new one.",
-              file=sys.stderr)
+        try:
+            kept = f"the old file is kept as {backup_name(target).name}"
+        except OSError:
+            kept = "first delete some old backups next to it"
+        print(f"lamptown init: {target} already exists. Use --force to replace it ({kept}), "
+              "or --print to see the new one.", file=sys.stderr)
         return EXIT_EXISTS
     try:
         backup = _write(target, plan.text, args.force)
@@ -287,7 +342,8 @@ def add_parser(subparsers) -> argparse.ArgumentParser:
     p.add_argument("--no-detect", action="store_true",
                    help="don't look for agent folders; write the plain starter")
     p.add_argument("--force", action="store_true",
-                   help="replace an existing lamptown.toml (the old one is kept as .bak)")
+                   help="replace an existing lamptown.toml (the old one is kept as .bak, or "
+                        ".bak.1, .bak.2 ... when older backups are there)")
     p.add_argument("--print", action="store_true",
                    help="print the config instead of writing it")
     p.add_argument("--hooks", metavar="AGENT", choices=tuple(BY_ID),

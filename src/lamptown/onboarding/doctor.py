@@ -40,7 +40,7 @@ from lamptown.config import (
     user_config_dir,
 )
 from lamptown.onboarding.browser import find_browser
-from lamptown.onboarding.init import tilde
+from lamptown.onboarding.init import tilde, tilde_text
 
 OK, WARN, FAIL = "ok", "warn", "FAIL"
 EXIT_OK, EXIT_PROBLEMS = 0, 1
@@ -75,7 +75,8 @@ def check_config(explicit: str | None) -> tuple[Check, Config | None]:
     try:
         path = find_config(explicit)
     except ConfigError as e:
-        return Check(FAIL, "Config", str(e), "fix the path, or unset $" + ENV_CONFIG), None
+        return (Check(FAIL, "Config", tilde_text(str(e)), "fix the path, or unset $" + ENV_CONFIG),
+                None)
     if path is None:
         where = tilde(user_config_dir() / CONFIG_NAME)
         return (Check(WARN, "Config", f"none yet (looked for {where}); the town is six empty "
@@ -83,7 +84,8 @@ def check_config(explicit: str | None) -> tuple[Check, Config | None]:
     try:
         cfg = load_config(str(path))
     except ConfigError as e:
-        return Check(FAIL, "Config", str(e), "edit the file; docs/config.md lists every key"), None
+        return (Check(FAIL, "Config", tilde_text(str(e)),
+                      "edit the file; docs/config.md lists every key"), None)
     n = len(cfg.buildings)
     return Check(OK, "Config", f"{tilde(path)} ({n} building{'s' if n != 1 else ''})"), cfg
 
@@ -219,7 +221,7 @@ def _writable(folder: Path) -> str | None:
         with tempfile.NamedTemporaryFile(dir=folder, prefix=".lamptown-doctor-", delete=True):
             pass
     except OSError as e:
-        return e.strerror or str(e)
+        return e.strerror or tilde_text(str(e))
     return None
 
 

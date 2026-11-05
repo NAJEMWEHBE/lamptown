@@ -129,14 +129,18 @@ def _mtime(p: Path) -> dt.datetime | None:
 
 
 def aware(s: Any) -> dt.datetime | None:
-    """An ISO time with an offset, else None (a time without one says nothing absolute)."""
+    """An ISO time with an offset, else None (a time without one says nothing absolute, and
+    one past the calendar's ends in UTC, such as ``0001-01-01T00:00+05:00``, can't be used)."""
     if not isinstance(s, str) or not s.strip():
         return None
     try:
         d = dt.datetime.fromisoformat(s.strip().replace("z", "Z"))
-    except ValueError:
+        if d.tzinfo is None:
+            return None
+        d.astimezone(dt.UTC)
+    except (ValueError, OverflowError):
         return None
-    return d if d.tzinfo is not None else None
+    return d
 
 
 def _int(v: Any) -> int | None:

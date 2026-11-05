@@ -18,6 +18,7 @@ import importlib
 import importlib.util
 import json
 import math
+import re
 import sys
 import threading
 import time
@@ -25,6 +26,8 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from importlib import metadata
 from pathlib import Path, PurePath
 from typing import Any
+
+from lamptown.status.store import scrub_text
 
 STATES = ("ok", "waiting", "working", "error", "missing")
 WORST_FIRST = ("error", "waiting", "working", "missing", "ok")
@@ -63,7 +66,7 @@ def worst(states: Iterable[str]) -> str:
 
 
 def error_result(reason: str) -> dict[str, Any]:
-    return {"state": "error", "error": reason[:300]}
+    return {"state": "error", "error": clean_text(reason)[:300]}  # review-fix C2
 
 
 # ----------------------------------------------------------------------------- finding a collector
@@ -132,11 +135,39 @@ def find_collector(kind: str, local: str | None = None) -> Collector:
 
 
 # ----------------------------------------------------------------------------- JSON safety
+# --- review-fix C2: lone surrogates ---
+_SURROGATE = re.compile("[\ud800-\udfff]")
+
+
+def clean_text(text: str) -> str:
+    """``text`` as valid Unicode, so it can be written as UTF-8: a lone surrogate half (a file
+    name from a non-UTF-8 disk, a broken ``\\ud83e`` JSON escape) becomes U+FFFD; a pair kept
+    as two halves becomes its one character. Valid text comes back unchanged."""
+    if not _SURROGATE.search(text):
+        return text
+    return scrub_text(text)  # one rule for every writer: lamptown.status.store
+
+
+def clean(value: Any) -> Any:
+    """:func:`clean_text` on every string (keys too) in JSON-like data; a copy when needed."""
+    if isinstance(value, str):
+        return clean_text(value)
+    if isinstance(value, dict):
+        return {clean_text(k) if isinstance(k, str) else k: clean(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [clean(v) for v in value]
+    return value
+# --- end review-fix C2 ---
+
+
 def json_safe(value: Any, where: str = "result") -> Any:
     """A JSON-only copy. datetimes/dates become ISO strings (naive ones are read as local time),
     paths
-    become strings, tuples become lists. Anything else raises TypeError naming where it was."""
-    if value is None or isinstance(value, (bool, str)):
+    become strings, tuples become lists, and text is valid Unicode (:func:`clean_text`). Anything
+    else raises TypeError naming where it was."""
+    if isinstance(value, str):
+        return clean_text(value)
+    if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
         return int(value)
@@ -149,13 +180,13 @@ def json_safe(value: Any, where: str = "result") -> Any:
     if isinstance(value, dt.date):
         return value.isoformat()
     if isinstance(value, PurePath):
-        return str(value)
+        return clean_text(str(value))
     if isinstance(value, Mapping):
         out = {}
         for k, v in value.items():
             if not isinstance(k, str):
                 raise TypeError(f"{where} has a key {k!r} that is not a string")
-            out[k] = json_safe(v, f"{where}.{k}")
+            out[clean_text(k)] = json_safe(v, f"{where}.{k}")
         return out
     if isinstance(value, (list, tuple)):
         return [json_safe(v, f"{where}[{i}]") for i, v in enumerate(value)]

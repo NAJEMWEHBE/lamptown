@@ -27,8 +27,10 @@ def collect(paths: dict, now: datetime) -> dict:
       (for example `status_dir`, which feeds both `jobs` and `harbour`) uses this to choose its
       row shape;
     - `paths["_config_dir"]`: the absolute folder of the config file, as a string.
-- `now` is a **timezone-aware** `datetime` (local offset) taken once per build, so every
-  collector in one build sees the same instant. Use it instead of calling `datetime.now()`.
+- `now` is a **timezone-aware** `datetime` (this computer's zone, clock changes included:
+  `now + timedelta(days=1)` keeps the wall-clock time and takes that day's offset) taken once
+  per build, so every collector in one build sees the same instant. Use it instead of calling
+  `datetime.now()`.
 - The return value is a `dict`. Anything else counts as a crash.
 
 ## The rules
@@ -49,6 +51,8 @@ def collect(paths: dict, now: datetime) -> dict:
 4. **JSON-safe values only**: `str`, `int`, `float`, `bool`, `None`, `list`, `dict` (string keys).
    As a convenience, `datetime` / `date` values are turned into ISO 8601 strings, and `Path`
    values into strings, before the check. `NaN`/`Infinity`, sets, bytes and other objects fail.
+   Text that isn't valid Unicode (a lone surrogate half, as a file name from a non-UTF-8 disk
+   gives) keeps going: each lone half becomes `�` (U+FFFD).
 5. **Absolute times only**: ISO 8601 strings with an offset (`2026-11-04T10:12:00+00:00` or
    `...Z`). Never write "in 3 h" or "2 d ago": the page writes relative text itself, so the
    clock alone never changes the data (and never triggers a desktop-app reload).

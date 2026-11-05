@@ -41,6 +41,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from lamptown.collectors.jobs_schedule import LOCAL
 from lamptown.collectors.jobs_schedule import parse as parse_schedule
 
 TAIL_BYTES = 256 * 1024
@@ -191,7 +192,7 @@ def read_run(paths: dict, now: dt.datetime) -> dict[str, Any]:
 
 def collect(paths: dict, now: dt.datetime) -> dict[str, Any]:
     if now.tzinfo is None:
-        now = now.astimezone()
+        now = now.replace(tzinfo=LOCAL)  # review-fix C6: slots follow the local clock
     name = clip(paths.get("name") or "", NAME_MAX)
     raw = paths.get("glob") or (paths.get("globs") or [""])[0]
     if not name:
