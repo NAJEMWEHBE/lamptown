@@ -47,18 +47,19 @@ def live_town(tmp_path: Path) -> Path:
 def test_the_version_is_the_one_the_changelog_ships(tmp_path, capsys):
     log = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     top = re.search(r"^## (\d+\.\d+\.\d+)", log, re.M)
-    assert top and __version__ == top.group(1) == "0.2.0", (__version__, top and top.group(1))
+    # test_release_consistency.py owns the version rules; this checks every place shows the same one
+    assert top and __version__ == top.group(1), (__version__, top and top.group(1))
     # pyproject reads it from the package (the wheel's name), and every place that shows it says it
     toml = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert 'version = { attr = "lamptown.__version__" }' in toml
     with pytest.raises(SystemExit):
         cli.main(["--version"])
-    assert capsys.readouterr().out.strip() == "lamptown 0.2.0"
+    assert capsys.readouterr().out.strip() == f"lamptown {__version__}"
     p = tmp_path / "lamptown.toml"
     p.write_text("", encoding="utf-8")
     town = B.build(parse_config("", p), out_dir=tmp_path / "out").town
     details = (town.parent / "town-details.html").read_text(encoding="utf-8")
-    assert "<footer>Lamptown 0.2.0." in details
+    assert f"<footer>Lamptown {__version__}." in details
 
 
 # ----------------------------------------------------------------------------- #4 screen readers
