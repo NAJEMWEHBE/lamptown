@@ -14,32 +14,39 @@ Fixes from a whole-project review: privacy gaps closed, crashes fixed, idle room
   stderr lines it wrote, never the command or its output. `agent_status` records the exception type only.
 - The town cuts paths, replaces e-mail addresses and masks secrets in every status title, message
   and need, even in a status file written by hand.
-- When a folder becomes private, the Watcher reads every record again. Saved projects, history and
-  open-file counts drop its names, and private sessions keep no titles in saved state.
+- When a folder becomes private, the Watcher reads every record again. Saved projects, the event
+  log, `town-history.js` and open-file counts drop its names, and private sessions keep no titles
+  in saved state.
 - The skill shelf's padlock tip names the folder, never its path.
-- Secrets (`token=...`, `Bearer ...`) are masked in live session titles too. The status `agent`
-  field, link labels, vault note names and the harbour's newest commit subject get the same
-  path, e-mail and secret cuts as titles.
+- Secrets are masked in every title, message and room text: `token=...`, `Bearer ...`, JSON
+  (`"token": "..."`), secret flags (`--password ...`) and well-known token shapes (`ghp_`, `sk-`,
+  `xoxb-`, `AKIA`, `glpat-`). URL-encoded paths are cut like plain ones. The status `agent` field,
+  link labels, vault note names, project names and the harbour's newest commit subject get the
+  same path, e-mail and secret cuts as titles.
 - A leak-hunter test plants made-up paths, e-mails, tokens and private titles in every input the
   town reads. It checks that none of them reaches anything the town writes, and that the privacy
   gate catches every form.
 - The privacy gate checks more:
   - tag names, annotated tags and commit e-mails (noreply or example addresses only);
   - file names;
-  - Git Bash, WSL, Cygwin, URL-encoded and lower-case drive paths.
+  - WSL, Cygwin, network-share, macOS volume, URL-encoded and lower-case drive paths;
+  - deny-listed folders in every spelling, Git Bash's `/f/...` included.
+- A privacy-gate baseline entry counts only for a file already on `origin/main` (or
+  `--baseline-base <rev>`), so a change can't approve its own new leak.
 - `tools/hooks` adds pre-commit and commit-msg hooks. pre-push needs the deny-list unless
   `LAMPTOWN_NO_DENYLIST=1`.
 
 ### Changed
 
 - Headless runs are jobs and walk to the clock tower: `claude -p` and Agent SDK sessions, and `codex exec`.
-- Status-file jobs read as missed once they are 15 % of their period overdue.
+- Status-file jobs read as missed once they are 15 % of their period overdue, and finished job
+  rows stay listed in the jobs room.
 - Rooms move only while something is running or waiting, and the green lamp no longer pulses.
 - Hooks set a session's title only when they create its record, so titles stop flapping.
 
 ### Fixed
 
-- A year-1 or year-9999 date shows as text instead of stopping the build.
+- A year-1 or year-9999 date shows as text instead of stopping the build or the jobs room.
 - Broken characters (lone surrogates) in status, collector, live or history data become `�`
   instead of crashing.
 - Schedules keep wall-clock time across daylight-saving changes.
@@ -47,7 +54,8 @@ Fixes from a whole-project review: privacy gaps closed, crashes fixed, idle room
   backup (`.bak`, `.bak.1`, ...).
 - `doctor` shows config paths as `~/...`.
 - Vault patterns with groups, and folder names with glob characters, work.
-- When a hook writes at the same moment as the Watcher, the Watcher decides again before saving.
+- A hook writing while the Watcher saves the same record keeps its state: both take a short
+  per-record lock (`.<id>.json.lock`).
 - A failed save no longer hides the error that caused it.
 - Lantern click boxes are fixed, and the bell no longer rings on load.
 - The app answers a second launch while its first build is still running.
