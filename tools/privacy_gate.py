@@ -42,9 +42,11 @@ Baseline (tools/privacy_gate_baseline.txt, in the repo): reviewed, fictional use
 e-mail hits inside blobs that are already public and can't be rewritten (test fixtures written
 before the gate learned a path form). One entry per line: "<blob sha> <line or -> <check>",
 then an optional "# comment". An entry only covers that exact file content (the blob sha), that
-line and that check, so an edited file or a new leak is never covered. Deny-list, image and
-identity hits are never baselined. --suggest-baseline prints entries for the current hits;
-review every one before adding it.
+line and that check, so an edited file or a new leak is never covered. An entry also only counts
+when its blob is already public: in the history of origin/main, or of the commit
+--baseline-base <rev> names (CI passes the pull request's target branch). A brand-new file is
+never covered, even with an entry. Deny-list, image and identity hits are never baselined.
+--suggest-baseline prints entries for the current hits; review every one before adding it.
 """
 
 from __future__ import annotations
@@ -64,6 +66,7 @@ from pathlib import Path, PurePath, PurePosixPath
 ENV_DENYLIST = "LAMPTOWN_DENYLIST"
 BASELINE_FILE = "tools/privacy_gate_baseline.txt"
 BASELINE_CHECKS = ("user-path", "email")
+DEFAULT_BASELINE_BASE = "origin/main"   # baseline entries count only for blobs already here
 MEDIA_DIR = "docs/media/"
 APP_ICON_DIR = "src/lamptown/app/assets/"   # the app icons (tools/make_icon.py), nothing else
 APP_ICON_EXTS = {".png", ".ico", ".icns"}
@@ -83,12 +86,16 @@ ZERO_SHA = "0" * 40
 
 _SEP = r"(?:[\\/]|%5[Cc]|%2[Ff])"      # a path separator, also URL-encoded
 _NAME = r"[^\\/\s\"'`<>|:*?,;()\[\]{}%]+"
+_VOLUME = _NAME + r"(?: " + _NAME + r")*"   # a macOS volume name may hold single spaces
 _USER_PATH_PREFIXES = "|".join([
     r"[A-Za-z](?::|%3A)",                                      # C:  C%3A
     _SEP + r"+(?:mnt|cygdrive)" + _SEP + r"+[A-Za-z](?=" + _SEP + ")",   # /mnt/c (WSL, Cygwin)
     _SEP + r"+[A-Za-z](?=" + _SEP + ")",                       # /c (Git Bash, MSYS)
     _SEP + r"+var(?=" + _SEP + ")",                            # /var/home (Fedora Atomic)
     _SEP + r"{2,}wsl(?:\$|\.localhost)" + _SEP + "+" + _NAME,  # \\wsl$\<distro>
+    # \\PC\Users, \\PC\C$\Users (a network share). Backslashes only: "//host/Users/x" is a URL.
+    r"(?:\\|%5[Cc]){2,}" + _NAME + r"(?:" + _SEP + r"+" + _NAME + r")?",
+    _SEP + r"+(?:System" + _SEP + r"+)?Volumes" + _SEP + r"+" + _VOLUME,  # macOS /Volumes/<disk>
 ])
 # The lookbehind applies to the start of the prefix, so ".../c/Users/x" inside a URL stays clean.
 USER_PATH_RE = re.compile(
@@ -105,6 +112,13 @@ DRIVE_PATH_RE = re.compile(
 # where JS puts a regex literal) and only with a further path segment that doesn't start with ".".
 DRIVE_SLASH_RE = re.compile(
     r"(?<![^\s\"'`=(\[<>/])[a-z]:/+(?P<seg>" + _NAME + r")(?=/+[^\s/\\\"'`<>|*?,;()\[\]{}.:])",
+)
+# A drive folder in WSL or Cygwin spelling ("/mnt/<drive>/<folder>", "/cygdrive/<drive>/..."),
+# never after a letter, digit, ".", "~", ":" or "/" (so not inside a URL). A bare Git Bash
+# "/<drive>/<folder>" can't be told from "/h/Library" or "/a/b" in code, so it is only caught
+# through the deny-list, whose drive folders match in every spelling (term_pattern).
+WSL_DRIVE_RE = re.compile(
+    r"(?<![A-Za-z0-9.~_:/-])/+(?:mnt|cygdrive)/+[A-Za-z]/+(?P<seg>" + _NAME + ")",
 )
 SYSTEM_DRIVE_DIRS = ("windows", "program", "users", "documents and settings")
 EMAIL_RE = re.compile(
@@ -164,7 +178,7 @@ def generic_matches(text: str) -> Iterable[tuple[int, int, str, str]]:
         if not _placeholder_name(m.group("name")):
             yield (m.start(), m.end(), "user-path",
                    "absolute personal path (use ~ or the placeholder 'you')")
-    for rx in (DRIVE_PATH_RE, DRIVE_SLASH_RE):
+    for rx in (DRIVE_PATH_RE, DRIVE_SLASH_RE, WSL_DRIVE_RE):
         for m in rx.finditer(text):
             if not m.group("seg").lower().startswith(SYSTEM_DRIVE_DIRS):
                 yield (m.start(), m.end(), "user-path",
@@ -221,19 +235,33 @@ class DenyList:
         return "".join(out)
 
 
+_TERM_SEP = r"(?:[\\/]|%5[Cc]|%2[Ff])+"
+# A deny-list folder on a drive matches in every spelling: "<drive>:" with "\" or "/", URL-encoded
+# ("%3A%5C"), Git Bash "/<drive>/...", WSL "/mnt/<drive>/..." and Cygwin "/cygdrive/<drive>/...".
+_TERM_DRIVE_RE = re.compile(
+    r"(?:(?P<colon>[a-z])(?::|%3a)|/+(?:(?:mnt|cygdrive)/+)?(?P<posix>[a-z]))(?=[\\/]|%5c|%2f)",
+    re.IGNORECASE,
+)
+
+
 def term_pattern(term: str) -> re.Pattern[str]:
-    parts = re.split(r"([\\/]+|[\s_-]+)", term)
+    drive = _TERM_DRIVE_RE.match(term)
+    rest = term[drive.end():] if drive else term
     body = []
-    for part in parts:
+    if drive:
+        letter = re.escape(drive.group("colon") or drive.group("posix"))
+        body.append(r"(?:(?<![^\W_])" + letter + r"(?::|%3[Aa])"
+                    r"|(?<![\w.~%-])(?:/+(?:mnt|cygdrive))?/+" + letter + ")")
+    for part in re.split(r"(" + _TERM_SEP + r"|[\s_-]+)", rest):
         if not part:
             continue
-        if re.fullmatch(r"[\\/]+", part):
-            body.append(r"[\\/]+")
+        if re.fullmatch(_TERM_SEP, part):
+            body.append(_TERM_SEP)
         elif re.fullmatch(r"[\s_-]+", part):
             body.append(r"[\s_-]+")
         else:
             body.append(re.escape(part))
-    left = r"(?<![^\W_])" if term[0].isalnum() else ""
+    left = r"(?<![^\W_])" if term[0].isalnum() and not drive else ""
     right = r"(?![^\W_])" if term[-1].isalnum() else ""
     return re.compile(left + "".join(body) + right, re.IGNORECASE)
 
@@ -320,6 +348,64 @@ def load_baseline(root: Path) -> frozenset[tuple[str, str, str]]:
     return frozenset(out)
 
 
+def resolve_commit(root: Path, rev: str) -> str | None:
+    """The commit sha rev names in root's repo, or None (no repo, unknown rev, not a commit)."""
+    if rev.startswith("-") or not is_git_repo(root):
+        return None
+    try:
+        out = git(root, "rev-parse", "--verify", "-q", rev + "^{commit}")
+    except SetupError:
+        return None
+    return out.decode().strip() or None
+
+
+def public_baseline(root: Path, entries: frozenset[tuple[str, str, str]], base: str | None,
+                    show=lambda s: s) -> frozenset[tuple[str, str, str]]:
+    """Only the entries whose blob is already in base's history (default origin/main).
+
+    The baseline file is read from the tree being checked, so a change could add a leaking
+    file plus an entry for it. Only text that is public already is covered: a blob reachable
+    from the base commit. An explicit base that doesn't resolve is a setup error; a missing
+    default base turns the baseline off with a notice (every hit then counts)."""
+    explicit = base is not None
+    base = base or DEFAULT_BASELINE_BASE
+    sha = resolve_commit(root, base) if entries or explicit else None
+    if explicit and sha is None:
+        raise SetupError("--baseline-base: not a commit in this repo")
+    if not entries:
+        return entries
+    if sha is None:
+        print(f"privacy gate: notice: {DEFAULT_BASELINE_BASE} not found, so {BASELINE_FILE} is "
+              "not used (fetch it, or pass --baseline-base <rev>)", file=sys.stderr)
+        return frozenset()
+    wanted = {e[0] for e in entries}
+    public = {ln.split(" ", 1)[0] for ln in git(root, "rev-list", "--objects", sha, "--")
+              .decode("utf-8", errors="replace").splitlines()} & wanted
+    kept = frozenset(e for e in entries if e[0] in public)
+    if len(kept) != len(entries):
+        n = len(entries) - len(kept)
+        print(f"privacy gate: notice: {n} {BASELINE_FILE} entr{'ies' if n != 1 else 'y'} "
+              f"ignored: the blob is not on {show(base)} (only already-public fixtures are "
+              "covered)", file=sys.stderr)
+    return kept
+
+
+def _mask_spans(text: str, start: int, end: int,
+                deny_hits: Sequence[tuple[int, int, int]]) -> str:
+    """text[start:end] with every part a deny-list hit covers masked. A path hit can end inside
+    a deny-listed folder (the drive path's first folder of a deny-listed "<drive>:/a/b"), and
+    a redaction of the slice alone would not see the whole term."""
+    out, pos = [], start
+    for s, e, line_no in sorted((s, e, n) for n, s, e in deny_hits if s < end and e > start):
+        if s > pos:
+            out.append(text[pos:s])
+        if e > pos:
+            out.append(f"[deny-list line {line_no}]")
+            pos = e
+    out.append(text[pos:end])
+    return "".join(out)
+
+
 class Scanner:
     def __init__(self, deny: DenyList | None,
                  baseline: frozenset[tuple[str, str, str]] = frozenset()):
@@ -355,12 +441,13 @@ class Scanner:
             return bisect.bisect_right(starts, pos) if lines else None
 
         prefix = f"{label}: " if label else ""
+        deny_hits = list(self.deny.find(text)) if self.deny else []
         for start, end, check, detail in generic_matches(text):
-            self.add(where, line_of(start), check, prefix + detail, text[start:end])
-        if self.deny:
-            for line_no, start, _end in self.deny.find(text):
-                self.add(where, line_of(start), "deny-list",
-                         prefix + f"deny-list term (deny-list line {line_no})")
+            self.add(where, line_of(start), check, prefix + detail,
+                     _mask_spans(text, start, end, deny_hits))
+        for line_no, start, _end in deny_hits:
+            self.add(where, line_of(start), "deny-list",
+                     prefix + f"deny-list term (deny-list line {line_no})")
 
     def scan_identity(self, value: str, where: str, field_name: str, *,
                       email: bool | None = None) -> None:
@@ -866,6 +953,9 @@ def build_parser() -> argparse.ArgumentParser:
                         "the named ones (git pre-commit hook)")
     p.add_argument("--reveal", action="store_true",
                    help="show the matched path or e-mail (deny-list terms are never shown)")
+    p.add_argument("--baseline-base", metavar="REV",
+                   help=f"honour {BASELINE_FILE} entries only for blobs in REV's history "
+                        f"(default {DEFAULT_BASELINE_BASE}; CI passes the target branch)")
     p.add_argument("--suggest-baseline", action="store_true",
                    help=f"also print {BASELINE_FILE} entries for the path and e-mail hits in "
                         "file contents (review each one: only fictional, already-public text)")
@@ -891,8 +981,12 @@ def run(argv: Sequence[str] | None = None, *, stdin_text: str | None = None,
             print("privacy gate: notice: the deny-list has no terms, so the deny-list check "
                   "finds nothing; all other checks run", file=sys.stderr)
 
-        scanner = Scanner(deny, load_baseline(root))
         mode_set = args.commit_msg is not None or args.pre_push is not None or args.staged
+        # A commit message and identities hold no file content, so no baseline entry applies.
+        content = args.pre_push is not None or args.staged or not mode_set
+        baseline = public_baseline(root, load_baseline(root) if content else frozenset(),
+                                   args.baseline_base, deny.redact if deny else str)
+        scanner = Scanner(deny, baseline)
         if args.commit_msg is not None:
             try:
                 text = args.commit_msg.read_text(encoding="utf-8", errors="replace")

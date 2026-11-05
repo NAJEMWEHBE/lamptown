@@ -27,7 +27,8 @@ BS, FS = "\\", "/"
 TERM_WORD = "glimmerfen"            # deny-list line 3
 TERM_PHRASE = "Zorblax Quentaro"    # deny-list line 4
 TERM_PATH = "fakeorg/vault-nine"    # deny-list line 5
-TERMS = (TERM_WORD, TERM_PHRASE, TERM_PATH)
+TERM_DRIVE = "Q:" + "\\fakedrive\\cellar"   # deny-list line 9: a folder on a drive
+TERMS = (TERM_WORD, TERM_PHRASE, TERM_PATH, TERM_DRIVE)
 FAKE_HANDLE = "wrenquill77"         # deny-list line 6
 FAKE_NOREPLY = "1234+" + FAKE_HANDLE + "@users.noreply.github.com"
 DENYLIST_TEXT = "\n".join([
@@ -39,6 +40,7 @@ DENYLIST_TEXT = "\n".join([
     FAKE_HANDLE,
     "!author: " + FAKE_NOREPLY,
     "!author: " + FAKE_HANDLE,
+    TERM_DRIVE,
 ]) + "\n"
 
 
@@ -113,6 +115,7 @@ def assert_no_term_leak(output: str) -> None:
         assert term.lower() not in low
         assert term.lower().replace(" ", "-") not in low
     assert "quentaro" not in low and "vault-nine" not in low
+    assert "fakedrive" not in low and "cellar" not in low
 
 
 # ----------------------------------------------------------------------------- images
@@ -948,10 +951,16 @@ def blob_of(root: Path, rel: str) -> str:
     return git(root, "hash-object", rel)
 
 
+def publish(root: Path, rev: str = "HEAD") -> None:
+    """Make rev look already public: the remote-tracking origin/main the baseline trusts."""
+    git(root, "update-ref", "refs/remotes/origin/main", rev)
+
+
 def test_baseline_covers_only_the_listed_blob_line_and_check(root, gate, git_env):
     init_repo(root)
     (root / "fixture.txt").write_text(FIXTURE, encoding="utf-8")
     commit_all(root, "Add fixture")
+    publish(root)
     blob = blob_of(root, "fixture.txt")
     code, out = gate(root, "--history", "--suggest-baseline")
     assert code == 1, out
@@ -969,6 +978,8 @@ def test_baseline_covers_only_the_listed_blob_line_and_check(root, gate, git_env
 def test_baseline_never_covers_changed_content(root, gate, git_env):
     init_repo(root)
     (root / "fixture.txt").write_text(FIXTURE, encoding="utf-8")
+    commit_all(root, "Add fixture")
+    publish(root)
     blob = blob_of(root, "fixture.txt")
     write_baseline(root, f"{blob} 2 user-path", f"{blob} 3 user-path")
     assert gate(root)[0] == 0
@@ -1011,6 +1022,9 @@ def test_the_real_baseline_lists_only_public_blobs():
     out = subprocess.run(["git", "-C", str(repo), "cat-file", "--batch-check"], check=True,
                          capture_output=True, text=True, input="\n".join(shas) + "\n").stdout
     assert "missing" not in out, out
+    # ... and, where origin/main is fetched, one already public there (else it is ignored).
+    if pg.resolve_commit(repo, pg.DEFAULT_BASELINE_BASE):
+        assert pg.public_baseline(repo, entries, None) == entries
 
 
 # ----------------------------------------------------------------------------- tools/hooks
@@ -1121,3 +1135,177 @@ def test_hooks_hand_over_to_pre_commit_when_it_is_set_up(hooked, tmp_path):
     calls = log.read_text(encoding="utf-8").splitlines()
     assert calls[0] == "run --hook-stage pre-commit"
     assert calls[1].startswith("run --hook-stage commit-msg --commit-msg-filename ")
+
+
+# ----------------------------------------------------------------------------- 0.2.1 round 2 (R2c)
+# More spellings of the same personal path: a Git Bash or WSL drive folder, a network share and a
+# macOS volume. Deny-list folder entries match every spelling of their folder.
+
+PLANTED_R2 = {
+    "wsl drive folder": "cd " + FS + "mnt" + FS + "f" + FS + "work" + FS + "clientco",
+    "wsl drive folder, one segment": FS + "mnt" + FS + "e" + FS + "clientco",
+    "cygwin drive folder": FS + "cygdrive" + FS + "d" + FS + "clientco",
+    "network share user folder": BS * 2 + "KITEPC" + BS + "Users" + BS + "dana" + BS + "x",
+    "network share drive share": BS * 2 + "KITEPC" + BS + "C$" + BS + "Users" + BS + "dana",
+    "network share by address": BS * 2 + "10.0.0.7" + BS + "home" + BS + "dana",
+    "network share, json-escaped": BS * 4 + "KITEPC" + BS * 2 + "Users" + BS * 2 + "dana",
+    "network share, url-encoded": "%5C" + "%5CKITEPC%5CUsers%5C" + "dana",
+    "macOS volume user folder": FS + "Volumes" + FS + "Backup" + FS + "Users" + FS + "dana",
+    "macOS system volume": FS + "System" + FS + "Volumes" + FS + "Data" + FS + "Users" + FS
+    + "dana",
+    "macOS volume with a space": FS + "Volumes" + FS + "Backup Disk" + FS + "Users" + FS + "dana",
+}
+
+
+@pytest.mark.parametrize("label", sorted(PLANTED_R2))
+def test_more_path_spellings_fail(label, root, gate):
+    (root / "src" / "planted.md").write_text("intro\n\n" + PLANTED_R2[label] + "\n",
+                                             encoding="utf-8")
+    code, out = gate(root)
+    assert code == 1, out
+    assert "src/planted.md:3: [user-path]" in out
+    assert PLANTED_R2[label] not in out
+
+
+ALLOWED_R2 = [
+    "#!" + FS + "usr" + FS + "bin" + FS + "env python3",
+    "see " + FS + "etc" + FS + "x and " + FS + "tmp" + FS + "x and " + FS + "usr" + FS + "bin",
+    'route = "' + FS + "a" + FS + 'b"',
+    "if p == " + FS + "a" + FS + "b:",
+    FS + "c" + FS + "Windows" + FS + "System32" + FS + "drivers",
+    FS + "mnt" + FS + "c" + FS + "Program Files" + FS + "Git",
+    FS + "mnt" + FS + "data" + FS + "backups",
+    "https://example.org/f/work/clientco and https://example.org/mnt/f/work",
+    "sed -e s" + FS + "a" + FS + "b" + FS + "g",
+    "x?a:/b/c/.test(s)",
+    "." + FS + "f" + FS + "work" + FS + "notes and ~" + FS + "f" + FS + "work" + FS + "notes",
+    BS * 2 + "KITEPC" + BS + "Users" + BS + "you" + BS + "x",
+    BS * 2 + "KITEPC" + BS + "shared" + BS + "music",
+    FS + "Volumes" + FS + "Backup" + FS + "Users" + FS + "you",
+    FS + "Volumes" + FS + "Backup" + FS + "music",
+    "//cdn.example.org/Users/list",
+    # A bare Git Bash drive folder reads like a short Unix path in code; the deny-list catches
+    # the owner's own folders in that spelling (test_deny_listed_folder_matches_every_spelling).
+    'home=Path("' + FS + 'h"); ' + FS + "h" + FS + "Library" + FS + "Logs" + FS + "app.log",
+    FS + "f" + FS + "work" + FS + "notes",
+]
+
+
+@pytest.mark.parametrize("text", ALLOWED_R2)
+def test_ordinary_unix_paths_stay_clean(text, root, deny, gate):
+    (root / "doc.md").write_text(text + "\n", encoding="utf-8")
+    code, out = gate(root, "--denylist", str(deny))
+    assert code == 0, out
+
+
+DRIVE_SPELLINGS = {
+    "windows": "Q:" + BS + "fakedrive" + BS + "cellar" + BS + "x",
+    "forward slashes": "Q:" + FS + "fakedrive" + FS + "cellar",
+    "lower-case drive": "q:" + FS + "fakedrive" + FS + "cellar",
+    "json-escaped": "Q:" + BS * 2 + "fakedrive" + BS * 2 + "cellar",
+    "git bash": FS + "q" + FS + "fakedrive" + FS + "cellar" + FS + "x",
+    "wsl": FS + "mnt" + FS + "q" + FS + "fakedrive" + FS + "cellar",
+    "cygwin": FS + "cygdrive" + FS + "q" + FS + "fakedrive" + FS + "cellar",
+    "url-encoded": "?p=Q" + "%3A%5Cfakedrive%5Ccellar",
+    "url-encoded, slashes": "?p=q" + "%3a%2ffakedrive%2fcellar",
+}
+
+
+@pytest.mark.parametrize("label", sorted(DRIVE_SPELLINGS))
+def test_deny_listed_folder_matches_every_spelling(label, root, deny, gate):
+    (root / "notes.txt").write_text("one\n" + DRIVE_SPELLINGS[label] + "\n", encoding="utf-8")
+    code, out = gate(root, "--denylist", str(deny), "--reveal")
+    assert code == 1, out
+    assert "notes.txt:2: [deny-list] deny-list term (deny-list line 9)" in out
+    assert_no_term_leak(out)
+
+
+@pytest.mark.parametrize("entry", ["/q/fakedrive/cellar", "/mnt/q" + "/fakedrive/cellar",
+                                   "q:" + "/fakedrive/cellar", "Q%3A" + "%5Cfakedrive%5Ccellar"])
+def test_deny_list_folder_entry_in_any_spelling_matches_the_others(entry, root, gate, tmp_path):
+    listed = tmp_path / "private" / "other-spelling.txt"
+    listed.parent.mkdir(exist_ok=True)
+    listed.write_text(entry + "\n", encoding="utf-8")
+    for text in DRIVE_SPELLINGS.values():
+        (root / "notes.txt").write_text(text + "\n", encoding="utf-8")
+        code, out = gate(root, "--denylist", str(listed))
+        assert code == 1 and "deny-list line 1" in out, (text, out)
+        assert_no_term_leak(out)
+
+
+def test_deny_listed_drive_folder_needs_the_drive(root, deny, gate):
+    """The folder elsewhere (another drive, a sub-folder, a relative path) is another folder."""
+    for text in ("R:" + BS + "fakedrive" + BS + "cellar", "fakedrive" + FS + "cellar",
+                 FS + "home" + FS + "you" + FS + "q" + FS + "fakedrive" + FS + "cellar"):
+        (root / "notes.txt").write_text(text + "\n", encoding="utf-8")
+        out = gate(root, "--denylist", str(deny))[1]
+        assert "deny-list line 9" not in out, (text, out)
+
+
+# Baseline entries cover only blobs that are already public: in the history of the base branch
+# (origin/main, or --baseline-base <rev>), never a brand-new file.
+
+
+def test_baseline_never_covers_a_new_blob(root, gate, git_env):
+    init_repo(root)
+    commit_all(root, "Initial skeleton")
+    publish(root)
+    (root / "fixture.txt").write_text(FIXTURE, encoding="utf-8")
+    blob = blob_of(root, "fixture.txt")
+    write_baseline(root, f"{blob} 2 user-path", f"{blob} 3 user-path")
+    code, out = gate(root)
+    assert code == 1, out                   # a new file in the tree
+    assert "fixture.txt:2: [user-path]" in out and "fixture.txt:3: [user-path]" in out
+    commit_all(root, "Add fixture and its baseline entries")
+    code, out = gate(root, "--history")
+    assert code == 1, out                   # committed, but not on origin/main yet
+    assert "not on origin/main" in out
+    publish(root)
+    code, out = gate(root, "--history")
+    assert code == 0, out                   # once public, the entries count
+
+
+def test_baseline_base_flag(root, gate, git_env):
+    init_repo(root)
+    first = commit_all(root, "Initial skeleton")
+    (root / "fixture.txt").write_text(FIXTURE, encoding="utf-8")
+    blob = blob_of(root, "fixture.txt")
+    write_baseline(root, f"{blob} 2 user-path", f"{blob} 3 user-path")
+    commit_all(root, "Add fixture")
+    git(root, "branch", "public")
+    assert gate(root, "--history")[0] == 1                       # no origin/main at all
+    assert gate(root, "--history", "--baseline-base", first)[0] == 1
+    code, out = gate(root, "--history", "--baseline-base", "public")
+    assert code == 0, out
+    code, out = gate(root, "--baseline-base", "no-such-branch")
+    assert code == 2, out
+    assert "--baseline-base" in out
+
+
+def test_pre_push_baseline_needs_the_blob_on_origin_main(root, gate, git_env):
+    init_repo(root)
+    commit_all(root, "Initial skeleton")
+    (root / "fixture.txt").write_text(FIXTURE, encoding="utf-8")
+    blob = blob_of(root, "fixture.txt")
+    write_baseline(root, f"{blob} 2 user-path", f"{blob} 3 user-path")
+    sha = commit_all(root, "Add fixture")
+    stdin = f"refs/heads/main {sha} refs/heads/main {pg.ZERO_SHA}\n"
+    code, out = gate(root, "--pre-push", "origin", stdin_text=stdin)
+    assert code == 1, out                    # the push itself would make the blob public
+    env = {"PRE_COMMIT_TO_REF": sha, "PRE_COMMIT_REMOTE_NAME": "origin"}
+    assert gate(root, "--pre-push", env=env)[0] == 1     # pre-commit's pre-push stage too
+    publish(root)                            # public on origin; now pushed to a second remote
+    code, out = gate(root, "--pre-push", "mirror", stdin_text=stdin)
+    assert code == 0, out
+    assert "reviewed fixture hits skipped" in out
+
+
+def test_hook_pre_push_ignores_a_baseline_entry_for_a_new_file(hooked):
+    (hooked / "fixture.txt").write_text(FIXTURE, encoding="utf-8")
+    blob = blob_of(hooked, "fixture.txt")
+    write_baseline(hooked, f"{blob} 2 user-path", f"{blob} 3 user-path")
+    git(hooked, "add", "-A")
+    git(hooked, "commit", "-q", "--no-verify", "-m", "Add fixture")  # past the pre-commit hook
+    code, out = run_git(hooked, "push", "-q", "origin", "main", env={"LAMPTOWN_NO_DENYLIST": "1"})
+    assert code != 0, out
+    assert "fixture.txt" in out and "[user-path]" in out

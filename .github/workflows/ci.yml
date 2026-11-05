@@ -96,7 +96,20 @@ jobs:
               sys.exit(1)
 
       - name: Privacy gate (tree + full history)
-        run: python tools/privacy_gate.py --history ${GATE_DENYLIST_FLAG:+"$GATE_DENYLIST_FLAG"}
+        env:
+          # Baseline entries count only for blobs already on the target branch: a pull request's
+          # base branch, or main before this push (so a push can't approve its own new file).
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          base=origin/main
+          if [ -n "$BASE_REF" ]; then
+            base="origin/$BASE_REF"
+          elif [ -n "$BEFORE" ] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            base="$BEFORE"
+          fi
+          python tools/privacy_gate.py --history --baseline-base "$base" \
+            ${GATE_DENYLIST_FLAG:+"$GATE_DENYLIST_FLAG"}
 
   secrets:
     name: gitleaks (full history)

@@ -1,7 +1,9 @@
 # Privacy gate baseline: reviewed, fictional user-path and e-mail hits inside blobs that are
 # already public, so history can't be rewritten to drop them. Each entry covers only that exact
 # file content (the git blob sha), that line and that check; an edited file is never covered,
-# and deny-list, image, file-name and identity hits can't be listed here at all.
+# and deny-list, image, file-name and identity hits can't be listed here at all. An entry only
+# counts once its blob is on origin/main (or the commit --baseline-base names): an entry for a
+# brand-new file is ignored, so a change can't silence its own leak here.
 #
 # Format: <blob sha> <line, or - for a whole-file hit> <user-path|email>  # where it was seen
 # Add an entry only after reading the hit (`python tools/privacy_gate.py --history --reveal`)
@@ -50,3 +52,31 @@ a4e545c6326676511f4d4560fb169cf1cd893f83 115 user-path  # tests/data/title_priva
 a4e545c6326676511f4d4560fb169cf1cd893f83 169 user-path  # tests/data/title_privacy.txt
 a4e545c6326676511f4d4560fb169cf1cd893f83 188 user-path  # tests/data/title_privacy.txt
 a4e545c6326676511f4d4560fb169cf1cd893f83 290 user-path  # tests/data/title_privacy.txt
+
+# 2026-11-05 (0.2.1, round 2): the gate learned WSL/Cygwin drive folders ("/mnt/<drive>/<folder>"),
+# macOS volumes ("/Volumes/<disk>/Users/<name>", "/System/Volumes/...") and network shares. These
+# public fixtures plant the invented "Sam Doe", "My Project" and "Client Acme" in those forms.
+
+a4e545c6326676511f4d4560fb169cf1cd893f83 87 user-path  # tests/data/title_privacy.txt
+a4e545c6326676511f4d4560fb169cf1cd893f83 88 user-path  # tests/data/title_privacy.txt
+a4e545c6326676511f4d4560fb169cf1cd893f83 140 user-path  # tests/data/title_privacy.txt
+a4e545c6326676511f4d4560fb169cf1cd893f83 141 user-path  # tests/data/title_privacy.txt
+a4e545c6326676511f4d4560fb169cf1cd893f83 142 user-path  # tests/data/title_privacy.txt
+a4e545c6326676511f4d4560fb169cf1cd893f83 172 user-path  # tests/data/title_privacy.txt
+a4e545c6326676511f4d4560fb169cf1cd893f83 191 user-path  # tests/data/title_privacy.txt
+2f4993e5d200277426c15ee686d6788d55ebfef1 306 user-path  # tests/test_status_events.py
+2f4993e5d200277426c15ee686d6788d55ebfef1 307 user-path  # tests/test_status_events.py
+2f4993e5d200277426c15ee686d6788d55ebfef1 410 user-path  # tests/test_status_events.py
+2f4993e5d200277426c15ee686d6788d55ebfef1 411 user-path  # tests/test_status_events.py
+2f4993e5d200277426c15ee686d6788d55ebfef1 412 user-path  # tests/test_status_events.py
+2f4993e5d200277426c15ee686d6788d55ebfef1 472 user-path  # tests/test_status_events.py
+2f4993e5d200277426c15ee686d6788d55ebfef1 490 user-path  # tests/test_status_events.py
+41cafeb0d586391a76315fe83ad27acd5f726572 306 user-path  # tests/test_status_events.py
+41cafeb0d586391a76315fe83ad27acd5f726572 307 user-path  # tests/test_status_events.py
+41cafeb0d586391a76315fe83ad27acd5f726572 410 user-path  # tests/test_status_events.py
+41cafeb0d586391a76315fe83ad27acd5f726572 411 user-path  # tests/test_status_events.py
+41cafeb0d586391a76315fe83ad27acd5f726572 412 user-path  # tests/test_status_events.py
+41cafeb0d586391a76315fe83ad27acd5f726572 472 user-path  # tests/test_status_events.py
+41cafeb0d586391a76315fe83ad27acd5f726572 490 user-path  # tests/test_status_events.py
+904623db4a1fb3a434bfee3933230f7cc3ce0b3a 306 user-path  # tests/test_status_events.py
+904623db4a1fb3a434bfee3933230f7cc3ce0b3a 307 user-path  # tests/test_status_events.py

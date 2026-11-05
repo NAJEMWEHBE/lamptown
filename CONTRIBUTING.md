@@ -91,14 +91,17 @@ Lamptown is built to sit on top of private work, so the repository itself must n
 `tools/privacy_gate.py` blocks:
 
 1. absolute personal paths on any OS (a home folder with a real user name in it, in Windows,
-   macOS, Linux, Git Bash, WSL or URL-encoded form), and drive-letter paths. Write `~/...`, or the
-   placeholder user `you`;
+   macOS, Linux, Git Bash, WSL, network-share `\\PC\Users\...`, macOS volume
+   `/Volumes/<disk>/Users/...` or URL-encoded form), and drive-letter paths (also in WSL or
+   Cygwin form, `/mnt/<drive>/...`). Write `~/...`, or the placeholder user `you`;
 2. e-mail addresses, except `example.com`-style test domains and noreply addresses. Commit, tag
    and push identities are stricter: the e-mail must be a noreply address (your GitHub one, see
    below) or an `example.com`/`.invalid`/`.test` one; a bare login, `you@YOUR-PC` or git's
    `you@host.(none)` fail;
 3. terms from the maintainers' private deny-list (in file contents, file names, commit messages and
-   identities, ref names, annotated tags, and image metadata);
+   identities, ref names, annotated tags, and image metadata). A folder on a drive matches in every
+   spelling: `<drive>:\...`, `<drive>:/...` in either case, URL-encoded, Git Bash `/<drive>/...`,
+   WSL `/mnt/<drive>/...` and Cygwin;
 4. images outside `docs/media/`, and images that are not PNG or GIF. The one exception is the
    desktop app's icons, directly in `src/lamptown/app/assets/` as `.png`, `.ico` or `.icns`
    (`tools/make_icon.py` makes them; every frame must be a PNG so its metadata is checked too);
@@ -114,7 +117,10 @@ repository and is never shown: a hit names a line number, never the term.
 **Old fixtures.** A few test fixtures already in the public history plant invented paths in forms
 the gate learned later. `tools/privacy_gate_baseline.txt` lists those exact hits (file content,
 line and check), so `--history` passes without rewriting history. It never covers a changed file,
-a file name, an identity or a deny-list term: write new fixtures with the placeholder user `you`.
+a file name, an identity or a deny-list term, and an entry only counts once its file content is
+already on `origin/main` (CI checks against the pull request's target branch with
+`--baseline-base`). So an entry can't silence a hit in a file your change adds: write new fixtures
+with the placeholder user `you`.
 
 **Your pull request is checked too.** CI runs the gate over the tree and the full history on every
 pull request. Pull requests from forks get no repository secrets, so CI runs every check except the
