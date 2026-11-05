@@ -9,6 +9,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import tomllib
 from pathlib import Path
 
@@ -232,3 +233,35 @@ def test_schedules_follow_the_local_clock_across_a_clock_change(tmp_path):
     assert got["weekly"] == "2026-03-09T03:00:00-07:00"
     assert got["fold"] == ["2026-11-01T01:30:00-08:00", 1, True]
     assert got["stamp"] == "2026-11-01T01:30:00-08:00"
+
+
+def _pacific_2026(u: float):
+    """A fake US Pacific clock for 2026 (summer time 8 March 10:00 UTC to 1 November 09:00 UTC)."""
+    start = dt.datetime(2026, 3, 8, 10, tzinfo=dt.UTC).timestamp()
+    end = dt.datetime(2026, 11, 1, 9, tzinfo=dt.UTC).timestamp()
+    return time.gmtime(u + (-7 if start <= u < end else -8) * 3600)
+
+
+def test_the_local_zone_follows_the_clock_change_on_every_os(monkeypatch):
+    from lamptown.collectors import jobs_schedule as J
+
+    monkeypatch.setattr(J, "_localtime", _pacific_2026)
+    hours = [dt.timedelta(hours=-7), dt.timedelta(hours=-8)]
+    first = dt.datetime(2026, 11, 1, 8, 30, tzinfo=dt.UTC).astimezone(J.LOCAL)
+    second = dt.datetime(2026, 11, 1, 9, 30, tzinfo=dt.UTC).astimezone(J.LOCAL)
+    assert [first.isoformat(), first.fold] == ["2026-11-01T01:30:00-07:00", 0]
+    assert [second.isoformat(), second.fold] == ["2026-11-01T01:30:00-08:00", 1]
+    wall = dt.datetime(2026, 11, 1, 1, 30, tzinfo=J.LOCAL)
+    assert [wall.utcoffset(), wall.replace(fold=1).utcoffset()] == hours
+    after = dt.datetime(2026, 3, 7, 3, tzinfo=J.LOCAL) + dt.timedelta(days=1)
+    assert after.utcoffset() == hours[0]  # the day after the clocks go forward
+    gap = dt.datetime(2026, 3, 8, 2, 30, tzinfo=J.LOCAL)  # an hour the clock skips
+    assert gap.utcoffset() in hours
+    days = (dt.datetime(2026, 3, 8, 6, tzinfo=dt.UTC), dt.datetime(2026, 11, 1, 5, tzinfo=dt.UTC))
+    for day in days:
+        for minutes in range(0, 8 * 60, 15):
+            u = day + dt.timedelta(minutes=minutes, microseconds=250)
+            here = u.astimezone(J.LOCAL)
+            assert here.astimezone(dt.UTC) == u
+            assert here.replace(tzinfo=None, microsecond=0).timetuple()[:6] == _pacific_2026(
+                u.timestamp())[:6]

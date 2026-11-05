@@ -22,6 +22,7 @@ from __future__ import annotations
 import calendar
 import datetime as dt
 import re
+import time
 from dataclasses import dataclass
 
 DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
@@ -31,37 +32,83 @@ _TIME = r"([01]?\d|2[0-3]):([0-5]\d)"
 
 
 # --- review-fix C6: this computer's zone, clock changes and all ---
+_EPOCH = dt.datetime(1970, 1, 1)
+_SECOND = dt.timedelta(seconds=1)
+_DAY = 24 * 3600
+_localtime = time.localtime  # UTC seconds -> this computer's wall clock (tests swap in a fake)
+
+
+def _wall(u: int) -> int:
+    """The wall-clock time at UTC instant ``u``, counted in seconds as if it were UTC."""
+    y, mo, d, h, mi, s = _localtime(u)[:6]
+    return (dt.datetime(y, mo, d, h, mi, s) - _EPOCH) // _SECOND
+
+
 class LocalZone(dt.tzinfo):
     """This computer's time zone with its daylight-saving changes (stdlib only: no zone name
     needed, so it works on Windows without tzdata).
 
     ``datetime.now().astimezone()`` gives a fixed offset, right only for today: a schedule slot
     reached by adding days across a clock change came out an hour off. A time in this zone
-    keeps its wall-clock time under arithmetic and takes the offset of its own date."""
+    keeps its wall-clock time under arithmetic and takes the offset of its own date.
+
+    Only ``time.localtime`` (UTC to wall clock, never ambiguous) is asked; the way back follows
+    the stdlib's pure-Python ``datetime``, so ``fold`` picks the hour that repeats when the clocks
+    go back the same way on every OS (a naive ``astimezone()`` did not on Linux)."""
 
     @staticmethod
-    def _fixed(d: dt.datetime) -> dt.datetime:
-        try:
-            return d.replace(tzinfo=None).astimezone()
-        except (OverflowError, OSError, ValueError):  # past what the OS can convert
-            return dt.datetime.now().astimezone()
+    def _instant(d: dt.datetime) -> int:
+        """The UTC instant (seconds) of the wall time ``d``; ``d.fold`` picks a repeated hour."""
+        t = (d.replace(tzinfo=None, fold=0) - _EPOCH) // _SECOND
+        a = _wall(t) - t
+        u1 = t - a
+        t1 = _wall(u1)
+        if t1 == t:  # one answer; look for the other one of a repeated hour
+            u2 = u1 + (-_DAY, _DAY)[d.fold]
+            b = _wall(u2) - u2
+            if a == b:
+                return u1
+        else:
+            b = t1 - u1
+        u2 = t - b
+        if _wall(u2) == t:
+            return u2
+        if t1 == t:
+            return u1
+        return (max, min)[d.fold](u1, u2)  # a skipped hour: keep the offset from before or after
+
+    @staticmethod
+    def _now_offset() -> dt.timedelta:
+        return dt.datetime.now().astimezone().utcoffset() or dt.timedelta(0)
 
     def utcoffset(self, d: dt.datetime | None) -> dt.timedelta | None:
-        return None if d is None else self._fixed(d).utcoffset()
+        if d is None:
+            return None
+        try:
+            t = (d.replace(tzinfo=None, fold=0) - _EPOCH) // _SECOND
+            return dt.timedelta(seconds=t - self._instant(d))
+        except (OverflowError, OSError, ValueError):  # past what the OS can convert
+            return self._now_offset()
 
     def dst(self, d: dt.datetime | None) -> dt.timedelta | None:
         return None  # not known without the zone's rules; utcoffset() is what counts
 
     def tzname(self, d: dt.datetime | None) -> str | None:
-        return None if d is None else self._fixed(d).tzname()
+        if d is None:
+            return None
+        try:
+            return getattr(_localtime(self._instant(d)), "tm_zone", None)
+        except (OverflowError, OSError, ValueError):
+            return None
 
     def fromutc(self, d: dt.datetime) -> dt.datetime:
+        u = (d.replace(tzinfo=None) - _EPOCH) // _SECOND
         try:
-            fixed = d.replace(tzinfo=dt.UTC).astimezone()
+            wall = _EPOCH + dt.timedelta(seconds=_wall(u))
         except (OverflowError, OSError, ValueError):  # past what the OS can convert
-            return d + (dt.datetime.now().astimezone().utcoffset() or dt.timedelta(0))
-        out = fixed.replace(tzinfo=self)
-        if out.utcoffset() != fixed.utcoffset():  # the second time round when clocks go back
+            return d + self._now_offset()
+        out = wall.replace(microsecond=d.microsecond, tzinfo=self)
+        if self._instant(out) != u:  # the second time round when clocks go back
             out = out.replace(fold=1)
         return out
 

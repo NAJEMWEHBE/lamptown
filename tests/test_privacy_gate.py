@@ -1018,6 +1018,10 @@ def test_the_real_baseline_lists_only_public_blobs():
     entries = pg.load_baseline(repo)
     if not entries or not (repo / ".git").exists():
         pytest.skip("no baseline or not a git checkout")
+    shallow = subprocess.run(["git", "-C", str(repo), "rev-parse", "--is-shallow-repository"],
+                             capture_output=True, text=True, check=False).stdout.strip()
+    if shallow == "true":  # CI's test jobs fetch one commit; the privacy job checks the history
+        pytest.skip("shallow checkout: older blobs are not here")
     shas = sorted({e[0] for e in entries})
     out = subprocess.run(["git", "-C", str(repo), "cat-file", "--batch-check"], check=True,
                          capture_output=True, text=True, input="\n".join(shas) + "\n").stdout
