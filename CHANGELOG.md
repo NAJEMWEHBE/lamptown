@@ -4,7 +4,7 @@ All notable changes to Lamptown are written down here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Lamptown uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## 0.2.0 - Unreleased
+## 0.2.0
 
 The live town: your agents walk the town as they work. See [docs/live.md](docs/live.md).
 
