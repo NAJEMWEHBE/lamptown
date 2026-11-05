@@ -165,6 +165,8 @@ plot, which comes with the generated map planned for v2. Until then, ship new ro
 A release bumps `__version__` in `src/lamptown/__init__.py` and the top `## X.Y.Z` heading of
 CHANGELOG.md together, then tags that commit `vX.Y.Z`: `tests/test_release_consistency.py` checks
 all three (the tag on CI's tag build) and fails on a heading that still says "Unreleased".
+Between releases, the top heading names the next version, `## X.Y.Z (Unreleased)`, and
+`__version__` is already bumped to it: a bare `## Unreleased` fails the same test on every push.
 
 ### Style
 

@@ -14,9 +14,9 @@ Chrome, and writes into ``docs/media/`` (the only folder the privacy gate allows
                      compares only on that one (written by a full run, not by ``--only``)
 
 Every picture is the page's own 400 x 225 pixel art, scaled up by whole pixels (2x), so it
-stays crisp. Every machine makes the same pictures: the build time, the page clock (``?at=``)
-and the animation time (``?t=``) are pinned to one moment in UTC (+00:00), the sky to fixed
-fictional coordinates, and the media copy of the page runs its clock as if the machine were on
+stays crisp. Nothing about the machine leaks into the pictures: the build time, the page clock
+(``?at=``) and the animation time (``?t=``) are pinned to one moment in UTC (+00:00), the sky to
+fixed fictional coordinates, and the media copy of the page runs its clock as if the machine were on
 UTC (browsers ignore $TZ on some systems), so the machine's own time zone never shows. No file
 gets a timestamp or text chunk.
 

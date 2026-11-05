@@ -2,8 +2,11 @@
 
 ``town.png`` and ``live-town.png`` are rendered again into a temp folder (``--only``, so the rest
 of the set and the GIF are skipped) and compared with docs/media pixel for pixel. A change to the
-town that moves a pixel then fails here until the media are made again.
+town that moves or recolours a pixel then fails here until the media are made again.
 
+Two Chrome versions (or CPUs) may round a glow or a blend a few shades apart, and this check gates
+every pull request, so a pixel counts as changed only when a channel moves by more than
+``SHADE`` (24 of 255): drawing jitter passes, a moved shape or a new colour does not.
 Chrome's canvas may draw a glow or a blend a shade apart on another OS, so the comparison runs
 only on the OS that made the set: docs/media/made-on.txt, written by a full make_media run. The
 media in the repo were made on Windows (made-on.txt says which); the "Regenerate media" workflow
@@ -27,6 +30,7 @@ from test_media import rgb
 ROOT = Path(__file__).resolve().parents[1]
 MEDIA = ROOT / "docs" / "media"
 STILLS = ("town", "live-town")
+SHADE = 24  # largest per-channel difference that is still drawing jitter, not a change
 
 
 def this_os() -> str:
@@ -63,8 +67,8 @@ def test_the_readme_pictures_match_a_fresh_render(tmp_path):
             stale.append(f"{name}.png is {kept[0]} x {kept[1]}, a fresh render {fresh[0]} x "
                          f"{fresh[1]}")
             continue
-        off = sum(a[i:i + 3] != b[i:i + 3] for a, b in zip(fresh[2], kept[2], strict=True)
-                  for i in range(0, len(a), 3))
+        off = sum(any(abs(a[i + c] - b[i + c]) > SHADE for c in range(3))
+                  for a, b in zip(fresh[2], kept[2], strict=True) for i in range(0, len(a), 3))
         if off:
             stale.append(f"{name}.png: {off} pixels differ from a fresh render")
     assert not stale, ("docs/media is out of date (" + "; ".join(stale)
