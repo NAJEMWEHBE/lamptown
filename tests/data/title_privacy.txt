@@ -1,0 +1,375 @@
+# Title privacy cases for lamptown.status.events.name_only, read by tests/test_title_privacy.py.
+#
+# Every privacy review adds its cases here (not in a new test file), so one list shows
+# everything a title must lose and everything it must keep.
+#
+# [cut]   one case per line: the title, " -> ", then exactly what the town shows.
+# [keep]  one title per line that must come out unchanged.
+#
+# Lines starting with "#" and blank lines are skipped; nothing else is trimmed or escaped
+# (a backslash is a backslash). Two placeholders keep the privacy gate quiet: write an
+# e-mail address's "@" as {AT}, and a backslash right after a drive letter ("d:\") as
+# {BS}. Invented names only: "you", example.com.
+
+[cut]
+
+# --- paths anywhere in the text (L1 review)
+# in brackets
+Edit (/home/you/secret-app/main.py) -> Edit (main.py)
+# in backticks
+see `/home/you/secret-app` -> see `secret-app`
+# in quotes
+open "C:\Users\you\secret-app\x.py" -> open "x.py"
+# after "="
+path=/home/you/secret-app -> path=secret-app
+# a file URL
+file:///home/you/secret-app/x.py -> x.py
+# fix2-PRIV: a web URL, whole
+https://example.com/you/secret-app -> link
+# UNC
+\\fileserver\share\you\secret-app -> secret-app
+# UNC, forward slashes
+//fileserver/share/you/secret-app -> secret-app
+# a user name with a space
+C:\Users\you there\secret-app -> secret-app
+C:\Users\you there\secret app\x.py, then save/load -> x.py, then save/load
+/Users/you there/secret-app/x.py -> x.py
+C:/Users/you there/secret-app -> secret-app
+# relative and lone slashes stay
+Fix save/load and a / b -> Fix save/load and a / b
+cd ~/secret-app/src -> cd src
+
+# --- mounted homes, odd leads, slash commands (W2, W8)
+# W2: home folders behind a mount prefix (WSL, Git Bash, Cygwin)
+/mnt/c/Users/Sam Doe/secret-app/x.py -> x.py
+Edit /c/Users/Sam Doe/secret-app -> Edit secret-app
+/cygdrive/d/Users/Sam Doe/secret-app/x.py -> x.py
+see /mnt/d/home/sam/secret-app/x.py -> see x.py
+# W8: forward-slash drive paths with spaces, macOS volumes, odd leads, ~user
+d:/My Projects/secret app/x.py -> x.py
+open "d:/My Projects/secret app/x.py" now -> open "x.py" now
+/Volumes/Work Drive/secret-client/x.md -> x.md
+-/home/sam/secret-app -> -secret-app
+.../home/sam/secret-app/x.py -> ...x.py
+x~/home/sam/secret-app -> x~secret-app
+~sam/secret-app/x.py -> x.py
+# "about", not a home folder
+~2/3 of tests pass -> ~2/3 of tests pass
+# slash commands and escapes are no paths; a real path next to one still goes
+Run /code-review on L1 -> Run /code-review on L1
+/story-done L2 -> /story-done L2
+Add /help command -> Add /help command
+split on \n and \t -> split on \n and \t
+Run /code-review, then edit /work/paper-kite/a.py -> Run /code-review, then edit a.py
+# relative paths that hold a "home" or "users" part stay
+Edit app/home/page.tsx, src/users/a.ts -> Edit app/home/page.tsx, src/users/a.ts
+# W1-fix2: a home folder's name is never shown, even last
+see /home/you -> see ~
+
+# --- home names never leak (W1-fix2)
+# 1. a user name with a space, then forward slashes (Python's f"{Path.home()}/x")
+C:\Users\you there/secret-app/x.py -> x.py
+Edit C:\Users\you there/secret-app -> Edit secret-app
+C:/Users\you there\secret-app\x.py -> x.py
+\\fileserver\home\you there/secret-app/x.py -> x.py
+//wsl.localhost/Ubuntu/home/you there/secret-app/x.py -> x.py
+# 1. ... in file:// and editor URLs
+file:///C:/Users/you there/secret-app/x.py -> x.py
+vscode://file/C:/Users/you there/secret-app/x.py -> x.py
+Open vscode://file/c:/Users/you there/secret-app now -> Open secret-app now
+# 1. ... and as the last part of the text
+see C:\Users\you there -> see ~
+see /mnt/c/Users/Sam Doe -> see ~
+open "/Users/you there" now -> open "~" now
+# 5. other home roots, and volume labels with spaces
+/var/home/Sam Doe/secret-app/x.py -> x.py
+/export/home/Sam Doe/secret-app/x.py -> x.py
+/System/Volumes/Data/Users/Sam Doe/secret-app/x.py -> x.py
+/Volumes/Data/Users/Sam Doe/secret-app/x.py -> x.py
+/run/media/sam/Work Drive/secret-client/x.md -> x.md
+/media/sam/Work Drive/secret-client/x.md -> x.md
+see /media/sam/Work Drive -> see ~
+# 2. (W2-left-fix2: a title after a drive path keeps no words before a later "/") ...
+# W2-left-fix2: over-cut
+Fix c:/temp handling and the save/load test -> Fix load test
+# W2-left-fix2: over-cut
+Use D:/ for builds, then tidy src/a.ts and lib/b.ts -> Use b.ts
+# 2. ... but still cuts real folder names with spaces, sync folders too
+d:/Program Files (x86)/Secret Tool/x.exe -> x.exe
+d:/Microsoft Visual Studio 2022/secret app/x.sln -> x.sln
+c:/Users/you/OneDrive - Acme Holdings Group Inc/secret plan/x.docx -> x.docx
+c:/Work/Acme Corp - Shared Documents/secret/x.md, then load -> x.md, then load
+# slash commands and ordinary titles stay
+Route /home page and /users list -> Route /home page and /users list
+Wire /gsd:plan and /code-review -> Wire /gsd:plan and /code-review
+Edit app/home/page.tsx and src/media/a.ts -> Edit app/home/page.tsx and src/media/a.ts
+Fix km/h, I/O and TCP/IP -> Fix km/h, I/O and TCP/IP
+
+# --- folder names of five words or more (W2-left)
+# a drive path whose folder has 5+ words is cut whole when a path goes on after it ...
+Edit d:/one two three four five/kite/main.py -> Edit main.py
+Edit d:/Client Acme Secret Project Alpha/main.py -> Edit main.py
+Edit d:/a b c d e f g h/x.py now -> Edit x.py now
+cd d:/Client Acme Secret Project Alpha/kite -> cd kite
+Open C:/Users/you/My Five Word Folder Name/x.py -> Open x.py
+d:/Work/Acme - Client Big Secret Plan Two/x.md, then load -> x.md, then load
+# ... so is a home or ~ path whose folders hold spaces
+Edit /Users/you/My Project/x.py -> Edit x.py
+Edit /home/you/one two three four five/kite/x.py -> Edit x.py
+Edit ~/My Project/x.py -> Edit x.py
+Edit ~/Client Acme Secret Project Alpha/x.py -> Edit x.py
+# ... while an ordinary title after a drive or root path keeps its words
+Add /api/users endpoint and save/load tests -> Add users endpoint and save/load tests
+
+# --- drive folders go, ordinary words stay (W2-left-fix)
+# 1. a 5+ word folder after a drive, a home or ~ is cut whenever a separator follows it
+Edit d:/Client Acme Secret Project Alpha/notes on it.txt -> Edit notes on it.txt
+edit d:/Client Acme Secret Project Alpha/Makefile then test -> edit Makefile then test
+Edit d:/Client Acme Secret Project Alpha/README and more -> Edit README and more
+# (a path that ends in a separator shows its last part, as "cd d:/kite/ now" does)
+Open d:/Client Acme Secret Project Alpha/ now -> Open Client Acme Secret Project Alpha now
+home /Users/you/Client Acme Secret Project Alpha/notes on it.txt -> home notes on it.txt
+tilde ~/Client Acme Secret Project Alpha/notes on it.txt -> tilde notes on it.txt
+Edit d:/Big Client - Acme Secret Project Alpha Two/notes on it.txt -> Edit notes on it.txt
+# 2. the other spellings of a drive root keep no folder name with spaces either
+file:///d:/My Project/src/x.py -> x.py
+url file:///d:/Client Acme Secret Project Alpha/src/x.py -> url x.py
+Open vscode://file/d:/My Project/src/x.py now -> Open x.py now
+//server/share/My Project/src/x.py -> x.py
+unc //server/share/Client Acme Secret Project Alpha/src/x.py -> unc x.py
+/mnt/d/My Project/src/x.py -> x.py
+wsl /mnt/d/Client Acme Secret Project Alpha/src/x.py -> wsl x.py
+/cygdrive/d/My Project/src/x.py -> x.py
+/d/My Project/src/x.py -> x.py
+gitbash /d/Client Acme Secret Project Alpha/src/x.py -> gitbash x.py
+d:{BS}My Project/src/x.py -> x.py
+mixed d:{BS}Client Acme Secret Project Alpha/src/x.py -> mixed x.py
+Edit d:{BS}Work{BS}My Project/src/x.py now -> Edit x.py now
+# ... without cutting ordinary titles
+Fix /home page layout for the mobile and desktop/tablet views -> Fix /home page layout for the mobile and desktop/tablet views
+# 6. (W2-left-fix2: words after a drive or a home stay only up to no later "/")
+# W2-left-fix2: over-cut
+Fix c:/temp handling and the save/load -> Fix load
+# W2-left-fix2: over-cut
+Fix c:/temp handling and the save/load. -> Fix load.
+# W2-left-fix2: over-cut
+Fix c:/temp handling and the I/O code -> Fix O code
+# W2-left-fix2: over-cut
+Read /Users/you then fix km/h and I/O -> Read O
+# W2-left-fix2: over-cut
+Fix ~/ path handling in the save/load code -> Fix load code
+# ... but a home name is never kept, and words that look like a folder go
+Read /Users/You There then fix km/h and I/O -> Read O
+Edit d:/Client Acme Secret Project Alpha/x.py -> Edit x.py
+Edit d:/client acme secret project alpha/notes on it.txt -> Edit notes on it.txt
+
+# --- a path start cuts its whole run (W2-left-fix2)
+# finding 1: a doubled separator ends no folder name
+Edit d:/Client Secret//x.py -> Edit x.py
+Edit d:/a//Client Secret/x.py -> Edit x.py
+Edit ~/Client Secret//x.py -> Edit x.py
+Edit /home/you/Client Secret//x.py -> Edit x.py
+Edit /mnt/d//Client Secret/x.py -> Edit x.py
+Edit file:///d:/Client Secret//x.py -> Edit x.py
+Edit d:/Client Acme Secret Project Alpha//x.py -> Edit x.py
+Edit d:{BS}{BS}Client Secret{BS}{BS}x.py -> Edit x.py
+# finding 2: file and remote URLs without a drive
+Open file:///home/you/Client Secret/x.py -> Open x.py
+Open file:///Users/you/Client Secret/x.py -> Open x.py
+Open file:///mnt/d/Client Secret/x.py -> Open x.py
+Open file://server/share/Client Secret/x.py -> Open x.py
+Open vscode-remote://wsl+Ubuntu/home/you/Client Secret/x.py -> Open x.py
+Open vscode-remote://ssh-remote+box/home/you/Client Secret/x.py -> Open x.py
+# fix2-PRIV: a web URL, whole
+Open https://intranet/Client Secret/plan -> Open link
+# finding 3: a 5+ word lowercase folder with a function word, before a short last part
+Open d:/notes for the acme merger deal/todo -> Open todo
+Open d:/acme merger plans of the client/src -> Open src
+Open d:/old/notes for the acme merger deal/todo -> Open todo
+Open ~/notes for the acme merger deal/todo -> Open todo
+Open /home/you/notes for the acme merger deal/todo -> Open todo
+Open /mnt/d/notes for the acme merger deal/todo -> Open todo
+Open d:{BS}x{BS}notes for the acme merger deal/todo -> Open todo
+Open d:/work for the acme bank ACME/HR -> Open HR
+# finding 4: no part of a home folder's user name, whatever follows it
+Read /Users/you there then fix km/h -> Read h
+Read /Users/you there then fix it -> Read ~
+Read C:{BS}Users{BS}you there then fix it -> Read ~
+Read /home/you there/ then fix it -> Read ~ then fix it
+see /media/sam/Work Drive then go -> see ~
+# finding 5: other root folders, and a share name with a space
+Edit /srv/Client Secret/x.py -> Edit x.py
+Edit /opt/Client Secret/x.py -> Edit x.py
+Edit /tmp/Client Secret/x.py -> Edit x.py
+Edit /private/var/folders/Client Secret/x.py -> Edit x.py
+Edit /mnt/wsl/Client Secret/x.py -> Edit x.py
+Edit /root/Client Secret/x.py -> Edit x.py
+Edit /var/Client Secret/x.py -> Edit x.py
+Edit //server/Client Secret/x.py -> Edit x.py
+Edit /Volumes/Client Secret/x.py -> Edit x.py
+# the run stops at a quote or after a file name and ", "; a run ending in "/" keeps its folder
+open "/srv/Client Secret/x.py" and km/h -> open "x.py" and km/h
+Edit `~/Client Secret/x.py` then I/O -> Edit `x.py` then I/O
+Edit /srv/Client Secret/x.py, then save/load -> Edit x.py, then save/load
+cd d:/kite/ now -> cd kite now
+cd /home/you/ now -> cd ~ now
+# titles with no path start stay as they are
+Add /api/users endpoint -> Add users endpoint
+Fix km/h, I/O and TCP/IP in save/load -> Fix km/h, I/O and TCP/IP in save/load
+Remove // TODO comments and a / b -> Remove // TODO comments and a / b
+# the limit, documented: a root path with no start keeps a folder name with spaces
+Edit /work/Client Secret/x.py -> Edit Client Secret/x.py
+
+# --- addresses, user names and chat folders (release review, fix-PRIV)
+# e-mail addresses become a neutral word
+ping you{AT}corp-internal.example.com about it -> ping someone about it
+mail first.last{AT}corp-internal.biz -> mail someone
+ssh you{AT}host.internal -> ssh someone
+Email me at <you{AT}corp.dev>. -> Email me at <someone>.
+# fix2-PRIV: a web address without a scheme, and an scp remote, become "link", whole
+fix github.com/you/private-repo -> fix link
+fix www.example.com:8080/you/private-repo now -> fix link now
+git{AT}github.com:you/private-repo.git -> link
+clone git{AT}gitlab.example.org:team/kite -> clone link
+# a rooted Windows path with no drive
+Edit \Users\you now -> Edit ~
+Edit \home\you\x.py -> Edit x.py
+# a hard character inside the user name: the rest of the name goes too
+Edit /home/you"r name/x.py -> Edit ~
+Edit /home/you`r/x.py -> Edit ~
+Edit /home/you<r/x.py -> Edit ~
+Edit C:/Users/you|r/x -> Edit ~
+Edit C:/Users/you"x -> Edit ~
+# ... but a hard character that closes the path stays
+Edit "C:\Users\you" and more -> Edit "~" and more
+Edit <C:\Users\you> -> Edit <~>
+# a date-named chat folder never shows its words
+cd C:\Users\you\chats\2026-03-14-plan-the-launch -> cd chats
+cd C:\Users\you\chats\2026-03-14-plan-the-launch now -> cd chats now
+Edit ~/chats/2026-03-14-plan-the-launch/ -> Edit chats
+cd C:\Users\you\2026-03-14-plan-the-launch -> cd 2026-03-14
+Edit /work/chats/2026-03-14-plan-the-launch/notes.md -> Edit notes.md
+
+# --- web and e-mail addresses (fix2-PRIV)
+# a web address shows none of itself, with a scheme or without
+see github.com/you -> see link
+fix github.com/you/private-repo now -> fix link now
+see linkedin.com/in/you-there -> see link
+see x.com/you_there today -> see link today
+fix www.example.com/you/private-repo -> fix link
+corp-internal.example.com:8443/team/secret-thing -> link
+see https://example.com/you/secret-app. -> see link.
+(see https://example.com/you) -> (see link)
+clone ssh://git{AT}github.com/you/r.git -> clone link
+open GitHub.COM/you -> open link
+# an IDN host
+open bücher.de/you -> open link
+# an scp remote too
+fix git{AT}github.com:you/private-repo.git -> fix link
+fix git{AT}github.com:private-repo.git, then push -> fix link, then push
+pull you{AT}buildbox:~/kite now -> pull link now
+# PRIV 3: localhost and IP hosts with a path
+open localhost:3000/you -> open link
+open localhost/you/x -> open link
+open 10.0.0.5/you/x -> open link
+open 10.0.0.5:8080/you -> open link
+# PRIV 3: e-mail shapes: a bare host, any letters, "%40", an IP
+ssh you{AT}buildbox -> ssh someone
+ssh you{AT}localhost now -> ssh someone now
+write jörg{AT}exämple.de -> write someone
+mail you%40example.org -> mail someone
+ssh you{AT}10.0.0.5 -> ssh someone
+# a dev box, not a version tag
+ssh you{AT}dev -> ssh someone
+# round 1 shapes stay cut
+ping you{AT}corp-internal.example.com -> ping someone
+mailto:you{AT}example.org -> mailto:someone
+<you{AT}example.org>. -> <someone>.
+# a file or editor URL is still a path: its last part stays
+Open file:///home/you/kite/x.py -> Open x.py
+Open vscode://file/d:/kite/x.py now -> Open x.py now
+
+
+[keep]
+
+# --- ordinary words (release review, fix-PRIV)
+Speed in km/h
+I/O bound
+save/load test
+and/or
+TCP/IP
+Fix CI/CD
+npm i lodash@4.17.21
+bump @types/node
+ping @you
+Fix Node.js/Deno build
+v1.2/v1.3 diff
+use 3.5/4 rule
+visit example.com
+docs/live.md
+time 10:30
+Update README.md
+
+# --- the reviewer's ordinary dotted words (fix2-PRIV)
+km/h
+I/O
+save/load
+e.g./i.e.
+v0.2/v0.3
+Node.js/Deno
+Vue.js/React
+ASP.NET/Core migration
+Socket.IO/WebRTC bridge
+main.go/main_test.go
+app.vue/app.svelte
+data.csv/xlsx export
+St.Louis/Chicago trip
+fix README.md/docs
+U.S./EU rules
+x.py/y.py
+Mr.Smith/Jones
+config.yaml/toml
+Rust/Go
+client/server
+Q3/Q4 plan
+50/50 split
+24/7 support
+A/B test
+npm i @types/node
+pkg@1.2.3
+meet at 10:30
+time@12:30 ok
+C++/C#
+1.5/2.0
+ratio 3.2/kg
+lamptown.toml/[live]
+build.gradle/kts
+index.php/route
+style.scss/less
+jQuery.ui/widgets
+Mon/Tue
+front-end/back-end
+his/her
+w/o tests
+w/ tests
+n/a
+he/him
+src/x
+a.b.c/d
+Chapter 1.2/3
+files/dirs
+Python3.12/3.13
+/help command
+use /compact
+type /exit
+# versions and git names after "@" are no address
+bump actions/checkout@v4
+npm i react@latest
+pin x@main
+pin actions/cache@1a2b3c4d5e
+git show HEAD@{1}
+bump node@lts
+app.swift/app.dart
+lib.rs/main.rs
+main.cc/main.h
+Settings.app

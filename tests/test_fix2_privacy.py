@@ -1,9 +1,9 @@
-"""Fix round 2, privacy (fix2-PRIV): web addresses show none of themselves, ordinary dotted
-words stay, more e-mail shapes are cut, private projects leave no name in the readers' saved
-state, and a worktree never leads into a private repository.
+"""Fix round 2, privacy (fix2-PRIV): the book shows "link" for a web address, private
+projects leave no name in the readers' saved state, and a worktree never leads into a
+private repository. (Its title cases, addresses and ordinary dotted words, are in
+tests/data/title_privacy.txt.)
 
-Every name, path and address here is invented. Addresses are built with ``AT`` so this file
-holds none.
+Every name, path and address here is invented.
 """
 
 from __future__ import annotations
@@ -21,7 +21,6 @@ from _reader_guard import guard
 from lamptown import livetown
 from lamptown.config import parse_config
 from lamptown.status import events as ev
-from lamptown.status.events import name_only
 from lamptown.status.readers import claude_code as cc
 from lamptown.status.readers import codex as codex_mod
 from lamptown.status.readers import make_reader
@@ -32,8 +31,6 @@ from lamptown.status.store import update_status
 from lamptown.status.watch import Watcher
 from test_live_privacy import NOW, _deny_reads_under, _Repo
 
-AT = "@"
-
 
 @pytest.fixture(autouse=True)
 def _no_real_tools(monkeypatch, tmp_path):
@@ -41,73 +38,7 @@ def _no_real_tools(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------- PRIV 1 and 3: addresses
-@pytest.mark.parametrize(("text", "shown"), [
-    # a web address shows none of itself, with a scheme or without
-    ("see github.com/you", "see link"),
-    ("fix github.com/you/private-repo now", "fix link now"),
-    ("see linkedin.com/in/you-there", "see link"),
-    ("see x.com/you_there today", "see link today"),
-    ("fix www.example.com/you/private-repo", "fix link"),
-    ("corp-internal.example.com:8443/team/secret-thing", "link"),
-    ("see https://example.com/you/secret-app.", "see link."),
-    ("(see https://example.com/you)", "(see link)"),
-    ("clone ssh://git" + AT + "github.com/you/r.git", "clone link"),
-    ("open GitHub.COM/you", "open link"),
-    ("open bücher.de/you", "open link"),  # an IDN host
-    # an scp remote too
-    (f"fix git{AT}github.com:you/private-repo.git", "fix link"),
-    (f"fix git{AT}github.com:private-repo.git, then push", "fix link, then push"),
-    (f"pull you{AT}buildbox:~/kite now", "pull link now"),
-    # PRIV 3: localhost and IP hosts with a path
-    ("open localhost:3000/you", "open link"),
-    ("open localhost/you/x", "open link"),
-    ("open 10.0.0.5/you/x", "open link"),
-    ("open 10.0.0.5:8080/you", "open link"),
-    # PRIV 3: e-mail shapes: a bare host, any letters, "%40", an IP
-    (f"ssh you{AT}buildbox", "ssh someone"),
-    (f"ssh you{AT}localhost now", "ssh someone now"),
-    (f"write jörg{AT}exämple.de", "write someone"),
-    ("mail you%40example.org", "mail someone"),
-    (f"ssh you{AT}10.0.0.5", "ssh someone"),
-    (f"ssh you{AT}dev", "ssh someone"),  # a dev box, not a version tag
-    # round 1 shapes stay cut
-    (f"ping you{AT}corp-internal.example.com", "ping someone"),
-    (f"mailto:you{AT}example.org", "mailto:someone"),
-    (f"<you{AT}example.org>.", "<someone>."),
-    # a file or editor URL is still a path: its last part stays
-    ("Open file:///home/you/kite/x.py", "Open x.py"),
-    ("Open vscode://file/d:/kite/x.py now", "Open x.py now"),
-])
-def test_addresses_show_none_of_themselves(text, shown):
-    out = name_only(text, 120)
-    assert out == shown
-    for bit in ("you", "private-repo", "secret", "github", "example", "buildbox", "jörg"):
-        assert bit not in out.replace("Open x.py", "")
-
-
-# the reviewer's list of ordinary words: none is an address, all stay whole
-WORDS = [
-    "km/h", "I/O", "TCP/IP", "and/or", "save/load", "e.g./i.e.", "v0.2/v0.3",
-    "Node.js/Deno", "Vue.js/React", "ASP.NET/Core migration", "Socket.IO/WebRTC bridge",
-    "main.go/main_test.go", "app.vue/app.svelte", "data.csv/xlsx export", "St.Louis/Chicago trip",
-    "fix README.md/docs", "U.S./EU rules", "x.py/y.py", "Mr.Smith/Jones", "config.yaml/toml",
-    "Rust/Go", "client/server", "Q3/Q4 plan", "50/50 split", "24/7 support", "A/B test",
-    "npm i @types/node", "pkg@1.2.3", "ping @you", "meet at 10:30", "time@12:30 ok",
-    "C++/C#", "1.5/2.0", "ratio 3.2/kg", "lamptown.toml/[live]",
-    "build.gradle/kts", "index.php/route", "style.scss/less", "jQuery.ui/widgets",
-    "Mon/Tue", "front-end/back-end", "his/her", "w/o tests", "w/ tests", "n/a", "he/him",
-    "docs/live.md", "src/x", "a.b.c/d", "Chapter 1.2/3", "files/dirs", "Python3.12/3.13",
-    "/help command", "use /compact", "type /exit", "visit example.com", "Update README.md",
-    # versions and git names after "@" are no address
-    "bump actions/checkout@v4", "npm i lodash@4.17.21", "npm i react@latest", "pin x@main",
-    "pin actions/cache@1a2b3c4d5e", "git show HEAD@{1}", "bump node@lts",
-    "app.swift/app.dart", "lib.rs/main.rs", "main.cc/main.h", "Settings.app",
-]
-
-
-@pytest.mark.parametrize("text", WORDS)
-def test_ordinary_dotted_words_stay(text):
-    assert name_only(text, 120) == text
+# The title cases moved to tests/data/title_privacy.txt (tests/test_title_privacy.py).
 
 
 def test_the_book_shows_link_not_a_handle(tmp_path):

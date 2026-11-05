@@ -21,7 +21,7 @@ from _reader_guard import guard
 from lamptown import livetown
 from lamptown.config import parse_config
 from lamptown.status import events as ev
-from lamptown.status.events import name_only, project_of
+from lamptown.status.events import project_of
 from lamptown.status.readers import ci_gh, make_reader
 from lamptown.status.readers import git as git_mod
 from lamptown.status.readers.ci_gh import Answer, CiGhReader
@@ -40,48 +40,7 @@ def _no_real_tools(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------- titles (privacy 2 and 4)
-@pytest.mark.parametrize(("text", "shown"), [
-    # e-mail addresses become a neutral word
-    (f"ping you{AT}corp-internal.example.com about it", "ping someone about it"),
-    (f"mail first.last{AT}corp-internal.biz", "mail someone"),
-    (f"ssh you{AT}host.internal", "ssh someone"),
-    (f"Email me at <you{AT}corp.dev>.", "Email me at <someone>."),
-    # fix2-PRIV: a web address without a scheme, and an scp remote, become "link", whole
-    ("fix github.com/you/private-repo", "fix link"),
-    ("fix www.example.com:8080/you/private-repo now", "fix link now"),
-    (f"git{AT}github.com:you/private-repo.git", "link"),
-    (f"clone git{AT}gitlab.example.org:team/kite", "clone link"),
-    # a rooted Windows path with no drive
-    ("Edit \\Users\\you now", "Edit ~"),
-    ("Edit \\home\\you\\x.py", "Edit x.py"),
-    # a hard character inside the user name: the rest of the name goes too
-    ('Edit /home/you"r name/x.py', "Edit ~"),
-    ("Edit /home/you`r/x.py", "Edit ~"),
-    ("Edit /home/you<r/x.py", "Edit ~"),
-    ("Edit C:/Users/you|r/x", "Edit ~"),
-    ('Edit C:/Users/you"x', "Edit ~"),
-    # ... but a hard character that closes the path stays
-    ('Edit "C:\\Users\\you" and more', 'Edit "~" and more'),
-    ("Edit <C:\\Users\\you>", "Edit <~>"),
-    # a date-named chat folder never shows its words
-    ("cd C:\\Users\\you\\chats\\2026-03-14-plan-the-launch", "cd chats"),
-    ("cd C:\\Users\\you\\chats\\2026-03-14-plan-the-launch now", "cd chats now"),
-    ("Edit ~/chats/2026-03-14-plan-the-launch/", "Edit chats"),
-    ("cd C:\\Users\\you\\2026-03-14-plan-the-launch", "cd 2026-03-14"),
-    ("Edit /work/chats/2026-03-14-plan-the-launch/notes.md", "Edit notes.md"),
-])
-def test_titles_keep_no_address_user_name_or_chat_words(text, shown):
-    assert name_only(text, 120) == shown
-
-
-@pytest.mark.parametrize("text", [
-    "Speed in km/h", "I/O bound", "save/load test", "and/or", "TCP/IP", "Fix CI/CD",
-    "npm i lodash@4.17.21", "bump @types/node", "ping @you", "Fix Node.js/Deno build",
-    "v1.2/v1.3 diff", "use 3.5/4 rule", "visit example.com", "docs/live.md",
-    "time 10:30", "Update README.md",
-])
-def test_ordinary_words_stay(text):
-    assert name_only(text, 120) == text
+# The title cases moved to tests/data/title_privacy.txt (tests/test_title_privacy.py).
 
 
 @pytest.mark.parametrize(("folder", "project"), [
