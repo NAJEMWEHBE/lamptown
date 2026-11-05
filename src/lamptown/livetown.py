@@ -74,6 +74,7 @@ from lamptown.status.events import (
 )
 from lamptown.status.schema import parse_time, validate
 from lamptown.status.store import DEFAULT_STALE_AFTER, StatusError, default_dir, iso, read_status
+from lamptown.status.watch import remask_pending
 
 LIVE_SPEC = "lamptown-live/1"
 HISTORY_SPEC = "lamptown-history/1"
@@ -739,18 +740,30 @@ def mask_private_history(days: list, ctx: LiveContext) -> list:
     config's rules now shown as that record's masked self (masked id, "Private agent", no
     project; its ``project`` events dropped), as the Watcher masks the log when the rules
     change. So a build that runs before the Watcher has seen a folder made private (the app
-    closed, the config just edited) never puts that folder's names in ``town-history.js``."""
+    closed, the config just edited) never puts that folder's names in ``town-history.js``.
+    Until the Watcher has masked its log for every private folder (``remask_pending``), an
+    agent with no record is masked too, as the Watcher does: nothing says where it ran."""
     if not ctx.roots:
         return days
-    hidden = {doc["id"] for doc in read_records(ctx.status_dir)
+
+    records = read_records(ctx.status_dir)
+    hidden = {doc["id"] for doc in records
               if ctx.private(doc.get("x-folder"), doc.get("x-project"))}
-    if not hidden:
+    unknown = remask_pending(ctx.status_dir, ctx.roots)
+    known = {doc["id"] for doc in records}
+    if not hidden and not unknown:
         return days
+
+    def masked(e: Any) -> bool:
+        sid = e.get("id") if isinstance(e, Mapping) else None
+        return (isinstance(sid, str) and not sid.startswith("private-")
+                and (sid in hidden or (unknown and sid not in known)))
+
     out = []
     for day, events in days:
         kept = []
         for e in events:
-            if not (isinstance(e, Mapping) and e.get("id") in hidden):
+            if not masked(e):
                 kept.append(e)
             elif e.get("k") != "project":
                 kept.append({**e, "id": private_id(ctx.status_dir, e["id"]),

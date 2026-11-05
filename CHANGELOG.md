@@ -30,7 +30,8 @@ Fixes from a whole-project review: privacy gaps closed, crashes fixed, idle room
   - tag names, annotated tags and commit e-mails (noreply or example addresses only);
   - file names;
   - WSL, Cygwin, network-share, macOS volume, URL-encoded and lower-case drive paths;
-  - deny-listed folders in every spelling, Git Bash's `/f/...` included.
+  - deny-listed folders in their common spellings: Git Bash `/f/...`, WSL drive mounts, URL-encoded,
+    either slash.
 - A privacy-gate baseline entry counts only for a file already on `origin/main` (or
   `--baseline-base <rev>`), so a change can't approve its own new leak.
 - `tools/hooks` adds pre-commit and commit-msg hooks. pre-push needs the deny-list unless

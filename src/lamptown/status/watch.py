@@ -133,6 +133,32 @@ STATE_FILE = "cursors.json"
 LOCK_FILE = "watch.lock"
 STATE_VERSION = 1
 STATE_MAX_BYTES = 4 * 1024 * 1024
+
+
+def private_marks(roots: Any) -> list[str]:
+    """A hash of each private folder (no path on disk): the Watcher saves them (``prs``) once
+    its log is masked for them, so a build can tell a folder it hasn't masked for yet."""
+    return sorted({hashlib.sha256(r.encode("utf-8")).hexdigest()[:16] for r in roots})
+
+
+def remask_pending(status_dir: str | os.PathLike, roots: Any) -> bool:
+    """Is a private folder in ``roots`` one the Watcher's saved state hasn't masked the log
+    for (a folder just made private since its last tick)? No saved state at all: no (the
+    Watcher hasn't run, so it logged nothing; a fresh state masks nothing either). A state
+    that can't be read, or one from before 0.2.1 (no ``prs``): yes."""
+    marks = set(private_marks(roots))
+    if not marks:
+        return False
+    path = Path(status_dir) / STATE_DIR / STATE_FILE
+    try:
+        if path.stat().st_size > STATE_MAX_BYTES:
+            return True
+        saved = json.loads(path.read_text(encoding="utf-8")).get("prs")
+    except FileNotFoundError:
+        return False
+    except (OSError, ValueError, AttributeError):
+        return True
+    return not isinstance(saved, list) or not marks <= set(saved)
 HEARTBEAT = 60  # seconds: an unchanged record is rewritten at most this often
 SAVE_EVERY = 20  # seconds: the saved state is written at most this often while things change
 MAX_PROJECTS = 2000
@@ -426,8 +452,7 @@ class Watcher:
         # --- end review-fix: B2 1 ---
         # --- review-fix R2b 1 --- a hash of each private folder (no path on disk either): a
         # rule change that adds one masks what the log can't check (see _remask_log)
-        self._marks = sorted({hashlib.sha256(r.encode("utf-8")).hexdigest()[:16]
-                              for r in self.private_roots})
+        self._marks = private_marks(self.private_roots)
         self._remask: tuple[set[str], bool, set[str]] | None = None
         # --- end review-fix R2b 1 ---
 

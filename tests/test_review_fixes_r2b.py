@@ -285,3 +285,37 @@ def test_the_watcher_writes_anyway_when_the_lock_stays_busy(tmp_path, monkeypatc
     assert "kite" in result.written
     assert read_status(tmp_path / "kite.json")["state"] == "ok"
     assert any("lock" in e for e in result.errors)
+
+
+# ---------------------------------------------------------------- round 2 review: N1
+def _pages_with(out, needle):
+    return sorted(p.name for p in out.iterdir() if p.is_file() and needle in p.read_text("utf-8"))
+
+
+def test_a_build_before_the_watcher_masks_an_agent_whose_record_is_gone(tmp_path):
+    """A session logged while public, its record tidied away, then its folder made private: a
+    build before the Watcher's next tick masks it too (nothing says where it ran)."""
+    status, private = tmp_path / "status", tmp_path / "hidden"
+    _public_history(status, private)
+    os.remove(status / f"{SID}.json")
+    out = tmp_path / "out"
+    build(_config(tmp_path, status, private), out_dir=out, now=T0 + timedelta(seconds=4), tz=UTC)
+    assert _pages_with(out, TITLE) == [] and _pages_with(out, PROJECT) == []
+
+
+def test_once_the_watcher_has_masked_a_public_agent_with_no_record_stays_named(tmp_path):
+    """After the Watcher masked the log for the private folder, an agent logged later in a
+    public folder keeps its name in history even once its record is gone."""
+    status, private, public = tmp_path / "status", tmp_path / "hidden", tmp_path / "open"
+    name = "QZ_PUBLIC_GULL_TITLE"
+    with Watcher(status, [], private_dirs=[private], tz=UTC) as w:
+        w.tick(T0)
+        update_status("gull", status, now=T0 + timedelta(seconds=1), title=name,
+                      state="working", agent="codex", **{"x-folder": str(public / "fine")})
+        w.tick(T0 + timedelta(seconds=2))
+    assert not watch_mod.remask_pending(status, watch_mod.Watcher(
+        status, [], private_dirs=[private], tz=UTC).private_roots)
+    os.remove(status / "gull.json")
+    out = tmp_path / "out"
+    build(_config(tmp_path, status, private), out_dir=out, now=T0 + timedelta(seconds=4), tz=UTC)
+    assert "town-history.js" in _pages_with(out, name)
