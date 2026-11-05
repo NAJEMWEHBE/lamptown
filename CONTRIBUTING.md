@@ -158,7 +158,13 @@ plot, which comes with the generated map planned for v2. Until then, ship new ro
 - [docs/rooms.md](docs/rooms.md);
 - the README media, through `python tools/make_media.py` (needs `pip install -e ".[media]"` and a
   browser). Maintainers can also run the "Regenerate media" workflow from the Actions tab, which
-  opens a pull request with the new images.
+  opens a pull request with the new images. `tests/test_media_fresh.py` (a browser test) fails
+  when `town.png` or `live-town.png` no longer match a fresh render; it compares only on the OS
+  named in `docs/media/made-on.txt`, the one that made them.
+
+A release bumps `__version__` in `src/lamptown/__init__.py` and the top `## X.Y.Z` heading of
+CHANGELOG.md together, then tags that commit `vX.Y.Z`: `tests/test_release_consistency.py` checks
+all three (the tag on CI's tag build) and fails on a heading that still says "Unreleased".
 
 ### Style
 

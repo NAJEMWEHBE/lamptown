@@ -1,11 +1,13 @@
 name: CI
 
-# Every push to main and every pull request:
+# Every push to main, every release tag (v*) and every pull request:
 #   privacy   the privacy gate over the tree and the full history (deny-list from a repo secret)
 #   secrets   gitleaks over the full history
 #   lint      ruff
-#   test      core tests on Windows, macOS and Linux x Python 3.11 and 3.13 (from the built package)
-#   browser   headless-Chrome room and town tests (Python 3.13, each OS)
+#   test      core tests on Windows, macOS and Linux x Python 3.11 and 3.13 (from the built package);
+#             on a tag, tests/test_release_consistency.py also checks the tag is v<__version__>
+#   browser   headless-Chrome room and town tests (Python 3.13, each OS), and whether docs/media
+#             still match a fresh tools/make_media.py render (where they were made)
 #   app       desktop app tests with a fake window, then a real-window smoke test (Python 3.13,
 #             each OS; Linux runs under Xvfb, macOS is non-blocking for now)
 #   ci-ok     one check that is green only when all of the above are (for branch protection)
@@ -14,6 +16,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
 
@@ -33,6 +36,7 @@ env:
   RUFF_VERSION: "0.17.3"
   PYTEST_VERSION: "9.2.0"
   PYYAML_VERSION: "6.0.3"
+  PILLOW_VERSION: "13.0.0"  # tools/make_media.py, for the media freshness test
 
 jobs:
   privacy:
@@ -201,7 +205,7 @@ jobs:
           install-dependencies: ${{ runner.os == 'Linux' }}
 
       - name: Install the package and the test tools
-        run: python -m pip install . "pytest==${PYTEST_VERSION}"
+        run: python -m pip install . "pytest==${PYTEST_VERSION}" "pillow==${PILLOW_VERSION}"
 
       - name: Browser tests
         env:

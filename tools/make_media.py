@@ -9,6 +9,9 @@ Chrome, and writes into ``docs/media/`` (the only folder the privacy gate allows
 * ``live-town.png``  the same moment with one Lamplighter's card pinned open (a click)
 * ``room-<id>.png``  one still per room (every building in the demo has one, the lighthouse
                      too)
+* ``made-on.txt``    which OS made the set (windows, macos or linux): Chrome's canvas pixels
+                     may differ between systems, so tests/test_media_fresh.py re-renders and
+                     compares only on that one (written by a full run, not by ``--only``)
 
 Every picture is the page's own 400 x 225 pixel art, scaled up by whole pixels (2x), so it
 stays crisp. Every machine makes the same pictures: the build time, the page clock (``?at=``)
@@ -20,7 +23,7 @@ gets a timestamp or text chunk.
 Needs Pillow (``pip install pillow``) and Chrome, Chromium or Edge ($CHROME, or the usual
 install places). Run from anywhere:
 
-    python tools/make_media.py [--out DIR] [--jobs N]
+    python tools/make_media.py [--out DIR] [--jobs N] [--only NAME ...]
 """
 
 from __future__ import annotations
@@ -63,6 +66,14 @@ TOWN_SECONDS = 3.0            # the town before the first walk-in
 ROOM_SECONDS = 1.6            # time spent inside each room in the GIF
 WALK_STEPS = 6                # frames for a walk-in (the page's zoom takes 0.6 s)
 HERO_ROOMS = ("notes", "harbour", "contest")
+MADE_ON = "made-on.txt"
+
+
+def this_os() -> str:
+    """The OS family written to MADE_ON (tests/test_media_fresh.py has the same rule)."""
+    if sys.platform == "win32":
+        return "windows"
+    return "macos" if sys.platform == "darwin" else "linux"
 
 
 def find_chrome() -> str | None:
@@ -105,8 +116,9 @@ class Camera:
                f"--user-data-dir={work / 'profile'}", f"--window-size={W * SHOT},{H * SHOT}",
                "--force-device-scale-factor=1", "--virtual-time-budget=8000",
                f"--screenshot={png}", self.url + query + frag]
-        if hasattr(os, "geteuid") and os.geteuid() == 0:  # CI containers run as root
-            cmd.insert(1, "--no-sandbox")
+        root = hasattr(os, "geteuid") and os.geteuid() == 0  # CI containers run as root
+        if root or (sys.platform.startswith("linux") and os.environ.get("CI")):
+            cmd.insert(1, "--no-sandbox")  # Linux CI runners can't start Chrome's sandbox
         if sys.platform == "darwin":  # a real keychain can block a headless run on a prompt
             cmd.insert(1, "--use-mock-keychain")
         subprocess.run(cmd, capture_output=True, timeout=180, check=False)
@@ -346,6 +358,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", type=Path, default=ROOT / "docs" / "media", help="default: docs/media")
     ap.add_argument("--jobs", type=int, default=min(8, os.cpu_count() or 2),
                     help="screenshots taken at once")
+    ap.add_argument("--only", nargs="+", metavar="NAME",
+                    help="make only these files, named without the extension (town, live-town, "
+                         "room-<id>, hero); tests/test_media_fresh.py uses it")
     args = ap.parse_args(argv)
     chrome = find_chrome()
     if not chrome:
@@ -361,13 +376,30 @@ def main(argv: list[str] | None = None) -> int:
         cam = Camera(chrome, page, Path(tmp) / "shots")
         stills = [("town", query(T), ""), ("live-town", query(T) + f"&pin={LIVE_PIN}", "")]
         stills += [(f"room-{r}", query(T), f"#room={r}") for r in rooms]
-        jobs = stills + hero_plan()
+        hero = True
+        if args.only:
+            names = [key for key, _, _ in stills] + ["hero"]
+            unknown = sorted(set(args.only) - set(names))
+            if unknown:
+                print(f"make_media: no such file {', '.join(unknown)} (choose from "
+                      f"{', '.join(names)})", file=sys.stderr)
+                return 2
+            stills = [s for s in stills if s[0] in args.only]
+            hero = "hero" in args.only
+        jobs = stills + (hero_plan() if hero else [])
         with ThreadPoolExecutor(max_workers=max(1, args.jobs)) as pool:
             pics = list(pool.map(lambda j: cam(*j), jobs))
+        made = []
         for (key, _, _), im in zip(stills, pics[: len(stills)], strict=True):
             save_png(im, args.out / f"{key}.png")
-        save_gif(pics[len(stills):], args.out / "hero.gif")
-    for p in sorted(args.out.iterdir()):
+            made.append(args.out / f"{key}.png")
+        if hero:
+            save_gif(pics[len(stills):], args.out / "hero.gif")
+            made.append(args.out / "hero.gif")
+        if not args.only:
+            (args.out / MADE_ON).write_text(this_os() + "\n", encoding="utf-8", newline="\n")
+            made.append(args.out / MADE_ON)
+    for p in sorted(made):
         print(f"{p.name:24} {p.stat().st_size / 1024:8.1f} KB")
     return 0
 

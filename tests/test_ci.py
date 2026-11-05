@@ -142,6 +142,19 @@ def test_ci_ok_waits_for_every_job(ci):
     assert set(ok["needs"]) == set(ci["jobs"]) - {"ci-ok"}
 
 
+def test_a_release_tag_runs_ci_so_the_release_test_sees_it(ci):
+    """tests/test_release_consistency.py checks the tag against __version__ on a tag build."""
+    assert ci["on"]["push"] == {"branches": ["main"], "tags": ["v*"]}
+
+
+def test_the_browser_job_can_render_the_media(ci, media):
+    """tests/test_media_fresh.py runs tools/make_media.py, which needs Pillow: the same one the
+    "Regenerate media" workflow makes the media with."""
+    version = ci["env"]["PILLOW_VERSION"]
+    assert 'pillow==${PILLOW_VERSION}' in runs(ci["jobs"]["browser"])
+    assert f'"pillow=={version}"' in runs(media["jobs"]["media"])
+
+
 # ----------------------------------------------------------------------------- the deny-list
 def deny_steps(wf: dict) -> list[dict]:
     return [s for job in wf["jobs"].values() for s in steps(job)
