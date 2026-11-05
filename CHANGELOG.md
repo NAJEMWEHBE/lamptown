@@ -8,6 +8,44 @@ All notable changes to Lamptown are written down here. The format follows
 
 Fixes from a whole-project review: privacy gaps closed, crashes fixed, idle rooms made still.
 
+### Privacy
+
+- `lamptown status run` names only the program. A failure shows its exit code, time and how many
+  stderr lines it wrote, never the command or its output. `agent_status` records the exception type only.
+- The town cuts paths, replaces e-mail addresses and masks secrets in every status title, message
+  and need, even in a status file written by hand.
+- When a folder becomes private, the Watcher reads every record again. Saved projects, history and
+  open-file counts drop its names, and private sessions keep no titles in saved state.
+- The skill shelf's padlock tip names the folder, never its path.
+- The privacy gate checks more:
+  - tag names, annotated tags and commit e-mails (noreply or example addresses only);
+  - file names;
+  - Git Bash, WSL, Cygwin, URL-encoded and lower-case drive paths.
+- `tools/hooks` adds pre-commit and commit-msg hooks. pre-push needs the deny-list unless
+  `LAMPTOWN_NO_DENYLIST=1`.
+
+### Changed
+
+- Headless runs are jobs and walk to the clock tower: `claude -p` and Agent SDK sessions, and `codex exec`.
+- Status-file jobs read as missed once they are 15 % of their period overdue.
+- Rooms move only while something is running or waiting, and the green lamp no longer pulses.
+- Hooks set a session's title only when they create its record, so titles stop flapping.
+
+### Fixed
+
+- A year-1 or year-9999 date shows as text instead of stopping the build.
+- Broken characters (lone surrogates) in status, collector, live or history data become `�`
+  instead of crashing.
+- Schedules keep wall-clock time across daylight-saving changes.
+- `lamptown init` writes emoji titles as valid TOML, and `--force` never overwrites an older
+  backup (`.bak`, `.bak.1`, ...).
+- `doctor` shows config paths as `~/...`.
+- Vault patterns with groups, and folder names with glob characters, work.
+- When a hook writes at the same moment as the Watcher, the Watcher decides again before saving.
+- A failed save no longer hides the error that caused it.
+- Lantern click boxes are fixed, and the bell no longer rings on load.
+- Shared room chrome lives once in the kit: `K.doorSign`, `K.cursor`, `K.sampleBadge`, `K.guard`.
+
 ## 0.2.0
 
 The live town: your agents walk the town as they work. See [docs/live.md](docs/live.md).
