@@ -53,8 +53,11 @@ _KNOWN_TOKEN = re.compile(
     r"|(?i:glpat-)[A-Za-z0-9_-]{16,}"  # the prefix in any case: a room may capitalise it
     # --- review-fix R3a: more shapes --- Google (AIza...), Hugging Face (hf_...), npm
     # (npm_...), and a JWT (three base64url parts, the first a JSON header: "eyJ")
-    r"|(?i:aiza)[A-Za-z0-9_-]{20,}|(?i:hf_)[A-Za-z0-9]{16,}|(?i:npm_)[A-Za-z0-9]{16,}"
-    r"|eyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]*)")
+    # (the header part is bounded: each "eyJ" starts a match, so an unbounded one scans to
+    # the end of the text each time; a Google key's prefix is case-sensitive, as real keys are,
+    # so a word such as "aizawa-..." stays: rooms mask before they capitalise)
+    r"|AIza[A-Za-z0-9_-]{20,}|(?i:hf_)[A-Za-z0-9]{16,}|(?i:npm_)[A-Za-z0-9]{16,}"
+    r"|eyJ[A-Za-z0-9_-]{4,512}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]*)")
 # --- end review-fix R2a ---
 # --- review-fix R3a: more secret shapes ---
 # A PEM private key: its header, its body and its END line go; with no END line, the rest of

@@ -104,7 +104,7 @@ def test_mask_secrets_stays_fast_on_hostile_text():
 
     start = time.perf_counter()
     for text in ((PEM_HEAD + " ") * 5000, "mysql " + "-p " * 20000, "mysql -px" * 5000,
-                 "e" + "yJa." * 20000, "https://" + "a:" * 20000 + "b",
+                 "e" + "yJa." * 20000, "e" + "yJ-" * 40000, "https://" + "a:" * 20000 + "b",
                  "https://h/?" + "&sig" * 20000, "pass" * 10000 + "=x"):
         mask_secrets(text, long_tokens=False)
         shown_text(text)
