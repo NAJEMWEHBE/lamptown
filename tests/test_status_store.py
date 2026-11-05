@@ -142,7 +142,7 @@ def test_context_manager_error_reraises(tmp_path):
         raise RuntimeError("tide too high")
     doc = _doc(tmp_path, "report")
     assert doc["state"] == "error"
-    assert doc["message"] == "RuntimeError: tide too high"
+    assert doc["message"] == "RuntimeError"  # review-fix B1: the type only, never its text
 
 
 def test_context_manager_keyboard_interrupt(tmp_path):

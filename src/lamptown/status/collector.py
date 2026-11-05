@@ -7,7 +7,8 @@ dir = "~/.agent-status"          # or dirs = [...]; default $AGENT_STATUS_DIR, t
 kinds = ["task", "project"]      # optional; default by room: jobs -> job, harbour -> task + project
 stale_after = 1800               # optional; for files that don't set their own
 quiet_after = 21600              # optional; a silent `working` file turns grey "gone quiet"
-hide_after = 86400               # optional; ok files older than this are left out (0 = never)
+hide_after = 86400               # optional; ok files older than this are left out (0 = never;
+                                 # the jobs room's default: a job's row stays)
 expire_after = 604800            # optional; waiting, error and quiet files older than this too
 private = true                   # optional; every row shows as "Private agent", no text
 private_dirs = ["~/private"]     # optional; sessions in or under these show as private
@@ -19,11 +20,18 @@ Read-only. How a lamp ages (``updated`` = the file's last write):
   reads as ``error`` "Stopped responding": something probably crashed.
 * ``working`` silent for longer than ``quiet_after`` (default 6 h) reads as grey ``missing``
   "Gone quiet": no longer a red alert, and it no longer sets the building's lamp.
-* ``ok`` older than ``hide_after`` (default 1 day) is left out.
+* ``ok`` older than ``hide_after`` (default 1 day; in the jobs room 0, so a job's row stays)
+  is left out.
+* In the jobs room, a ``job`` whose ``next_run`` is long past reads as ``error`` "missed" (spec
+  0.1 section 2: its last run is older than its period plus 15 %; the period is ``next_run -
+  updated``, the gap the job announced). A missed row is never left out by age.
 * ``waiting``, ``error`` and quiet files older than ``expire_after`` (default 7 days) are left
   out; ``lamptown status clear`` tidies the folder itself.
 
 ``0`` switches a rule off. Links and need links keep only ``https``, ``http`` and ``file`` schemes.
+Titles, messages and need texts pass a second wall before any room sees them: paths are cut to
+their final name, e-mail and web addresses replaced, and secrets masked
+(:func:`lamptown.status.events.name_only`, :func:`lamptown.status.adapters.mask_secrets`).
 A file that can't be read or isn't a valid status file shows as one error row (left out, too,
 once the file is older than ``expire_after``). At most :data:`MAX_ROWS` rows and
 :data:`MAX_NEEDS` needs come out, newest first, then one "and N more" entry.
@@ -43,6 +51,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from lamptown.status.adapters import mask_secrets
+from lamptown.status.events import name_only
 from lamptown.status.schema import parse_time, validate
 from lamptown.status.store import (
     DEFAULT_STALE_AFTER,
@@ -51,6 +61,7 @@ from lamptown.status.store import (
     default_dir,
     iso,
     read_status,
+    scrub_text,
 )
 
 ALLOWED_SCHEMES = ("https:", "http:", "file:")
@@ -62,6 +73,10 @@ ROOM_KINDS = {"jobs": ("job",), "harbour": ("task", "project")}
 MAX_ROWS = 500  # room schemas allow 2000 per building; leave room for other sources
 MAX_NEEDS = 200  # room schemas allow 500
 PRIVATE_NAME = "Private agent"
+# review-fix B1: a job has missed its run once it is this share of its period late. The same
+# number as lamptown.collectors.jobs_schedule.GRACE (a test keeps them equal); not imported, so
+# `lamptown status hook` never loads the collectors package.
+MISSED_GRACE = 0.15
 
 
 @dataclass
@@ -88,6 +103,7 @@ class Record:
     project_path: str = ""  # L3-fix: x-project when it is a path; only for private_dirs too
     written: datetime | None = None  # the file's own time (for invalid files)
     private: bool = False
+    missed: bool = False  # review-fix B1: a job long past its next_run (jobs room)
 
 
 def safe_href(href: Any) -> str | None:
@@ -124,9 +140,28 @@ def _mtime(path: Path) -> datetime | None:
         return None
 
 
+# --- review-fix B1: second wall ---
+def _wall(text: Any, limit: int, *, long_tokens: bool = True) -> str:
+    """A title, message or need text as a room may show it: paths cut to their final name,
+    e-mail and web addresses replaced, secrets masked. A status file is written by anything
+    (a wrapper, a script, an older Lamptown); this is the wall behind the writers' own care.
+    A lone surrogate becomes U+FFFD, as everywhere a status text is written."""
+    text = scrub_text(text) if isinstance(text, str) else text
+    return mask_secrets(name_only(text, limit), long_tokens=long_tokens)
+
+
+def _walled(rec: Record) -> Record:
+    rec.title = _wall(rec.title, 200, long_tokens=False) or rec.id
+    rec.message = _wall(rec.message, 500)
+    rec.needs = [{**need, "text": _wall(need["text"], 300) or "Needs you"} for need in rec.needs]
+    return rec
+# --- end review-fix B1 ---
+
+
 def read_record(path: Path, now: datetime, stale_default: int | None,
                 quiet_after: int | None = DEFAULT_QUIET_AFTER) -> Record:
-    """Read one file into a :class:`Record`; problems become an invalid error record."""
+    """Read one file into a :class:`Record`; problems become an invalid error record. Its
+    title, message and need texts pass :func:`_wall`."""
     now = _as_aware(now)
     try:
         doc = read_status(path)
@@ -134,9 +169,9 @@ def read_record(path: Path, now: datetime, stale_default: int | None,
     except StatusError as exc:
         problems, doc = [str(exc)], {}
     if problems:
-        return Record(id=path.stem, path=path, title=path.name, state="error",
-                      message=f"Not a valid status file: {problems[0]}"[:500], invalid=True,
-                      written=_mtime(path))
+        return _walled(Record(id=path.stem, path=path, title=path.name, state="error",
+                              message=f"Not a valid status file: {problems[0]}"[:500],
+                              invalid=True, written=_mtime(path)))
     updated = parse_time(doc["updated"])
     folder = doc.get("x-folder")
     rec = Record(
@@ -147,6 +182,7 @@ def read_record(path: Path, now: datetime, stale_default: int | None,
         started=parse_time(doc.get("started")), next_run=parse_time(doc.get("next_run")),
         folder=folder if isinstance(folder, str) and len(folder) <= 1024 else "",
     )
+    _walled(rec)  # review-fix B1
     project = doc.get("x-project")  # --- L3-fix: an x-project path counts like a folder ---
     if isinstance(project, str) and len(project) <= 1024 and ("/" in project or "\\" in project
                                                               or project.startswith("~")):
@@ -269,6 +305,8 @@ def _mask(rec: Record) -> Record:
 # ---------------------------------------------------------------- rows
 # Row limits follow the room schemas (src/lamptown/schemas/rooms/{harbour,jobs}.schema.json).
 def _why(rec: Record) -> str | None:
+    if rec.missed:
+        return "missed"
     if rec.quiet:
         return "quiet"
     if rec.stale:
@@ -318,11 +356,32 @@ def _more_row(room: str, n: int) -> dict:
             "busy": False, "needs": [], "links": [], "why": "more"}
 
 
+# --- review-fix B1: job aging (spec 0.1 section 2) ---
+def _missed(rec: Record, now: datetime) -> Record:
+    """``rec`` as the jobs room shows it: a job whose last run is older than its period plus
+    15 % (the period is ``next_run - updated``, the gap it announced) has missed its run, shown
+    the way the jobs collector shows one (``error``, why ``missed``). A ``next_run`` at or
+    before the last write names no period: such a job is never called missed."""
+    if (rec.kind != "job" or rec.invalid or rec.stale or rec.state not in ("ok", "error")
+            or rec.updated is None or rec.next_run is None):
+        return rec
+    period = rec.next_run - rec.updated
+    if period <= timedelta(0) or now - rec.updated <= period * (1 + MISSED_GRACE):
+        return rec
+    day = rec.updated.astimezone(now.tzinfo)
+    text = f"Missed its run: the last run is from {day:%Y-%m-%d}." + (
+        f" {rec.message}" if rec.message else "")
+    return replace(rec, state="error", missed=True, message=_cut(text, 500))
+# --- end review-fix B1 ---
+
+
 def _expired(rec: Record, now: datetime, hide_after: int | None,
              expire_after: int | None) -> bool:
     when = rec.updated or rec.written
-    if when is None or rec.state == "working":
-        return False  # still "working" here means fresh, or a file that opted out of ageing
+    if when is None or rec.state == "working" or rec.missed:
+        # still "working" here means fresh, or a file that opted out of ageing; a missed job
+        # is news now, however old its last run (review-fix B1)
+        return False
     limit = hide_after if rec.state == "ok" and not rec.invalid else expire_after
     return bool(limit) and now - when > timedelta(seconds=limit)
 
@@ -342,7 +401,8 @@ def collect(paths: dict, now: datetime) -> dict:
     kinds = tuple(kinds) if kinds else ROOM_KINDS.get(room, KINDS)
     stale_after = _seconds(paths, "stale_after", DEFAULT_STALE_AFTER)
     quiet_after = _seconds(paths, "quiet_after", DEFAULT_QUIET_AFTER)
-    hide_after = _seconds(paths, "hide_after", DEFAULT_HIDE_AFTER)
+    # review-fix B1: a job's row stays in the jobs room however long ago it last ran
+    hide_after = _seconds(paths, "hide_after", 0 if room == "jobs" else DEFAULT_HIDE_AFTER)
     expire_after = _seconds(paths, "expire_after", DEFAULT_EXPIRE_AFTER)
     all_private = bool(paths.get("private"))
     private_roots = _private_roots(paths)
@@ -353,9 +413,10 @@ def collect(paths: dict, now: datetime) -> dict:
         return {"state": "missing", "rows": [], "label": "no status folder yet"}
 
     shown = []
-    for rec in records:
-        if rec.kind not in kinds and not (rec.invalid and "task" in kinds):
+    for found in records:
+        if found.kind not in kinds and not (found.invalid and "task" in kinds):
             continue  # unreadable files show once, in the building that reads tasks
+        rec = _missed(found, now) if room == "jobs" else found  # review-fix B1
         if _expired(rec, now, hide_after, expire_after):
             continue
         private = all_private or (private_roots and (

@@ -121,13 +121,42 @@ def status_path(status_id: str, directory: str | os.PathLike | None = None) -> P
     return default_dir(directory) / f"{check_id(status_id)}.json"
 
 
+# --- review-fix B1: lone surrogates ---
+_PAIR_RE = re.compile("[\ud800-\udbff][\udc00-\udfff]")
+_LONE_RE = re.compile("[\ud800-\udfff]")
+
+
+def scrub_text(text: str) -> str:
+    """``text`` that can always be written as UTF-8: a surrogate pair held as two code points
+    becomes its character, and a lone surrogate (an undecodable byte from POSIX argv, half an
+    emoji from a JavaScript slice) becomes U+FFFD. Valid text is returned unchanged."""
+    if not _LONE_RE.search(text):
+        return text
+    text = _PAIR_RE.sub(lambda m: m.group(0).encode("utf-16", "surrogatepass").decode("utf-16"),
+                        text)
+    return _LONE_RE.sub("\ufffd", text)
+
+
+def scrub_value(value: Any) -> Any:
+    """:func:`scrub_text` over every string (keys too) in a JSON value."""
+    if isinstance(value, str):
+        return scrub_text(value)
+    if isinstance(value, dict):
+        return {scrub_value(k): scrub_value(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [scrub_value(v) for v in value]
+    return value
+# --- end review-fix B1 ---
+
+
 def atomic_write_json(path: Path, data: Any, *, max_bytes: int = MAX_BYTES) -> None:
     """Write ``data`` as UTF-8 JSON to ``path`` through a temp file and an atomic rename.
 
     ``max_bytes`` caps the file (status files: :data:`MAX_BYTES`; the Watcher's own state files
-    pass a bigger cap)."""
+    pass a bigger cap). Lone surrogates are written as U+FFFD (:func:`scrub_text`)."""
     path = Path(path)
-    payload = (json.dumps(data, ensure_ascii=False, indent=1) + "\n").encode("utf-8")
+    text = scrub_text(json.dumps(data, ensure_ascii=False, indent=1))  # review-fix B1
+    payload = (text + "\n").encode("utf-8")
     if len(payload) > max_bytes:
         raise StatusError(f"status file would be {len(payload)} bytes; the limit is {max_bytes}")
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -178,7 +207,7 @@ def write_status(doc: dict, directory: str | os.PathLike | None = None) -> Path:
 
     ``spec`` and ``updated`` are filled in when missing.
     """
-    doc = dict(doc)
+    doc = scrub_value(dict(doc))  # review-fix B1: lone surrogates
     doc.setdefault("spec", SPEC)
     doc.setdefault("updated", iso(utcnow()))
     problems = validate(doc)
@@ -195,13 +224,17 @@ def update_status(
     *,
     now: datetime | None = None,
     replace_unreadable: bool = True,
+    defaults: dict[str, Any] | None = None,
     **changes: Any,
 ) -> dict:
     """Merge ``changes`` into the existing file (if any) and write it back atomically.
 
     A change whose value is ``None`` removes that field. ``updated`` is set to ``now``.
+    ``defaults`` are set only where the file (after ``changes``) has no such field: a hook
+    names a record after its folder when it creates it, and never renames it later.
     A new file gets ``title = id`` and ``state = "working"`` unless given. Returns the
     document that was written. Concurrent writers: last one wins, never a torn file.
+    Lone surrogates in any text become U+FFFD (:func:`scrub_value`).
 
     An existing file that can't be read is read again a few times (:func:`read_existing`).
     If it still can't be read, it is replaced (``replace_unreadable``, the default: a broken
@@ -225,6 +258,10 @@ def update_status(
             doc.pop(key, None)
         else:
             doc[key] = value
+    for key, value in (defaults or {}).items():  # review-fix B1: title flapping
+        if value is not None and key not in doc:
+            doc[key] = value
+    doc = scrub_value(doc)  # review-fix B1: the returned doc is the written one
     head = {
         "spec": SPEC,
         "id": status_id,

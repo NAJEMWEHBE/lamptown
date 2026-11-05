@@ -6,9 +6,10 @@ on_stop)`` returning an :class:`Update` or ``None`` (ignore this event), and
 Adapters are pure functions of the payload, so they are tested against recorded payloads.
 
 What a hook writes: the state, a fixed message ("Working", "Turn finished", "Using Bash": the
-tool's name only), the name of the session's folder as the title, and that folder's path as
-``x-folder`` (only so a ``status_dir`` source's ``private_dirs`` can hide it; the town never
-shows it). Never prompts, replies, tool input, file contents or account fields (such as e-mail).
+tool's name only), the name of the session's folder as the title of a new file (a title
+already there is kept), and that folder's path as ``x-folder`` (only so a ``status_dir``
+source's ``private_dirs`` can hide it; the town never shows it). Never prompts, replies, tool
+input, file contents or account fields (such as e-mail).
 Reply excerpts are opt-in (``--excerpts`` or ``LAMPTOWN_STATUS_EXCERPTS=1``): then the first
 line of the agent's reply, cut to 80 characters, with anything that looks like a secret masked.
 """
@@ -21,7 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any
 
-from lamptown.status.store import iso, slug, status_path, update_status, utcnow
+from lamptown.status.store import iso, slug, update_status, utcnow
 
 ON_STOP = ("ok", "waiting")
 ENV_EXCERPTS = "LAMPTOWN_STATUS_EXCERPTS"
@@ -42,7 +43,7 @@ class Update:
 
     id: str
     agent: str
-    title: str | None = None  # None keeps the title already in the file
+    title: str | None = None  # the folder's name: the title of a brand-new file only
     display: str = ""  # title for a brand-new file when the payload names no folder
     state: str | None = None
     message: str | None = None
@@ -67,10 +68,12 @@ def excerpts_wanted(flag: bool = False) -> bool:
     return os.environ.get(ENV_EXCERPTS, "").strip().lower() in ("1", "true", "yes", "on")
 
 
-def mask_secrets(text: str) -> str:
+def mask_secrets(text: str, *, long_tokens: bool = True) -> str:
+    """``NAME=value`` secrets and bearer tokens masked; long key-like runs too, unless
+    ``long_tokens`` is off (a title such as ``nightly-backup-of-the-photo-archive``)."""
     text = _SECRET_PAIR.sub(lambda m: f"{m.group(1)}{m.group(2)}…", text)
     text = _BEARER.sub(lambda m: f"{m.group(1)} …", text)
-    return _LONG_TOKEN.sub("…", text)
+    return _LONG_TOKEN.sub("…", text) if long_tokens else text
 
 
 def excerpt(text: Any, limit: int = EXCERPT_LIMIT) -> str:
@@ -160,11 +163,14 @@ def apply(
     """Write ``update`` into its status file (merging with what is there)."""
     changes: dict[str, Any] = {"agent": update.agent, "kind": "task"}
     status_id = id_override or update.id
-    title = title_override or update.title
-    if not title and not status_path(status_id, directory).exists():
-        title = update.display
-    if title:
-        changes["title"] = title[:200]
+    # review-fix B1: the folder's name (or the provider's) names a record only when the hook
+    # creates it; a title already there (a reader's session title) is never overwritten, so
+    # the two don't take turns. Only ``--title`` sets it every time.
+    defaults: dict[str, Any] = {}
+    if title_override:
+        changes["title"] = title_override[:200]
+    elif update.title or update.display:
+        defaults["title"] = (update.title or update.display)[:200]
     if update.state:
         changes["state"] = update.state
     if update.message is not None:
@@ -178,7 +184,7 @@ def apply(
     if stale_after is not None:
         changes["stale_after"] = stale_after
     changes.update(update.extra)
-    return update_status(status_id, directory, **changes)
+    return update_status(status_id, directory, defaults=defaults, **changes)
 
 
 def get(provider: str):

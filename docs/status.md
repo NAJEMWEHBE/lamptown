@@ -75,9 +75,10 @@ lamptown status run --id nightly-backup --title "Nightly backup" --kind job -- .
 ```
 
 `working` while the command runs (rewritten as a heartbeat), `ok` on exit 0, `error` with
-the exit code and the last stderr lines otherwise. Output and exit code pass through (a child
-killed by signal N gives `128 + N`). A status folder that can't be written never stops the
-command: one warning on stderr, same exit code. See [adapters/wrapper.md](adapters/wrapper.md).
+the exit code and a count of stderr lines otherwise. The file names only the program, never
+its arguments or what it printed. Output and exit code pass through (a child killed by signal
+N gives `128 + N`). A status file that can't be written never stops the command: one warning
+on stderr, same exit code. See [adapters/wrapper.md](adapters/wrapper.md).
 
 ## `lamptown status hook PROVIDER`
 
@@ -100,7 +101,7 @@ the provider's name, never your login name). Exactly these fields are written:
 | Field | Value |
 |---|---|
 | `id`, `agent`, `kind` | `<provider>-<session>`, the provider, `task` |
-| `title` | the session folder's name (or `--title`) |
+| `title` | the session folder's name, when the hook creates the file (a title already there, such as a reader's session title, is kept); `--title` sets it every time |
 | `state`, `needs_you` | the lamp; a need reads "Your turn", "Allow `<tool>`?", "Needs your permission", "Has a question for you" or "Needs you" |
 | `message` | fixed words: "Session started", "Working", "Using `<tool>`" / "Ran `<tool>`" (the tool's name only), "Turn finished", "Session ended", "Stopped by an API error: `<code>`" |
 | `x-folder` | the session folder's full path, only so a `status_dir` source's `private_dirs` can hide it; the town never shows it |
@@ -162,8 +163,9 @@ with agent_status("nightly-report", "Nightly report", kind="job") as s:
 ```
 
 `working` on entry, `ok` on a clean exit (a `waiting` or `error` you set inside is kept),
-`error` with the exception's text if one escapes; the exception is re-raised. Disk errors
-only warn (pass `strict=True` to raise), so a lamp never breaks your program.
+`error` with the exception's type (never its text, which can hold paths) if one escapes; the
+exception is re-raised. Disk errors only warn (pass `strict=True` to raise), so a lamp never
+breaks your program.
 
 Lower level: `update_status(id, directory, **fields)` merges and writes atomically,
 `write_status(doc)` writes a whole document, `read_status(path)` reads one, and

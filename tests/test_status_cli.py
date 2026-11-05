@@ -103,7 +103,9 @@ def test_run_success_and_failure(tmp_path, capfd):
     doc = _doc(tmp_path, "build")
     assert doc["state"] == "error"
     assert doc["message"].startswith("Exit 3")
-    assert "the string snapped" in doc["message"]
+    # review-fix B1: only a count of stderr lines, never their text (the town shows the message)
+    assert doc["message"].endswith(", 2 lines on stderr")
+    assert "the string snapped" not in doc["message"]
     assert "the string snapped" in capfd.readouterr().err  # stderr passes through too
 
 

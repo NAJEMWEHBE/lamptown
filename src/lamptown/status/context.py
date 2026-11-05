@@ -83,10 +83,10 @@ def agent_status(
     try:
         yield handle
     except BaseException as exc:
-        text = "Interrupted" if isinstance(exc, KeyboardInterrupt) else (
-            f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
-        )
-        handle.set(state="error", message=" ".join(text.split())[:500])
+        # review-fix B1: the exception's type only; its text can hold paths and secrets, and
+        # the town shows the message
+        text = "Interrupted" if isinstance(exc, KeyboardInterrupt) else type(exc).__name__
+        handle.set(state="error", message=text[:500])
         raise
     else:
         if handle.state in (None, "working"):
