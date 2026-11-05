@@ -17,6 +17,12 @@ Fixes from a whole-project review: privacy gaps closed, crashes fixed, idle room
 - When a folder becomes private, the Watcher reads every record again. Saved projects, history and
   open-file counts drop its names, and private sessions keep no titles in saved state.
 - The skill shelf's padlock tip names the folder, never its path.
+- Secrets (`token=...`, `Bearer ...`) are masked in live session titles too. The status `agent`
+  field, link labels, vault note names and the harbour's newest commit subject get the same
+  path, e-mail and secret cuts as titles.
+- A leak-hunter test plants made-up paths, e-mails, tokens and private titles in every input the
+  town reads. It checks that none of them reaches anything the town writes, and that the privacy
+  gate catches every form.
 - The privacy gate checks more:
   - tag names, annotated tags and commit e-mails (noreply or example addresses only);
   - file names;
@@ -44,6 +50,12 @@ Fixes from a whole-project review: privacy gaps closed, crashes fixed, idle room
 - When a hook writes at the same moment as the Watcher, the Watcher decides again before saving.
 - A failed save no longer hides the error that caused it.
 - Lantern click boxes are fixed, and the bell no longer rings on load.
+- The app answers a second launch while its first build is still running.
+- A right-click no longer opens a link.
+- The app goes back to the town if a page left it before the link guard was in.
+- The app checks every 10 s while hidden.
+- Browser tests fail on a timeout or a crash instead of hanging.
+- CI installs jsonschema and actionlint so their tests run instead of skipping.
 - Shared room chrome lives once in the kit: `K.doorSign`, `K.cursor`, `K.sampleBadge`, `K.guard`.
 
 ## 0.2.0
