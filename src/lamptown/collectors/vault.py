@@ -298,7 +298,8 @@ def collect(paths: dict, now: dt.datetime) -> dict[str, Any]:
                         "href": file_uri(kept_dir)})
     if dropped_dir is not None:
         gone = _md_files(dropped_dir, budget) if dropped_dir.is_dir() else []
-        out["dropped"] = {"n": len(gone), "names": [f.stem[:80] for f in gone[:MAX_NAMES]],
+        out["dropped"] = {"n": len(gone),  # review-fix R2a: names only, like the shelves'
+                          "names": [name_only(f.stem, 80) for f in gone[:MAX_NAMES]],
                           "href": file_uri(dropped_dir) if dropped_dir.is_dir() else ""}
     ib = newest(inbox_pat, root)
     inbox = read_inbox(ib, paths, now.tzinfo) if ib else None

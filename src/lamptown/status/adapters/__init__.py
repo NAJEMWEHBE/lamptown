@@ -30,9 +30,28 @@ EXCERPT_LIMIT = 80
 FOLDER_LIMIT = 1024
 # Masked even in an opted-in excerpt: NAME=value pairs whose name says key/token/secret/password,
 # bearer tokens, and long runs of key-like characters.
+# --- review-fix R2a: secret shapes --- the NAME may sit in quotes (JSON '"token": "x"', a
+# Python dict "'token': 'x'"). A match starts at the NAME's word (key, token...), so a name of
+# any length is seen ("MY_..._TOKEN=x"); the rest of the NAME is bounded, so a long word run
+# is scanned in linear time.
 _SECRET_PAIR = re.compile(
-    r"(?i)\b([\w.-]*(?:key|token|secret|passw(?:or)?d|pwd|credential|auth)[\w.-]*)(\s*[:=]\s*)"
+    r"(?i)((?:key|token|secret|passw(?:or)?d|pwd|credential|auth)[\w.-]{0,128}[\"']?)"
+    r"(\s*[:=]\s*)"
     r"((?:bearer|basic)\s+\S+|\"[^\"]*\"|'[^']*'|\S+)")
+# A command-line flag that takes a secret as its next word: "--token X", "--db-password X",
+# "--api-key X", "-auth X". The flag's name ends in the word ("--author", "--keyboard" do not).
+_SECRET_FLAG = re.compile(
+    r"(?i)(?<![\w-])(--?(?:[a-z0-9]{1,32}[-_]){0,4}"
+    r"(?:token|secret|passw(?:or)?d|pwd|passphrase|api[-_]?key|key|auth|credentials?))"
+    r"(?![\w-])(\s+)(?!-)(\"[^\"]*\"|'[^']*'|\S+)")
+# Well-known token shapes: never a title, so masked even where long runs are kept.
+_KNOWN_TOKEN = re.compile(
+    r"(?<![A-Za-z0-9])(?:(?i:gh[pousr]_)[A-Za-z0-9]{16,}|(?i:github_pat_)[A-Za-z0-9_]{20,}"
+    r"|(?i:sk-)(?:[A-Za-z0-9]+[-_]){0,3}[A-Za-z0-9]{16,}[A-Za-z0-9_-]*"
+    r"|(?i:[sr]k_(?:live|test)_)[A-Za-z0-9]{16,}"
+    r"|(?i:xox[abpr]-)[A-Za-z0-9-]{10,}|(?:AKIA|ASIA)[0-9A-Z]{16}(?![0-9A-Za-z])"
+    r"|(?i:glpat-)[A-Za-z0-9_-]{16,})")  # the prefix in any case: a room may capitalise it
+# --- end review-fix R2a ---
 _BEARER = re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}")
 _LONG_TOKEN = re.compile(r"[A-Za-z0-9_+/=.-]{24,}")
 
@@ -69,9 +88,13 @@ def excerpts_wanted(flag: bool = False) -> bool:
 
 
 def mask_secrets(text: str, *, long_tokens: bool = True) -> str:
-    """``NAME=value`` secrets and bearer tokens masked; long key-like runs too, unless
-    ``long_tokens`` is off (a title such as ``nightly-backup-of-the-photo-archive``)."""
+    """``NAME=value`` secrets (also ``"token": "x"`` in JSON), secret flags (``--token X``),
+    bearer tokens and well-known token shapes (``ghp_...``, ``sk-...``, ``xoxb-...``,
+    ``AKIA...``, ``glpat-...``) masked; long key-like runs too, unless ``long_tokens`` is off
+    (a title such as ``nightly-backup-of-the-photo-archive``)."""
+    text = _KNOWN_TOKEN.sub("…", text)  # review-fix R2a
     text = _SECRET_PAIR.sub(lambda m: f"{m.group(1)}{m.group(2)}…", text)
+    text = _SECRET_FLAG.sub(lambda m: f"{m.group(1)}{m.group(2)}…", text)  # review-fix R2a
     text = _BEARER.sub(lambda m: f"{m.group(1)} …", text)
     return _LONG_TOKEN.sub("…", text) if long_tokens else text
 
@@ -161,12 +184,14 @@ def apply(
     stale_after: int | None = None,
 ) -> dict:
     """Write ``update`` into its status file (merging with what is there)."""
-    changes: dict[str, Any] = {"agent": update.agent, "kind": "task"}
+    changes: dict[str, Any] = {"agent": update.agent}
     status_id = id_override or update.id
     # review-fix B1: the folder's name (or the provider's) names a record only when the hook
     # creates it; a title already there (a reader's session title) is never overwritten, so
     # the two don't take turns. Only ``--title`` sets it every time.
-    defaults: dict[str, Any] = {}
+    # review-fix R2a: the kind too: a hook makes a new record a task, but never turns a
+    # session a reader called a job (a headless run) back into one
+    defaults: dict[str, Any] = {"kind": "task"}
     if title_override:
         changes["title"] = title_override[:200]
     elif update.title or update.display:

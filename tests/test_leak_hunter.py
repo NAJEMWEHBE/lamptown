@@ -75,12 +75,31 @@ FORMS: dict[str, Callable[[str], str]] = {
     "words": lambda m: m + " plain words",
     "email-file": lambda m: "notes-" + m + AT + MAIL + ".md",
     "segment": lambda m: m,
+    # --- review-fix R2a: more forms --- a path written with percent-escapes, a secret in JSON,
+    # a secret flag and its next word, and bare well-known token shapes (put together here, so
+    # no scanner sees a token in this file)
+    "win-encoded": lambda m: "C%3A%5C" + "%5C".join(("Users", m, "kite", "notes.txt")),
+    "posix-encoded": lambda m: "%2F" + "%2F".join(("home", m, "kite", "notes.txt")),
+    "json-secret": lambda m: '{"token":"' + m + "\", 'api_key': '" + m + "'}",
+    "flag-secret": lambda m: "--token " + m + " --password " + m,
+    "raw-github": lambda m: "gh" + "p_" + m + PAD + " github" + "_pat_" + m + "_" + PAD + PAD,
+    "raw-ai": lambda m: "s" + "k-proj-" + m + PAD + " gl" + "pat-" + m + PAD,
+    "raw-chat": lambda m: "xo" + "xb-1234-" + m + " AK" + "IA" + m.upper() + "QZ0123",
+    # --- end review-fix R2a ---
 }
+PAD = "01234a"  # with a marker, the shortest run each token shape needs
 FILE_LINK = "file:" + SL * 3 + "C:" + SL + SL.join(("Users", "{}", "notes.txt"))
 DIRS = ("win", "win-slash", "posix", "mac", "gitbash", "wsl", "drive")  # a config path value
 PATHS = (*DIRS, "file-url")
-SAYS = (*PATHS, "email", "token", "bearer")  # what a text the town shows must lose
-ALL = (*SAYS, "words")                       # what a text the town never shows must lose
+ENCODED = ("win-encoded", "posix-encoded")  # review-fix R2a
+SECRETS = ("token", "bearer", "json-secret", "flag-secret", "raw-github", "raw-ai",
+           "raw-chat")  # review-fix R2a
+SAYS = (*PATHS, *ENCODED, "email", *SECRETS)  # what a text the town shows must lose
+ALL = (*SAYS, "words")                        # what a text the town never shows must lose
+# review-fix R2a: a room's own text (a job's result, an inbox title, a tool's name...) keeps its
+# paths (the owner's config choice) but loses its secrets; a file name loses what a name may hold
+ROOM_SAYS = SECRETS
+FILE_SAYS = ("email-file", "token", "flag-secret", "raw-github", *ENCODED)
 
 
 # ----------------------------------------------------------------------------- the world
@@ -371,10 +390,49 @@ def _vault(where: str) -> Callable[[World, str, str], None]:
                                                       f"From: Paper Kite\nSee {text}\n")
         elif where == "name":
             w.add_line(vault / "kites" / text, "# A note")
+        elif where == "dropped":  # review-fix R2a: the cat's tooltip names them
+            name = text if text.endswith(".md") else text + ".md"
+            w.add_line(vault / "inbox" / "dropped" / name, "# A note")
+        elif where == "inbox-title":  # review-fix R2a: an inbox note's title shows
+            w.add_line(vault / "inbox" / "ideas.md", f"## {w.next()}. {text}\nFrom: Paper Kite\n")
         else:
             raise AssertionError(where)
 
     return plant
+
+
+# --- review-fix R2a: the rooms' shown text --- each planter puts the text in a field the room
+# shows; test_room_text_lands_where_it_shows plants plain words the same way and finds them
+def _job_result(w: World, text: str, m: str) -> None:
+    n = w.next()
+    folder = w.base / "jobs" / f"result-{n}"
+    w.add_line(folder / "run-1.log", f"Done: {text}")
+    w.source("jobs", f"kind = \"log_glob\"\n  name = \"Result {n}\"\n"
+                     f"  glob = '{folder.as_posix()}/*.log'\n  done = 'Done:\\s*(.+)$'")
+
+
+def _ledger_tool(w: World, text: str, m: str) -> None:
+    doc = {"tool": text, "verdict": "safe", "risk": 8, "flags": 0,
+           "scanned_at": z(w.now - dt.timedelta(days=2)), "scanner": "tidewatch-scan"}
+    path = w.base / "gate" / "scans" / f"named-{w.next()}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(doc), encoding="utf-8")
+
+
+def _skill_description(w: World, text: str, m: str) -> None:
+    n = w.next()
+    w.add_line(w.base / "shelf" / "skills" / f"lark-{n}" / "SKILL.md",
+               f"---\nname: lark-{n}\ndescription: {text}\n---")
+
+
+def _contest_title(w: World, text: str, m: str) -> None:
+    doc = {"contest": "lamptown-contest/1", "title": text, "date": f"{w.now:%Y-%m-%d}",
+           "updated": z(w.now - dt.timedelta(minutes=50)),
+           "entries": [{"code": "F01", "name": "Gull Runner"}]}
+    path = w.base / "contests" / f"titled-{w.next()}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(doc), encoding="utf-8")
+# --- end review-fix R2a ---
 
 
 def _project(where: str) -> Callable[[World, str, str], None]:
@@ -531,7 +589,18 @@ INPUTS: dict[str, tuple[tuple[str, ...], Callable[[World, str, str], None]]] = {
     "config.status-dir": (DIRS, _config("status_dir")),
     "config.scan-glob": (DIRS, _config("scans")),
     "config.contest-glob": (DIRS, _config("contest")),
+    # review-fix R2a
+    "vault.dropped-file-name": (FILE_SAYS, _vault("dropped")),
+    "vault.inbox-title": (ROOM_SAYS, _vault("inbox-title")),
+    "jobs.result": (ROOM_SAYS, _job_result),
+    "ledger.tool-name": (ROOM_SAYS, _ledger_tool),
+    "shelf.description": (ROOM_SAYS, _skill_description),
+    "contest.title": (ROOM_SAYS, _contest_title),
+    "status.project": ((*PATHS, *ENCODED), _status(False, **{"x-project": "{}"})),
 }
+# review-fix R2a: inputs whose text a room shows as it is: plain words planted there must show
+SHOWN = ("vault.dropped-file-name", "vault.inbox-title", "jobs.result", "ledger.tool-name",
+         "shelf.description", "contest.title")
 CASES = [f"{name}/{form}" for name, (forms, _) in INPUTS.items() for form in forms]
 
 # Leaks this hunter found that are not fixed yet: case prefix -> where it shows. Each is a strict
@@ -601,6 +670,7 @@ label = "Notes"
   kind = "markdown_vault"
   path = '{base}/vault'
   inbox = "inbox/*.md"
+  dropped = "inbox/dropped"
 {notes}
 [[building]]
 id = "gate"
@@ -668,6 +738,10 @@ def build_world(tmp: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
         m = marks[case] = marker(case)
         w.form = form
         INPUTS[name][1](w, FORMS[form](m), m)
+    shown: dict[str, str] = {}  # review-fix R2a: plain words where a room shows its text
+    for name in SHOWN:
+        m = shown[name] = marker("shown/" + name)
+        INPUTS[name][1](w, "Lark " + m, m)
     w.add_line(base / "jobs" / "kite" / "run-1.log", "Done: 3 kites")
     w.finish()
     (w.work / "runs").mkdir()
@@ -687,7 +761,8 @@ def build_world(tmp: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     out = base / "out"
     watch(cfg, out, 2)
     watch(cfg, out, 1)  # a run starts with a build: the book catches up with the first run
-    return SimpleNamespace(base=base, out=out, status=w.status, marks=marks, world=w)
+    return SimpleNamespace(base=base, out=out, status=w.status, marks=marks, world=w,
+                           shown=shown)
 
 
 @pytest.fixture(scope="module")
@@ -775,6 +850,13 @@ def test_the_town_read_every_input(town):
     for seen in ("3 kites", "kite-knots", "rope-ladder", "kite-notes", "Gull Runner",
                  "Paper Kite", "Kite field", '"tool": "tool-'):
         assert seen in data, seen
+
+
+@pytest.mark.parametrize("name", SHOWN)
+def test_room_text_lands_where_it_shows(town, name):
+    """review-fix R2a: the room inputs are fields the town really shows: plain words planted
+    the same way reach the data, so their secret cases pass because of the mask."""
+    assert town.shown[name] in (town.out / "town-data.js").read_text("utf-8").lower(), name
 
 
 def test_full_paths_show_only_as_file_links(town, outputs):

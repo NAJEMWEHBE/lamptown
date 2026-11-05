@@ -97,7 +97,18 @@ _MAIL_RE = re.compile(rf"(?<![\w.+%-])[\w.+%-]+(?:@|%40){_NOT_HOST}{_DOMAIN}(?![
 _SCP_RE = re.compile(rf"(?<![\w.+%-])[\w.+%-]+@{_DOMAIN}:(?=[^\s\\:\"<>|`])[^\s\"<>|`]*")
 _TRAIL_RE = re.compile(r"[.,;:!?)\]}'*]+$")  # punctuation after an address is the title's
 MAIL_WORD = "someone"
-NAME_RULE = 2  # fix2-PRIV: raise when name_only cuts more: titles a reader saved are cut again
+NAME_RULE = 3  # fix2-PRIV: raise when name_only cuts more: titles a reader saved are cut again
+# --- review-fix R2a: encoded paths --- a separator, a drive's colon or an "@" written as a
+# percent-escape (also escaped again: "%255C") is read as itself, so "C%3A%5CUsers%5Cyou" is cut
+# like "C:\Users\you". Other escapes ("%20", "5%") stay as they are.
+_ESCAPE_RE = re.compile(r"%(?:25)*(5c|2f|3a|40)", re.IGNORECASE)
+_UNESCAPE = {"5c": "\\", "2f": "/", "3a": ":", "40": "@"}
+
+
+def unescape_paths(text: str) -> str:
+    """``text`` with percent-escaped separators, colons and "@" read as the characters."""
+    return _ESCAPE_RE.sub(lambda m: _UNESCAPE[m.group(1).lower()], text) if "%" in text else text
+# --- end review-fix R2a ---
 
 
 def _link(match: re.Match) -> str:
@@ -223,19 +234,21 @@ def name_only(text: Any, limit: int) -> str:
     (``"git@example.com:you/kite.git"``) become ``"link"``, whole; an e-mail address becomes
     ``"someone"``. A date-named (chat) folder never shows its words. A secret
     (``token=...``, ``Bearer ...``) is masked."""
-    flat = scrub(one_line(text, 4096))
+    flat = unescape_paths(scrub(one_line(text, 4096)))  # review-fix R2a: encoded paths
     if not flat:
         return ""
     flat = _MAIL_RE.sub(MAIL_WORD, _SCP_RE.sub(_link, flat))  # fix-PRIV: addresses
     flat = _PATH_RE.sub(_last_part, _cut_paths(flat))
-    # masked after the cut (fast on hostile titles); a mask never makes text longer
-    return one_line(mask_secrets(one_line(flat, limit), long_tokens=False), limit)
+    # masked after the path cut, before the length cut (review-fix R2a: so no head of a
+    # token is left at the end); the masks run in linear time and never make text longer
+    return one_line(mask_secrets(flat, long_tokens=False), limit)
 # --- end W2-left-fix2 ---
 
 
 def project_name(value: Any) -> str:
-    """A project's name: the last part of a folder path (any OS), at most 80 characters."""
-    name = folder_name(value) if isinstance(value, str) else ""
+    """A project's name: the last part of a folder path (any OS, percent-escaped too), at
+    most 80 characters."""
+    name = folder_name(unescape_paths(value)) if isinstance(value, str) else ""
     return one_line(scrub(name), LIMITS["project"])
 
 
@@ -305,6 +318,9 @@ def project_of(project: Any, folder: Any) -> str:
     :func:`home_or_root` holds names no project, and neither does a ``project`` that only
     repeats its name, nor the home folder's own name when no other folder gives one."""
     login = folder_name(os.path.expanduser("~")).casefold()
+    # review-fix R2a: an escaped path ("C%3A%5CUsers%5Cyou") is read as the path it spells
+    project = unescape_paths(project) if isinstance(project, str) else project
+    folder = unescape_paths(folder) if isinstance(folder, str) else folder
     broad = home_or_root(folder)
     from_folder = "" if broad else project_name(folder)
     name = project_name(project)

@@ -46,6 +46,7 @@ from pathlib import Path
 from typing import Any
 
 from lamptown.collectors import worst
+from lamptown.status.adapters import mask_secrets
 
 PLATE_LETTERS = 7  # what a brass plate holds at 4 columns
 LINE_MAX = 60  # the tooltip / tag line
@@ -216,9 +217,13 @@ def load_overrides(p: Path | None) -> dict[str, dict[str, str]]:
 
 # ----------------------------------------------------------------------------- names
 def font_safe(s: str) -> str:
-    """Only characters the pixel font has (it prints anything else as a gap)."""
+    """Only characters the pixel font has (it prints anything else as a gap). Secrets are
+    masked first (review-fix R2a: before a caller cuts or capitalises the text, so no part of
+    one is left), the mask shown as "..."."""
     s = (
-        s.replace("—", "-")
+        mask_secrets(s, long_tokens=False)
+        .replace("…", "...")
+        .replace("—", "-")
         .replace("–", "-")
         .replace("’", "'")
         .replace("‘", "'")

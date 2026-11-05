@@ -27,6 +27,7 @@ from importlib import metadata
 from pathlib import Path, PurePath
 from typing import Any
 
+from lamptown.status.adapters import mask_secrets
 from lamptown.status.store import scrub_text
 
 STATES = ("ok", "waiting", "working", "error", "missing")
@@ -66,7 +67,7 @@ def worst(states: Iterable[str]) -> str:
 
 
 def error_result(reason: str) -> dict[str, Any]:
-    return {"state": "error", "error": clean_text(reason)[:300]}  # review-fix C2
+    return {"state": "error", "error": shown_text(reason)[:300]}  # review-fix C2, R2a
 
 
 # ----------------------------------------------------------------------------- finding a collector
@@ -148,6 +149,24 @@ def clean_text(text: str) -> str:
     return scrub_text(text)  # one rule for every writer: lamptown.status.store
 
 
+# --- review-fix R2a: secrets in what a room shows ---
+# Every string a collector returns is shown text (a job's result, an inbox title, a tool's
+# name, a skill's description, a contest's title...): its secrets are masked as a status
+# text's are (``token=x``, ``"token": "x"``, ``--password x``, bearer tokens, ``ghp_...`` and
+# other well-known shapes). Long key-like runs stay ("Built <sha>" is a result). A link is no
+# text: a value under a key named ``href``/``*Href``/``*_href``/``hrefs`` is left as it is (a
+# mask would break it). clean_text itself stays surrogates-only: build.write_atomic runs every
+# page through it.
+def shown_text(text: str) -> str:
+    """``text`` as :func:`clean_text` gives it, with its secrets masked."""
+    return mask_secrets(clean_text(text), long_tokens=False)
+
+
+def _is_link_key(key: Any) -> bool:
+    return isinstance(key, str) and key.lower().endswith(("href", "hrefs"))
+# --- end review-fix R2a ---
+
+
 def clean(value: Any) -> Any:
     """:func:`clean_text` on every string (keys too) in JSON-like data; a copy when needed."""
     if isinstance(value, str):
@@ -160,13 +179,14 @@ def clean(value: Any) -> Any:
 # --- end review-fix C2 ---
 
 
-def json_safe(value: Any, where: str = "result") -> Any:
+def json_safe(value: Any, where: str = "result", *, link: bool = False) -> Any:
     """A JSON-only copy. datetimes/dates become ISO strings (naive ones are read as local time),
     paths
-    become strings, tuples become lists, and text is valid Unicode (:func:`clean_text`). Anything
-    else raises TypeError naming where it was."""
+    become strings, tuples become lists, and text is valid Unicode (:func:`clean_text`) with its
+    secrets masked (:func:`shown_text`; not in a link: ``link``, or under a link's key).
+    Anything else raises TypeError naming where it was."""
     if isinstance(value, str):
-        return clean_text(value)
+        return clean_text(value) if link else shown_text(value)  # review-fix R2a
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
@@ -186,10 +206,10 @@ def json_safe(value: Any, where: str = "result") -> Any:
         for k, v in value.items():
             if not isinstance(k, str):
                 raise TypeError(f"{where} has a key {k!r} that is not a string")
-            out[clean_text(k)] = json_safe(v, f"{where}.{k}")
+            out[clean_text(k)] = json_safe(v, f"{where}.{k}", link=link or _is_link_key(k))
         return out
     if isinstance(value, (list, tuple)):
-        return [json_safe(v, f"{where}[{i}]") for i, v in enumerate(value)]
+        return [json_safe(v, f"{where}[{i}]", link=link) for i, v in enumerate(value)]
     raise TypeError(f"{where} is a {type(value).__name__}, which JSON can't hold")
 
 

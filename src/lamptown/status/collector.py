@@ -372,7 +372,10 @@ def _missed(rec: Record, now: datetime) -> Record:
     period = rec.next_run - rec.updated
     if period <= timedelta(0) or now - rec.updated <= period * (1 + MISSED_GRACE):
         return rec
-    day = rec.updated.astimezone(now.tzinfo)
+    try:  # review-fix R2a: year 1 with a "+" offset has no time in UTC: such a row is not missed
+        day = rec.updated.astimezone(now.tzinfo)
+    except (OverflowError, ValueError, OSError):
+        return rec
     text = f"Missed its run: the last run is from {day:%Y-%m-%d}." + (
         f" {rec.message}" if rec.message else "")
     return replace(rec, state="error", missed=True, message=_cut(text, 500))
