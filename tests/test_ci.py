@@ -7,6 +7,7 @@ the ``actionlint`` binary is around: on PATH or in $ACTIONLINT) the full workflo
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -153,6 +154,16 @@ def test_the_browser_job_can_render_the_media(ci, media):
     version = ci["env"]["PILLOW_VERSION"]
     assert 'pillow==${PILLOW_VERSION}' in runs(ci["jobs"]["browser"])
     assert f'"pillow=={version}"' in runs(media["jobs"]["media"])
+
+
+def test_pyright_finds_the_package_and_checks_the_oldest_ci_python(ci):
+    """pyrightconfig.json: editors resolve ``lamptown.*`` (src/) and the test helpers (tests/),
+    and flag what the oldest Python CI tests on would not run."""
+    cfg = json.loads((ROOT / "pyrightconfig.json").read_text(encoding="utf-8"))
+    assert {"src", "tests"} <= set(cfg["extraPaths"])
+    oldest = min(ci["jobs"]["test"]["strategy"]["matrix"]["python"],
+                 key=lambda v: tuple(int(p) for p in v.split(".")))
+    assert cfg["pythonVersion"] == oldest
 
 
 # ----------------------------------------------------------------------------- the deny-list
