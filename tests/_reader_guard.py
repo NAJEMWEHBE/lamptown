@@ -22,14 +22,15 @@ REAL_HOME = Path.home()  # read once, before any test moves HOME
 REAL_TOOL_DIRS = [REAL_HOME / ".codex", REAL_HOME / ".claude"]
 
 
-def _flat(path: object) -> str:
+def _flat(path: object, lower: bool = True) -> str:
     try:
         text = os.fspath(path)  # type: ignore[arg-type]
     except TypeError:
         return ""
     if isinstance(text, bytes):
         text = os.fsdecode(text)
-    return unquote(text).replace("\\", "/").lower()
+    text = unquote(text).replace("\\", "/")
+    return text.lower() if lower else text
 
 
 def guard(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -52,9 +53,12 @@ def guard(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
             if real in flat:
                 pytest.fail("a reader test touched the real tool folder", pytrace=False)
         if "/.git" in flat and inside not in flat:
-            plain = flat.split("?", 1)[0]
-            if lexists(plain.removeprefix("file:///").removeprefix("file:")):
-                pytest.fail("a reader test touched a real git repository", pytrace=False)
+            # ci-pr1: test the path as given too: ``flat`` is lower case, which names no file
+            # on a case-sensitive file system (a real repository in a folder named with capitals)
+            for text in (flat, _flat(path, lower=False)):
+                plain = text.split("?", 1)[0].removeprefix("file:///").removeprefix("file:")
+                if lexists(plain):
+                    pytest.fail("a reader test touched a real git repository", pytrace=False)
 
     def wrap(fn):
         def guarded(*args, **kwargs):

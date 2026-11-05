@@ -26,7 +26,9 @@ loading it.
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
+import json
 import math
 import re
 import sys
@@ -305,9 +307,16 @@ class LiveFeed:
         from lamptown.status.readers import make_reader
 
         readers = []
-        for entry in cfg.live.readers:
+        # pr1-review: entries of a kind listed more than once keep apart states, keyed by a
+        # hash of the entry (Watcher._state_keys): no path is saved, reordering keeps them
+        kinds = [str(e.get("kind") or e.get("reader")) for e in cfg.live.readers]
+        for entry, kind in zip(cfg.live.readers, kinds, strict=True):
             try:
-                readers.append(make_reader(livetown.reader_entry(cfg, entry)))  # W2-left
+                reader = make_reader(livetown.reader_entry(cfg, entry))  # W2-left
+                if kinds.count(kind) > 1:
+                    with contextlib.suppress(Exception):
+                        reader.state_tag = json.dumps(entry, sort_keys=True, default=str)
+                readers.append(reader)
             except Exception as e:  # one broken reader must not stop the others
                 name = entry.get("kind") or Path(str(entry.get("reader", "?"))).name
                 self._say(f"live reader {name!r} can't start: {_safe(e, typed=True)}")  # ENG

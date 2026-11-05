@@ -175,17 +175,22 @@ def part_for(b: Building, room: dict[str, Any]) -> dict[str, Any]:
 
 
 def town_data(config: Config, rooms: dict[str, dict], now: dt.datetime,
-              fixed_clock: bool = False, live: dict[str, Any] | None = None) -> dict[str, Any]:
+              fixed_clock: bool = False, live: dict[str, Any] | None = None, *,
+              room_js: list[str] | None = None) -> dict[str, Any]:
     """The data the town page reads (``D`` in the page), with its ``rev``.
 
     ``live`` (the live payload, when ``[live]`` is on) adds ``parts.lighthouse``: the live
-    town's own place, not one of the six plots (``plots`` keeps only those)."""
+    town's own place, not one of the six plots (``plots`` keeps only those). ``room_js``: the
+    room types whose script the page carries (``roomJs``): a live swap that brings one the
+    loaded page lacks reloads the page once, since only a reload brings its script."""
     data = _town_data(config, rooms, now, fixed_clock)
     if live is not None:
         part = livetown.lighthouse_part(live, DETAILS_NAME)
         data["parts"][LIGHTHOUSE] = part
         data["rooms"] = {**data["rooms"],
                          LIGHTHOUSE: {"state": part["state"], "label": part["result"]}}
+    if room_js is not None:  # pr1-review
+        data["roomJs"] = list(room_js)
     data["rev"] = livetown.rev_of(data)
     return data
 
@@ -813,8 +818,10 @@ def build(
         ctx = livetown.context(config)
         live = livetown.live_payload(livetown.read_records(ctx.status_dir), config, now, ctx=ctx)
         hist = _history(config, now, tz, ctx, warnings)  # L3-fix: never a failed build
-    data = town_data(config, rooms, now, fixed_clock=fixed, live=live)
-    town_html = render_town(data, room_scripts(config, warnings))
+    scripts = room_scripts(config, warnings)  # pr1-review: first, so the data says which
+    data = town_data(config, rooms, now, fixed_clock=fixed, live=live,
+                     room_js=sorted(set(re.findall(r'<script data-room="([^"]+)"', scripts))))
+    town_html = render_town(data, scripts)
     today = livetown.lighthouse_today(live, hist) if live is not None and hist else None
     # L9-fix: past days
     details_html = render_details(data, today, hist if live is not None else None)

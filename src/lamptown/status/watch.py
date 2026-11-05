@@ -223,6 +223,44 @@ def _takes_budget(poll: Callable) -> bool:
     return any(p.name == "budget" or p.kind is p.VAR_KEYWORD for p in params)
 
 
+# --- pr1-review: one saved state per configured reader ---
+def _state_keys(readers: Sequence[Reader]) -> tuple[dict[int, str], set[int]]:
+    """Where each reader's state is saved (``cursors.json`` ``readers``), by ``id(reader)``,
+    and the readers that may take over the state saved under their bare name.
+
+    A name only one reader has keeps its name, as before. A reader with a ``state_tag`` (a
+    string the live town gives each entry of a kind listed more than once, e.g. two Codex
+    roots, from its config entry) gets ``name~<hash of the tag>``, even when its twin failed to
+    start; readers sharing a name with no tag get ``name~<hash of their place>``. No path is
+    saved, reordering tagged entries keeps each one's state, and a ``~`` is in no reader name,
+    so no key is another's name. The first of each such name adopts the bare name's state
+    (saved when it was the only one): adding a second entry neither re-reads the first's logs
+    nor logs its starts again."""
+    count: dict[str, int] = {}
+    for reader in readers:
+        count[reader.name] = count.get(reader.name, 0) + 1
+    keys: dict[int, str] = {}
+    adopt: set[int] = set()
+    seen: dict[str, int] = {}
+    for reader in readers:
+        name = reader.name
+        tag = getattr(reader, "state_tag", None)
+        tag = tag if isinstance(tag, str) and tag else None
+        if tag is None and count[name] == 1:
+            keys[id(reader)] = name
+            continue
+        place = seen[name] = seen.get(name, 0) + 1
+        mark = tag or f"#{place}"
+        key = f"{name}~{hashlib.sha256(mark.encode('utf-8')).hexdigest()[:12]}"
+        while key in keys.values():  # two entries alike: still two states
+            key += f"~{place}"
+        keys[id(reader)] = key
+        if place == 1:
+            adopt.add(id(reader))
+    return keys, adopt
+# --- end pr1-review ---
+
+
 def state_kind(old: str | None, new: str) -> str | None:
     """The event for a change of (effective) state, or ``None``."""
     if new == "working":
@@ -359,6 +397,7 @@ class Watcher:
         for reader in self.readers:
             share_private(reader, self.private_roots)
         # --- end fix2 ---
+        self._keys, self._adopt = _state_keys(self.readers)  # pr1-review: one state each
 
     # ------------------------------------------------------------ lock
     def _lock(self) -> str | None:
@@ -614,9 +653,16 @@ class Watcher:
         """One reader's poll: its status changes, its events and whether it is still behind.
         ``None`` when it failed (reported, its state rolled back)."""
         name = reader.name
-        saved = state["readers"].get(name)
+        # --- pr1-review: two entries of one kind each keep their own state (see _state_keys) ---
+        key = self._keys.get(id(reader), name)
+        if key not in state["readers"] and id(reader) in self._adopt:
+            # the first of a name now shared takes the state saved when it was the only one
+            saved = state["readers"].pop(name, None)
+        else:
+            saved = state["readers"].get(key)
         own = copy.deepcopy(saved) if isinstance(saved, dict) else {}
-        state["readers"][name] = own
+        state["readers"][key] = own
+        # --- end pr1-review ---
         try:
             takes = self._budget_kw.get(id(reader))
             if takes is None:
@@ -630,7 +676,7 @@ class Watcher:
             agents, found = list(batch.agents), list(batch.events)
             behind = getattr(reader, "behind", False) is True
         except Exception as exc:  # one broken reader must not stop the town
-            state["readers"][name] = saved if isinstance(saved, dict) else {}
+            state["readers"][key] = saved if isinstance(saved, dict) else {}  # pr1-review
             result.errors.append(f"reader {name}: {safe_reason(exc, typed=True)}"[:200])  # ENG
             return None
         return agents, found, behind

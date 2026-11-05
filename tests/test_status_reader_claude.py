@@ -332,6 +332,39 @@ def test_api_error_fails_until_the_next_prompt(tree, procs):
     assert poll(reader, state, T0 + timedelta(seconds=6))[0][MAIN]["state"] == "working"
 
 
+def test_a_same_size_session_rewrite_in_one_time_tick_is_still_seen(tree, procs):
+    """ci-pr1: "idle" -> "busy" keeps the session file's size; a rewrite within the file
+    system's time tick (coarse on Windows) keeps its mtime too. It must still be read."""
+    alive(procs)
+    path = tree.session("idle", since=-1)
+    tree.write(prompt(-10), assistant(-1, error=True, stop="stop_sequence"))
+    reader, state = reader_for(tree), {}
+    assert poll(reader, state)[0][MAIN]["state"] == "error"
+    before = os.stat(path)
+    tree.session("busy", since=-1)  # same size
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))  # same tick: same mtime
+    after = os.stat(path)
+    assert (after.st_mtime_ns, after.st_size) == (before.st_mtime_ns, before.st_size)
+    tree.write(prompt(5))
+    assert poll(reader, state, T0 + timedelta(seconds=6))[0][MAIN]["state"] == "working"
+
+
+def test_a_settled_session_file_is_not_read_again(tree, procs, monkeypatch):
+    """The (mtime, size) cache still holds for a session file not changed just now."""
+    alive(procs)
+    path = tree.session("busy")
+    old = os.stat(path).st_mtime_ns - 60 * 10**9
+    os.utime(path, ns=(old, old))
+    tree.write(prompt(-10))
+    reader, state = reader_for(tree), {}
+    poll(reader, state)
+    reads: list[str] = []
+    real = cc._read_small_json
+    monkeypatch.setattr(cc, "_read_small_json", lambda p: reads.append(str(p)) or real(p))
+    poll(reader, state, T0 + timedelta(seconds=1))
+    assert reads == []
+
+
 # ---------------------------------------------------------------- the process
 def test_dead_process_idle_is_done(tree, procs):
     tree.session("idle", since=-30)  # no live process in the table

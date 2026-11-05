@@ -44,6 +44,9 @@ jobs:
         with:
           fetch-depth: 0  # the gate scans the full history
           persist-credentials: false
+          # On a pull request, scan the branch's own commits, not GitHub's test-merge commit
+          # (that one is made by GitHub with an identity it picks and never lands as such).
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:

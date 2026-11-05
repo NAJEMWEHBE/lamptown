@@ -149,6 +149,7 @@ DEAD_STALE = 60  # stale_after of a session whose process died mid-turn
 START_SLACK = 10.0  # seconds a process may start after the session's startedAt (clocks)
 MAX_HASHES = 1000  # different files counted per session
 MAX_PENDING = 64  # tool calls without a result kept per session
+RACY_NS = 2_000_000_000  # a session file changed this recently is not trusted by (mtime, size)
 MAX_CHANGES = 450  # status changes per poll (the Watcher takes 500)
 MAX_OUT_EVENTS = 3900  # events per poll (the Watcher takes 5000; one record adds <= 1001)
 SESSION_MAX_BYTES = 64 * 1024
@@ -375,7 +376,7 @@ class ClaudeCodeReader:
         self._scanned: float | None = None
         self._cwd: dict[str, str] = {}
         self._no_cwd: set[str] = set()
-        self._sessions: dict[str, tuple[tuple[int, int], dict]] = {}
+        self._sessions: dict[str, tuple[tuple[int, int] | None, dict]] = {}
         self._metas: dict[str, tuple[tuple[int, int], dict]] = {}
         self._sig: dict[str, tuple[int, int]] = {}  # subagent file -> (mtime_ns, size) listed
         self._done: dict[str, tuple] = {}  # subagent log -> (mtime_ns, size) when read to end
@@ -500,7 +501,11 @@ class ClaudeCodeReader:
                 doc = _read_small_json(entry.path)
                 if doc is None:
                     continue  # mid-write: try again next tick
-                self._sessions[entry.name] = (sig, doc)
+                # ci-pr1: "idle" -> "busy" rewrites the file at the same size, and a rewrite
+                # within the file system's time tick keeps the same mtime: a file changed this
+                # recently is read again next tick instead of trusting (mtime, size)
+                settled = time.time_ns() - st.st_mtime_ns > RACY_NS
+                self._sessions[entry.name] = (sig if settled else None, doc)
             try:
                 live = self._live(doc)
             except (ValueError, OverflowError, TypeError):

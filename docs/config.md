@@ -386,6 +386,10 @@ The built-in readers (each one's options are in [live.md](live.md#what-it-reads-
 `[[live.place]] dir` and `[[live.group]] dir`, exactly as in a `status_dir` source's
 `private_dirs`.
 
+A kind can be listed more than once (two Codex `root`s, say): each entry keeps its own saved
+place in its logs. Of several `git` (or `ci_gh`) entries without `status_dir`, only the first
+watches the live town's status folder, so an agent's commits and pushes count once.
+
 **Folders named by date.** Some tools make one folder per chat or task and name it by the date
 followed by the chat's first words (`~/notes/chats/2026-03-14-plan-the-launch`). A folder whose
 name starts with a date (`YYYY-MM-DD` and then `-`, `_`, a space, `.` or `T`) never shows the

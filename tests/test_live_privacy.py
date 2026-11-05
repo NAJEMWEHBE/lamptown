@@ -124,27 +124,57 @@ class _Repo:
 
 
 def _deny_reads_under(monkeypatch, root: Path, touched: list[str]) -> None:
-    """Record any open, stat or listing of a path in or under ``root``."""
+    """Record any open, stat or listing of a path under ``root``, and any open or listing of
+    ``root`` itself.
+
+    ci-pr1: a stat of ``root`` itself is allowed: the live town resolves the configured private
+    folder's real path (``collector._private_roots``: ``Path.resolve()`` stats it on Python
+    3.11, ``realpath`` lstats it on Linux and macOS) so that a symlinked private folder still
+    hides its projects. That reads nothing of a project; opening or listing it would."""
     mark = os.path.normcase(str(root))
 
-    def check(path):
+    def check(path, meta):
         try:
             text = os.path.normcase(os.path.abspath(os.fsdecode(os.fspath(path))))
         except TypeError:
             return
-        if text == mark or text.startswith(mark + os.sep):
+        if (text == mark and not meta) or text.startswith(mark + os.sep):
             touched.append(text)
 
-    def wrap(fn):
+    def wrap(fn, meta):
         def watched(path=".", *args, **kwargs):
             if not isinstance(path, int):
-                check(path)
+                check(path, meta)
             return fn(path, *args, **kwargs)
         return watched
 
     for mod, name in ((builtins, "open"), (io, "open"), (os, "open"), (os, "stat"),
                       (os, "lstat"), (os, "scandir"), (os, "listdir")):
-        monkeypatch.setattr(mod, name, wrap(getattr(mod, name)))
+        monkeypatch.setattr(mod, name, wrap(getattr(mod, name), name in ("stat", "lstat")))
+
+
+def test_the_private_folder_watch_allows_only_a_stat_of_the_folder_itself(tmp_path):
+    """ci-pr1: the watch above lets the private folder itself be stat'ed (its real path is
+    resolved), and still records opening or listing it, or any touch inside it."""
+    clients = tmp_path / "clients"
+    (clients / "acme").mkdir(parents=True)
+    (clients / "acme" / "notes.txt").write_text("x", encoding="utf-8")
+    touched: list[str] = []
+    mp = pytest.MonkeyPatch()
+    try:
+        _deny_reads_under(mp, clients, touched)
+        os.stat(clients)
+        os.lstat(clients)
+        assert touched == []
+        os.listdir(clients)
+        os.scandir(clients).close()
+        os.stat(clients / "acme")
+        os.lstat(clients / "acme")
+        with open(clients / "acme" / "notes.txt", encoding="utf-8"):
+            pass
+    finally:
+        mp.undo()
+    assert len(touched) == 5
 
 
 def test_private_projects_are_never_read_asked_about_or_named(tmp_path, monkeypatch):

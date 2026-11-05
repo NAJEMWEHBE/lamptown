@@ -1602,8 +1602,30 @@ function applyData(d) {
   }
   if (!running) render(FIXED !== null ? FIXED : OFF, stillMode());   // a still scene redraws now; a moving one on its next frame
   syncDetails();
+  needRoomScripts();   // pr1-review
   return true;
 }
+// --- pr1-review: a room type new to this page --- a building whose room script the page doesn't carry (the build inlines
+// only the types in use, and lists them in D.roomJs) would show but never open: reload the page once (the Watcher wrote the
+// new town.html before town-data.js was asked for), keeping the view. ?roomjs=<types> marks the reload, so a page that
+// still lacks them (town.html not rewritten) never reloads again for the same types. The app reloads on a shape change
+// itself; the types this page was built with (D.roomJs at load) never count, a script of theirs that broke stays broken.
+const ROOM_JS_BOOT = new Set(Array.isArray(D.roomJs) ? D.roomJs : []);
+LIVE.reload = url => location.replace(url);
+function needRoomScripts() {
+  if (isApp() || PREVIEW || LIVE.reloading || !Array.isArray(D.roomJs)) return;
+  const want = D.roomJs.filter(t => typeof t === 'string' && /^[a-z][a-z0-9_]{0,39}$/.test(t) && !ROOMS[t] && !ROOM_JS_BOOT.has(t));
+  if (!want.length) return;
+  const key = [...new Set(want)].sort().join('.');
+  if (qs.get('roomjs') === key) {
+    if (LIVE.roomWarned !== key) console.warn('lamptown: still no room script for ' + key + ' after a reload; reload the page by hand');
+    LIVE.roomWarned = key; return;
+  }
+  LIVE.reloading = key;
+  const q = new URLSearchParams(location.search); q.set('roomjs', key);
+  LIVE.reload(location.href.split(/[?#]/)[0] + '?' + q + viewHash());
+}
+// --- end pr1-review ---
 /* the open room after a swap: room.update(data) if it has one; else it walks in again quietly (no door, no zoom) on the
    new data and its own view starts over. A building that went away or changed its room type sends you back to town. */
 function updateRoom() {

@@ -349,11 +349,13 @@ def test_options_and_the_built_in_table(tmp_path):
 
 
 def test_the_guard_stops_a_read_of_a_real_repository():
-    real = Path(__file__).resolve().parents[1] / ".git"
-    if not real.exists():
+    # ci-pr1: find the checkout without os.stat (guarded): Path.resolve() / Path.exists()
+    # call os.stat on Python 3.11-3.13, which tripped the guard before pytest.raises
+    real = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) / ".git"
+    if not os.path.lexists(real):
         pytest.skip("not run from a git checkout")
     with pytest.raises(pytest.fail.Exception):
-        os.stat(real / "logs" / "HEAD")
+        os.stat(real)  # (it exists: a fresh CI checkout may have no logs/HEAD)
 
 
 # ---------------------------------------------------------------- L5-fix (review-L5)

@@ -419,10 +419,15 @@ def reader_entry(cfg: Config, entry: Mapping[str, Any]) -> dict[str, Any]:
     ``status_dir`` gets the Watcher's own status folder, so it counts commits and pushes on the
     live agents' records (``status_dir = false``: the given ``repos`` only, as events)."""
     out = dict(entry)
-    if out.get("kind") == "git" and "status_dir" not in out:
+    # pr1-review: only the first such entry of a kind: two would each count the same agents'
+    # commits and pushes on the same records (the others watch their own ``repos`` only)
+    alike = [e for e in cfg.live.readers
+             if e.get("kind") == out.get("kind") and "status_dir" not in e]
+    later = any(e is entry for e in alike[1:])
+    if out.get("kind") == "git" and "status_dir" not in out and not later:
         out["status_dir"] = str(live_status_dir(cfg))
     # --- live: L11 ci_gh --- (it watches the live agents' folders for pushes the same way)
-    if out.get("kind") == "ci_gh" and "status_dir" not in out:
+    if out.get("kind") == "ci_gh" and "status_dir" not in out and not later:
         out["status_dir"] = str(live_status_dir(cfg))
     # --- end L11 ---
     # --- fix-PRIV: both open project folders, so both get the town's private folders (on top
