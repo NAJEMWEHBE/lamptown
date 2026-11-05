@@ -82,6 +82,15 @@ session's ``Write`` / ``Edit`` / ``MultiEdit`` / ``NotebookEdit`` calls changed:
 kept only as salted hashes in the reader's saved state (at most 1000 per session), never
 written anywhere. A subagent's files count on the subagent's own record.
 
+Kind: a headless run is a ``job`` (the tower), anything else a ``task``. Headless: the session
+file's or the log's ``entrypoint`` starts with ``sdk-`` (``sdk-cli`` is ``claude -p``, ``sdk-ts`` /
+``sdk-py`` the Agent SDK); ``cli``, ``claude-desktop``, ``claude-vscode`` and apps that name
+themselves (``t3-code``) are tasks. A subagent has its session's kind.
+
+Private folders: a session in one keeps no title in the saved state, not while its log is being
+caught up either. A title read before the session's folder is known waits in memory (never
+saved) until it is; titles an older run saved for a now private session go at the next poll.
+
 Events: ``start`` at the session's start and ``files`` at the minute the files changed (so the
 history shows real times while catching up); everything else comes from the status folder.
 
@@ -149,6 +158,7 @@ DEAD_STALE = 60  # stale_after of a session whose process died mid-turn
 START_SLACK = 10.0  # seconds a process may start after the session's startedAt (clocks)
 MAX_HASHES = 1000  # different files counted per session
 MAX_PENDING = 64  # tool calls without a result kept per session
+HEADLESS = "sdk-"  # review-fix: B2 4 (an entrypoint starting so is a headless run: a job)
 RACY_NS = 2_000_000_000  # a session file changed this recently is not trusted by (mtime, size)
 MAX_CHANGES = 450  # status changes per poll (the Watcher takes 500)
 MAX_OUT_EVENTS = 3900  # events per poll (the Watcher takes 5000; one record adds <= 1001)
@@ -348,6 +358,7 @@ class Live:
     auto_name: bool
     alive: bool
     sure: bool = True  # the process's start time was known (so a reused pid would show)
+    entry: str = ""  # review-fix: B2 4 (the session file's "entrypoint")
 
 
 # ---------------------------------------------------------------- the reader
@@ -382,6 +393,12 @@ class ClaudeCodeReader:
         self._done: dict[str, tuple] = {}  # subagent log -> (mtime_ns, size) when read to end
         self._touched: set[str] = set()  # subagents whose files changed this poll
         self.read_bytes = 0  # bytes read by the last poll (for tests and measurements)
+        # --- review-fix: B2 2 --- with private folders: titles read before their session's
+        # folder is known wait here (memory only), record id -> (session, field -> (text, read
+        # as history)); the session files' folders of this poll
+        self._unsure: dict[str, tuple[str, dict[str, tuple[str, bool]]]] = {}
+        self._live_cwd: dict[str, str] = {}
+        # --- end review-fix: B2 2 ---
 
     # ------------------------------------------------------------ poll
     def poll(self, state: dict, now: datetime, budget: Budget | None = None) -> Batch:
@@ -399,6 +416,7 @@ class ClaudeCodeReader:
 
         self._touched = set()
         lives = self._read_sessions()
+        self._live_cwd = {sid: live.cwd for sid, live in lives.items() if live.cwd}  # B2 2
         full = self._scan_due(lives)
         if full:
             self._scan(now)
@@ -447,6 +465,7 @@ class ClaudeCodeReader:
             ses = mains.get(sid)
             if ses and ses.get("bf") is not None and budget.allow():
                 self._backfill(sid, ses, back, budget, salt)
+        self._settle_titles(mains, subs)  # review-fix: B2 2
 
         batch = Batch()
         cut = False
@@ -468,6 +487,7 @@ class ClaudeCodeReader:
 
         if full:
             self._prune(mains, subs, cursors, back, lives)
+        self._settle_titles(mains, subs)  # review-fix: B2 2 (emitting may have found folders)
         self.read_bytes = left - budget.left
         # --- L4-fix: catch-up --- behind: the Watcher ticks faster (and reads more) until not
         self._sub_lag = sub_lag
@@ -532,7 +552,7 @@ class ClaudeCodeReader:
                     started=iso(started) if started else None,
                     cwd=folder_path(doc.get("cwd")), name=_text(doc.get("name")),
                     auto_name=doc.get("nameSource") in (None, "auto"), alive=alive,
-                    sure=start is not None)
+                    sure=start is not None, entry=_text(doc.get("entrypoint"), 40))
 
     # ------------------------------------------------------------ finding logs
     def _scan_due(self, lives: Mapping[str, Live]) -> bool:
@@ -761,7 +781,8 @@ class ClaudeCodeReader:
                     sub["fin"] = 1 if doc.get("finished") is True else 0
                     sub["ty"] = _text(doc.get("agentType"), 64)
                     if self.titles == "session":  # fix-PRIV: else no task text is kept
-                        sub["ti"] = _text(doc.get("description"), 120) or sub["ty"]
+                        self._keep_title(sid, sub, "ti",  # review-fix: B2 2
+                                         _text(doc.get("description"), 120) or sub["ty"])
                     tool = doc.get("toolUseId")  # the parent's call that launched it
                     if isinstance(tool, str) and tool:
                         sub["tu"] = tool[:128]
@@ -850,14 +871,17 @@ class ClaudeCodeReader:
         cwd = doc.get("cwd")
         if cwd_into and isinstance(cwd, str) and folder_path(cwd):
             self._cwd.setdefault(sid, folder_path(cwd))
+        entry = doc.get("entrypoint")  # review-fix: B2 4 (how the session was started)
+        if cwd_into and isinstance(entry, str) and entry:
+            ses["ep"] = _text(entry, 40)
         if kind in ("custom-title", "ai-title", "agent-name"):
             field, value = {"custom-title": ("ct", doc.get("customTitle")),
                             "ai-title": ("ai", doc.get("aiTitle")),
                             "agent-name": ("an", doc.get("agentName"))}[kind]
             text = _text(value, 200)
             # fix-PRIV: with titles = "folder" no session title is kept, not even in the state
-            if text and self.titles == "session" and (not history or not ses.get(field)):
-                ses[field] = text
+            if text and self.titles == "session":
+                self._keep_title(sid, ses, field, text, history=history)  # review-fix: B2 2
             return
         message = doc.get("message")
         content = message.get("content") if isinstance(message, dict) else None
@@ -1079,6 +1103,75 @@ class ClaudeCodeReader:
         """fix2-PRIV: ``cwd`` is in or under a private folder."""
         return bool(self.private) and hidden(self.private, cwd)
 
+    # --- review-fix: B2 2 ---
+    def _folder_of(self, sid: str) -> str:
+        """The session's folder as known now (its session file's, else its log's), or ``""``."""
+        return self._live_cwd.get(sid) or self._cwd.get(sid, "")
+
+    def _keep_title(self, sid: str, rec: dict, field: str, text: str, *,
+                    history: bool = False) -> None:
+        """Keep a title of session ``sid`` (or one of its subagents: ``rec``) in the saved
+        state, unless the session is in a private folder. With private folders and the folder
+        not known yet, it waits in memory (:meth:`_settle_titles`). History only fills a title
+        that is missing; a live line replaces it."""
+        if not text:
+            rec[field] = text
+            return
+        if self.private:
+            cwd = self._folder_of(sid)
+            if not cwd:
+                key = str(rec.get("id"))
+                fields = self._unsure.setdefault(key, (sid, {}))[1]
+                if not history or field not in fields:
+                    fields[field] = (text, history)
+                return
+            if self._private(cwd):
+                rec.pop(field, None)
+                return
+        if not history or not rec.get(field):
+            rec[field] = text
+
+    def _settle_titles(self, mains: dict, subs: dict) -> None:
+        """Titles waiting for their session's folder go into the state once it is known and
+        not private (else they are dropped); and no session in a private folder keeps a title
+        in the state (one an older run saved, too)."""
+        for key, (sid, fields) in list(self._unsure.items()):
+            # found again by id: the Watcher hands each poll a copy of the saved state
+            main = mains.get(sid)
+            rec = main if isinstance(main, dict) and main.get("id") == key else next(
+                (v for k, v in subs.items() if k.startswith(f"{sid}/") and isinstance(v, dict)
+                 and v.get("id") == key), None)
+            if rec is None:
+                del self._unsure[key]  # forgotten (pruned)
+                continue
+            cwd = self._folder_of(sid)
+            if not cwd:
+                continue
+            del self._unsure[key]
+            if self._private(cwd):
+                continue
+            for field, (text, history) in fields.items():
+                if not history or not rec.get(field):
+                    rec[field] = text
+        if not self.private:
+            return
+        for sid, ses in mains.items():
+            if self._private(self._folder_of(sid)):
+                for field in FOLDER_DROPS:
+                    ses.pop(field, None)
+        for key, sub in subs.items():
+            if self._private(self._folder_of(key.split("/", 1)[0])):
+                sub.pop("ti", None)
+
+    @staticmethod
+    def _kind(ses: dict | None, live: Live | None) -> str:
+        """review-fix: B2 4: ``job`` for a headless run (``entrypoint`` ``sdk-*``), else
+        ``task``."""
+        entry = (live.entry if live is not None and live.entry else "") or (
+            ses.get("ep") if ses and isinstance(ses.get("ep"), str) else "")
+        return "job" if entry.startswith(HEADLESS) else "task"
+    # --- end review-fix: B2 2 ---
+
     def _title(self, ses: dict, live: Live | None, cwd: str) -> str:
         """The session's title, or with ``titles = "folder"`` its project folder's name only
         (Claude Code writes its titles from your first message). Never a home folder's name.
@@ -1126,7 +1219,7 @@ class ClaudeCodeReader:
         # never back in time: a record this reader wrote later would hold the change back
         at = ses["la"] = _later(at, ses.get("la"))
         change: dict[str, Any] = {
-            "id": ses["id"], "at": at, "agent": AGENT, "kind": "task",
+            "id": ses["id"], "at": at, "agent": AGENT, "kind": self._kind(ses, live),  # B2 4
             "title": self._title(ses, live, cwd), "state": state, "message": message,
             "needs_you": [{"text": message}] if state == "waiting" else None,
             "stale_after": stale,
@@ -1175,7 +1268,8 @@ class ClaudeCodeReader:
             sub.pop("ti", None)  # fix-PRIV: a task title an older run kept
         title = sub.get("ti") if self.titles == "session" else sub.get("ty")
         change: dict[str, Any] = {
-            "id": sub["id"], "at": last or iso(now), "agent": AGENT, "kind": "task",
+            "id": sub["id"], "at": last or iso(now), "agent": AGENT,
+            "kind": self._kind(parent, live),  # review-fix: B2 4 (its session's kind)
             "title": title or "Subagent", "state": state, "message": message,
             "started": sub["t0"], "stale_after": stale,
             "x-parent": sub.get("pa") or parent["id"],

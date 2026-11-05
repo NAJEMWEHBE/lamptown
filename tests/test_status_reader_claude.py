@@ -7,6 +7,7 @@ Every log line here is invented. An autouse guard fails any test that touches th
 from __future__ import annotations
 
 import builtins
+import copy
 import io
 import json
 import os
@@ -144,10 +145,11 @@ class Tree:
 
     def session(self, status: str = "busy", *, pid: int = PID, sid: str = SID,
                 since: float = 0, started: float = -600, name: str = "",
-                source: str = "auto", proc_start: str | None = None) -> Path:
+                source: str = "auto", proc_start: str | None = None,
+                entrypoint: str = "cli") -> Path:
         doc = {"pid": pid, "sessionId": sid, "cwd": CWD, "startedAt": ms(started),
                "procStart": proc_start or "1", "version": "9.9.9", "kind": "interactive",
-               "entrypoint": "cli", "name": name, "nameSource": source, "status": status,
+               "entrypoint": entrypoint, "name": name, "nameSource": source, "status": status,
                "updatedAt": ms(since), "statusUpdatedAt": ms(since)}
         path = self.root / "sessions" / f"{pid}.json"
         path.write_text(json.dumps(doc), encoding="utf-8")
@@ -439,8 +441,21 @@ def test_process_info_on_this_machine(monkeypatch):
     if start is not None:
         assert start <= datetime.now(UTC).timestamp()
     assert cc.process_info(0) == (False, None) and cc.process_info(-1) == (False, None)
-    child = subprocess.Popen([sys.executable, "-c", "pass"])
-    child.wait()
+    # --- review-fix: B2 5 --- on the three OSes the reader supports the start time must be
+    # known (it is what catches a reused pid), and right: a child started just now
+    before = datetime.now(UTC).timestamp()
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        after = datetime.now(UTC).timestamp()
+        ok, start = cc.process_info(child.pid)
+        assert ok
+        if sys.platform in ("linux", "darwin", "win32"):
+            assert start is not None, "no start time for a live child process"
+            assert before - 2 <= start <= after + 2, (before, start, after)
+    finally:
+        child.kill()
+        child.wait()
+    # --- end review-fix: B2 5 ---
     assert cc.process_info(child.pid)[0] is False
 
 
@@ -1133,3 +1148,112 @@ def test_folder_titles_keep_no_session_title_in_the_saved_state(tree, procs):
     poll(reader_for(tree, titles="folder"), state2)
     assert "Secret" not in json.dumps(state2) and "secret" not in json.dumps(state2)
 # --- end fix-PRIV ---
+
+
+# --- review-fix: B2 2 --- a private session whose log takes several polls to read keeps no
+# title in the saved state on any of them (the title line comes before any line with a cwd)
+PRIVATE_TITLE = "Harbour deal"
+
+
+def _catch_up(tree: Tree, polls: int = 4, **kw) -> tuple[cc.ClaudeCodeReader, dict, list]:
+    reader = reader_for(tree, **kw)
+    state: dict = {}
+    seen = []
+    for _ in range(polls):
+        state = copy.deepcopy(state)  # the Watcher hands each poll a copy of the saved state
+        agents, _ = poll(reader, state, budget=Budget(total=128 * 1024, per_file=128 * 1024))
+        seen.append((json.dumps(state), agents))
+    return reader, state, seen
+
+
+def _long_history(tree: Tree, *, cwd_late: bool = False) -> None:
+    filler = [assistant(-600 + i * 0.01, stop="end_turn") for i in range(3000)]
+    # cwd_late: the first 200 KB after the titles say nothing of the folder
+    early = [{"type": "progress", "timestamp": ts(-700), "data": "x" * 200}
+             for _ in range(1000)] if cwd_late else []
+    tree.write(title("custom-title", PRIVATE_TITLE), title("ai-title", "Tide plan"), *early,
+               *filler)
+    tree.sub("a1", prompt(-80), finished=True, description="Read the harbour contract")
+    _old(tree.log())
+    assert tree.log().stat().st_size > 3 * 128 * 1024
+
+
+def test_b2_a_private_session_caught_up_over_polls_saves_no_title(tree, procs):
+    _long_history(tree)
+    reader, state, seen = _catch_up(tree, polls=8, private_dirs=[str(Path(CWD).parent)])
+    for saved, _agents in seen:
+        for words in (PRIVATE_TITLE, "Tide plan", "harbour contract"):
+            assert words not in saved
+    assert not reader.behind
+    sent = [a for _, agents in seen for a in agents.values()]
+    assert sent and all(a["title"] in (cc.DISPLAY, "Subagent") for a in sent)
+
+
+def test_b2_a_public_session_caught_up_over_polls_keeps_its_title(tree, procs):
+    _long_history(tree)
+    reader, _state, seen = _catch_up(tree, polls=8, private_dirs=["/elsewhere/hidden"])
+    assert not reader.behind
+    titles = {a["id"]: a["title"] for _, agents in seen for a in agents.values()}
+    assert titles[MAIN] == PRIVATE_TITLE
+    assert titles[cc.sub_id(SID, "a1")] == "Read the harbour contract"
+
+
+@pytest.mark.parametrize("private", [True, False])
+def test_b2_a_title_read_before_its_folder_waits_across_polls(tree, procs, private):
+    _long_history(tree, cwd_late=True)
+    hidden = str(Path(CWD).parent) if private else "/elsewhere/hidden"
+    reader, state, seen = _catch_up(tree, polls=10, private_dirs=[hidden])
+    assert not reader.behind
+    titles = {a["id"]: a["title"] for _, agents in seen for a in agents.values()}
+    if private:
+        assert all(PRIVATE_TITLE not in saved and "Tide plan" not in saved
+                   for saved, _agents in seen)
+        assert titles[MAIN] == cc.DISPLAY
+    else:
+        assert titles[MAIN] == PRIVATE_TITLE and PRIVATE_TITLE in json.dumps(state)
+
+
+def test_b2_a_title_saved_by_an_older_run_goes_at_the_next_poll(tree, procs):
+    _long_history(tree)
+    _reader, state, _seen = _catch_up(tree, polls=8)  # no private folders: titles kept
+    assert PRIVATE_TITLE in json.dumps(state)
+    reader = reader_for(tree, private_dirs=[str(Path(CWD).parent)])
+    poll(reader, state)
+    assert PRIVATE_TITLE not in json.dumps(state)
+    assert "harbour contract" not in json.dumps(state)
+# --- end review-fix: B2 2 ---
+
+
+# --- review-fix: B2 4 --- headless runs (claude -p, Agent SDK scripts) are jobs: the tower
+def test_b4_a_print_mode_session_is_a_job(tree, procs, tmp_path):
+    from lamptown.status.watch import default_plot
+
+    alive(procs)
+    tree.session("busy", entrypoint="sdk-cli")
+    tree.write(prompt(-100), assistant(-90, use("b1", "Bash", command="make")))
+    agents, _ = poll(reader_for(tree), {})
+    assert agents[MAIN]["kind"] == "job"
+    status = tmp_path / "status"
+    with Watcher(status, [reader_for(tree)], tz=UTC) as w:
+        w.tick(T0)
+    doc = read_status(status_path(MAIN, status))
+    assert doc["kind"] == "job" and default_plot(doc) == "tower"
+
+
+def test_b4_an_sdk_log_without_session_file_is_a_job_and_its_subagents_too(tree, procs):
+    tree.write({**prompt(-100), "entrypoint": "sdk-ts"},
+               {**assistant(-90, use("ag", "Agent", prompt="x")), "entrypoint": "sdk-ts"})
+    tree.sub("a1", prompt(-80), finished=True)
+    agents, _ = poll(reader_for(tree), {})
+    assert agents[MAIN]["kind"] == "job"
+    assert agents[cc.sub_id(SID, "a1")]["kind"] == "job"
+
+
+@pytest.mark.parametrize("entry", ["cli", "claude-desktop", "claude-vscode", "t3-code", ""])
+def test_b4_interactive_sessions_stay_tasks(tree, procs, entry):
+    alive(procs)
+    tree.session("busy", entrypoint=entry)
+    tree.write({**prompt(-100), "entrypoint": entry or "cli"})
+    agents, _ = poll(reader_for(tree), {})
+    assert agents[MAIN]["kind"] == "task"
+# --- end review-fix: B2 4 ---

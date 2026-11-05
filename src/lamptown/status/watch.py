@@ -12,8 +12,10 @@ One :meth:`Watcher.tick` (the app calls it every few seconds; ``lamptown watch``
    unchanged record, once a ``heartbeat`` has passed, so a live agent doesn't read as stopped).
    A record written by someone else (a hook) at or after the change's ``at`` keeps its state
    and names: only counters (the larger count wins) and the ``x-`` fields hooks never write
-   are merged in. A reader that raises is reported in :attr:`TickResult.errors` and its state
-   is rolled back; the others still run.
+   are merged in. That decision is checked against the record read again right before the
+   write (a hook that wrote in between is decided against again), and the whole record is
+   written at once. A reader that raises is reported in :attr:`TickResult.errors` and its
+   state is rolled back; the others still run.
 2. **Folder diff.** The whole status folder is compared with the last tick's snapshot, so every
    state change becomes an event, whoever wrote it: a reader, a hook or a ``status run``
    wrapper. Unchanged files are only ``stat``-ed. Time-based states count as well: a
@@ -64,7 +66,9 @@ collector's masked id (``private-`` + a hash of the status folder and the id), s
 never reach the log and L3 can link a masked live record to its history. A reader event with
 no status record and no ``folder`` can't be checked, so with ``private_dirs`` set it is masked.
 Readers that keep private folders of their own (``git``, ``ci_gh``) get these too
-(:func:`share_private`).
+(:func:`share_private`). The saved state keeps a hash of these rules: when they change (a folder
+made private, or public again), every record is read again, and the projects seen and the open
+``files`` counts of a record that is private now lose its names.
 """
 
 from __future__ import annotations
@@ -105,6 +109,7 @@ from lamptown.status.readers.tail import Budget
 from lamptown.status.schema import parse_time, validate
 from lamptown.status.store import (
     DEFAULT_STALE_AFTER,
+    SPEC,
     StatusBusy,
     StatusError,
     atomic_write_json,
@@ -114,7 +119,6 @@ from lamptown.status.store import (
     read_status,
     safe_reason,
     status_path,
-    update_status,
     utcnow,
 )
 
@@ -133,6 +137,7 @@ STATE_EVENT = {"waiting": "wait", "ok": "done", "error": "fail", "quiet": "quiet
 HOLD_TICKS = 5  # a change for a record that can't be read is tried again this many ticks
 MAX_TIDY = 200  # own expired records looked at for removal per tick, at most
 # --- end release-fix: ENG ---
+RACE_TRIES = 3  # review-fix: B2 3 (a record rewritten while the Watcher decides it, at most)
 # --- fix2: ENG 4 --- no tidying on a tick this long after the last finished one (or on the
 # first tick of a run): the clock may have jumped, and a jump must never remove a fresh record
 TIDY_GAP = timedelta(hours=1)
@@ -178,7 +183,7 @@ class TickResult:
 
 def _fresh_state() -> dict:
     return {"v": STATE_VERSION, "readers": {}, "folder": None, "pending": {}, "flushed": {},
-            "projects": [], "pruned": "", "wrote": {}, "recent": {}}
+            "projects": [], "pruned": "", "wrote": {}, "recent": {}, "pr": ""}
 
 
 def _scrubbed(value: Any) -> Any:
@@ -213,6 +218,16 @@ def _flag(value: Any) -> Any:
 def _digest(doc: Mapping[str, Any]) -> str:
     text = json.dumps(doc, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
     return hashlib.sha256(text.encode("ascii")).hexdigest()
+
+
+# --- review-fix: B2 3 ---
+def _compose(sid: str, body: Mapping[str, Any], when: datetime) -> dict:
+    """The whole record to write: ``body`` under the head ``update_status`` writes (``spec``,
+    ``id``, ``title`` (the id when none), ``state`` (``working`` when none), ``updated``)."""
+    head = {"spec": SPEC, "id": sid, "title": body.get("title", sid),
+            "state": body.get("state", "working"), "updated": iso(when)}
+    return {**head, **{k: v for k, v in body.items() if k not in head}}
+# --- end review-fix: B2 3 ---
 
 
 def _takes_budget(poll: Callable) -> bool:
@@ -398,6 +413,11 @@ class Watcher:
             share_private(reader, self.private_roots)
         # --- end fix2 ---
         self._keys, self._adopt = _state_keys(self.readers)  # pr1-review: one state each
+        # --- review-fix: B2 1 --- a hash of the privacy rules (no path on disk): the saved
+        # snapshot was made under these; other rules rebuild it from the files
+        self._rules = hashlib.sha256(
+            json.dumps(sorted(self.private_roots)).encode("utf-8")).hexdigest()[:16]
+        # --- end review-fix: B2 1 ---
 
     # ------------------------------------------------------------ lock
     def _lock(self) -> str | None:
@@ -466,8 +486,14 @@ class Watcher:
     def __enter__(self) -> Watcher:
         return self
 
-    def __exit__(self, *exc: object) -> None:
-        self.close()
+    def __exit__(self, kind: object, *exc: object) -> None:
+        # review-fix: B2 6 --- the with-body's own error comes first: a failed save in close()
+        # (the folder is still let go) must not replace it; on a clean exit it is raised
+        if kind is None:
+            self.close()
+            return
+        with contextlib.suppress(Exception):
+            self.close()
 
     def __del__(self) -> None:
         with contextlib.suppress(Exception):
@@ -490,7 +516,7 @@ class Watcher:
         state = _fresh_state()
         for key, kind in (("readers", dict), ("folder", dict), ("pending", dict),
                           ("flushed", dict), ("projects", list), ("pruned", str),
-                          ("wrote", dict), ("recent", dict)):
+                          ("wrote", dict), ("recent", dict), ("pr", str)):
             if isinstance(doc.get(key), kind):
                 state[key] = doc[key]
         state["wrote"] = {k: v for k, v in state["wrote"].items()
@@ -698,12 +724,44 @@ class Watcher:
                 self._hold(orig, tries, result)
                 return
             doc = None
+        # --- end release-fix: ENG ---
+        # --- review-fix: B2 3 (hook race) --- the decision holds only for the record it was
+        # made on. It is written as one whole document (no second merge into whatever is there
+        # by then), after reading the record once more right before the write: a hook that
+        # wrote in between (a newer "waiting") is decided against again, so its state wins. A
+        # record that keeps changing is tried again next tick.
+        for _ in range(RACE_TRIES):
+            out, ours, held = self._plan(sid, change, at, doc)
+            if out is None:
+                if held:
+                    result.kept.append(sid)
+                return
+            try:
+                again = read_existing(path)
+            except StatusBusy:  # it couldn't be read between our read and the write
+                if not force:
+                    self._hold(orig, tries, result)
+                    return
+                again = doc  # held long enough: a still unreadable file is replaced
+            if again != doc:
+                doc = again  # someone wrote it just now: decide again against what is there
+                continue
+            if held:
+                result.kept.append(sid)  # the record was written after the reader's source
+            self._write(sid, path, out, result, ours=ours)
+            return
+        self._hold(orig, tries, result)
+
+    def _plan(self, sid: str, change: dict, at: datetime,
+              doc: dict | None) -> tuple[dict | None, bool, bool]:
+        """What to write for a reader's change into the record ``doc`` (as read, ``None``: no
+        file): (the whole document or ``None`` for no write, whether it is this Watcher's own
+        write, whether a guarded field was held back because the record is newer)."""
         old = doc if doc is not None and not validate(doc) else None
         if old is None:
-            self._write(sid, {k: v for k, v in change.items() if v is not None}, at, result,
-                        ours=True, orig=orig, tries=tries)
-            return
-        # --- end release-fix: ENG ---
+            return _compose(sid, {k: v for k, v in change.items() if v is not None}, at), True, \
+                False
+        # --- end review-fix: B2 3 ---
         updated = parse_time(old.get("updated"))
         raw = {k: v for k, v in old.items() if k != "updated"}
         # a hook may have written a lone surrogate (JSON allows "\ud83d"; UTF-8 does not): the
@@ -729,30 +787,22 @@ class Watcher:
                 merged.pop(key, None)
             else:
                 merged[key] = value
-        if held:
-            result.kept.append(sid)  # the record was written after the reader's source
         fresh = updated is not None and at - updated < timedelta(seconds=self.heartbeat)
         if merged == base and (not newer or fresh):
-            return  # nothing to merge, and no heartbeat due
-        diff = {k: merged.get(k) for k in set(raw) | set(merged) if raw.get(k) != merged.get(k)}
+            return None, ours, held  # nothing to merge, and no heartbeat due
         if newer:
-            self._write(sid, diff, at, result, ours=True, orig=orig, tries=tries)
-        else:  # counters and x- fields only: the record keeps its writer's time
-            self._write(sid, diff, updated or at, result, ours=False, orig=orig, tries=tries)
+            return _compose(sid, merged, at), True, held
+        # counters and x- fields only: the record keeps its writer's time
+        return _compose(sid, merged, updated or at), False, held
 
-    def _write(self, sid: str, changes: dict, when: datetime, result: TickResult, *,
-               ours: bool, orig: dict | None = None, tries: int = 0) -> None:
-        # --- release-fix: ENG (engine 4, privacy 5) ---
-        hold = orig is not None and tries < HOLD_TICKS
+    def _write(self, sid: str, path: Path, doc: dict, result: TickResult, *,
+               ours: bool) -> None:
+        # --- release-fix: ENG (engine 4, privacy 5); review-fix: B2 3 (one whole document) ---
         try:
-            doc = update_status(sid, self.dir, now=when, replace_unreadable=not hold,
-                                **changes)
-        except StatusBusy:  # it couldn't be read between our read and the write: next tick
-            if orig is not None and hold:
-                self._hold(orig, tries, result)
-            else:
-                result.errors.append(f"status {sid}: can't be read")
-            return
+            problems = validate(doc)
+            if problems:
+                raise StatusError("; ".join(problems))
+            atomic_write_json(path, doc)
         except (OSError, ValueError) as exc:  # StatusError, UnicodeError
             result.errors.append(f"status {sid}: {safe_reason(exc)}"[:200])
             return
@@ -865,6 +915,11 @@ class Watcher:
         new: dict[str, dict] = {}
         out: list[dict] = []
         self._tidied = 0  # release-fix: ENG (engine 2)
+        # --- review-fix: B2 1 --- the privacy rules changed since this snapshot was taken
+        # (a folder added to private_dirs, or taken out): its names and private marks are
+        # out of date, so every record is read again, not only the changed ones
+        rebuild = not first and state.get("pr") != self._rules
+        # --- end review-fix: B2 1 ---
         for path in paths:
             if path.suffix != ".json" or path.name.startswith("."):
                 continue
@@ -876,7 +931,7 @@ class Watcher:
                 st = None
             # the file id too: a rewrite of the same size within a coarse mtime still shows
             sig = [st.st_mtime_ns, st.st_size, st.st_ino or 0] if st else None
-            if prev is not None and sig is not None and prev.get("m") == sig:
+            if prev is not None and sig is not None and prev.get("m") == sig and not rebuild:
                 # --- release-fix: ENG (engine 2) --- asleep and unchanged: an own record past
                 # its removal time goes (in this same scan). An entry saved before 0.2's fix has
                 # no "u": an own one is read once more to learn its time.
@@ -896,7 +951,7 @@ class Watcher:
                     # unreadable for now (a writer mid-replace on Windows) or broken: keep
                     # what we knew, unchanged, so it isn't "new" again once it reads
                     if prev is not None:
-                        new[path.stem] = prev
+                        new[path.stem] = self._unsure(prev) if rebuild else prev
                     continue
             state_now, when = self._effective(entry, now)
             entry["s"] = state_now
@@ -915,8 +970,59 @@ class Watcher:
             new[path.stem] = kept
             # --- end release-fix: ENG ---
         state["folder"] = new
+        # --- review-fix: B2 1 ---
+        if rebuild:
+            self._rules_changed(state, old, new)
+        state["pr"] = self._rules
+        # --- end review-fix: B2 1 ---
         out.extend(self._new_projects(state, new, now, announce=not first))
         return out
+
+    # --- review-fix: B2 1 ---
+    def _unsure(self, prev: dict) -> dict:
+        """A snapshot entry that couldn't be read again under new privacy rules: no names, private
+        while any folder is, and read again next tick (no signature)."""
+        return {**prev, "m": None, "ti": "", "p": "",
+                "pv": bool(self.private_roots) or bool(prev.get("pv"))}
+
+    def _rules_changed(self, state: dict, old: dict, new: dict) -> None:
+        """After a rebuild under new privacy rules: the saved state keeps no name of a record
+        that is private now. Its project leaves the projects seen, and the ``files`` counts
+        still open for it are masked (and keyed by the masked id), as if it had always been
+        private. A count for an agent with no record is masked while any folder is private (it
+        can't be checked). Names of a record that is no longer private come back from its file."""
+        gone = set()
+        for sid, entry in new.items():
+            before = old.get(sid)
+            if entry.get("pv") and isinstance(before, dict) and not before.get("pv"):
+                gone.update(n for n in (before.get("p"), before.get("kd") == "project"
+                                        and before.get("ti")) if isinstance(n, str) and n)
+        if gone:
+            state["projects"] = [n for n in state["projects"] if n not in gone]
+        pending: dict = state["pending"]
+        flushed: dict = state.setdefault("flushed", {})
+        for key in list(pending):
+            event = pending[key]
+            sid = event.get("id") if isinstance(event, dict) else None
+            if not isinstance(sid, str):
+                continue
+            entry = new.get(sid)
+            if entry is None and sid.startswith("private-"):
+                continue  # masked when it was counted
+            if not (entry.get("pv") if entry else bool(self.private_roots)):
+                continue
+            masked = self._mask(event)
+            minute = key.rpartition("|")[2]
+            del pending[key]
+            mkey = f"{masked['id']}|{minute}"
+            if mkey in pending:
+                pending[mkey]["n"] = pending[mkey].get("n", 0) + masked.get("n", 1)
+            else:
+                pending[mkey] = masked
+            if sid in flushed:
+                last = flushed.pop(sid)
+                flushed[masked["id"]] = max(last, flushed.get(masked["id"], ""))
+    # --- end review-fix: B2 1 ---
 
     # --- release-fix: ENG (engine 2) ---
     def _tidy(self, path: Path, entry: dict, sig: list[int] | None, now: datetime) -> bool:

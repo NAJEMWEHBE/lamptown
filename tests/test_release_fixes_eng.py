@@ -331,8 +331,6 @@ def test_watcher_error_lines_carry_no_path(tmp_path, monkeypatch):
 
     def denied(*a, **k):
         raise PermissionError(13, "Permission denied", SECRET)
-
-    monkeypatch.setattr(watch_mod, "update_status", denied)
     monkeypatch.setattr(watch_mod, "atomic_write_json", denied)
     reader.agents = [{"id": SID, "at": T0, "title": "Trim", "state": "working"}]
     result = w.tick(T0 + timedelta(seconds=3))

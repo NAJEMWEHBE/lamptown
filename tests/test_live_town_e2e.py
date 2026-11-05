@@ -121,7 +121,7 @@ class Codex:
         self.t = start
         jsonl(self.path, {"timestamp": z(start), "type": "session_meta", "payload": {
             "id": self.sid, "session_id": self.sid, "cwd": str(cwd), "timestamp": z(start),
-            "source": "exec", "originator": "codex_exec", "cli_version": "0.0.0",
+            "source": "vscode", "originator": "codex_vscode", "cli_version": "0.0.0",
             "base_instructions": {"text": "Be helpful."}}})
 
     @property

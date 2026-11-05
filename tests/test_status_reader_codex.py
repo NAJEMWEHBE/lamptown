@@ -149,7 +149,8 @@ def test_every_state_from_the_rollout_signals(root):
     reader, state = CodexReader(root=root), {}
 
     a = one(poll(reader, state))  # only the session_meta line: started, idle
-    assert a["id"] == aid(1) and a["agent"] == "codex" and a["kind"] == "task"
+    assert a["id"] == aid(1) and a["agent"] == "codex"
+    assert a["kind"] == "job"  # review-fix: B2 4 (the fixture's source is "exec")
     assert (a["state"], a["message"]) == ("ok", "Session started")
     assert a["title"] == "paper-kite" and a["x-project"] == "paper-kite"
     assert a["x-folder"] == CWD and a["started"] == codex_mod.iso(T0) and a["needs_you"] == []
@@ -888,3 +889,25 @@ def test_an_older_database_without_created_at_still_finds_them(root, monkeypatch
     assert [a["id"] for a in poll(reader, state).agents] == [aid(42)]
     assert seen == []
 # --- end W2-left-fix ---
+
+
+# --- review-fix: B2 4 --- `codex exec` runs (source "exec") are jobs: the tower
+@pytest.mark.parametrize(("source", "kind"), [("exec", "job"), ("vscode", "task"),
+                                              ("cli", "task"), ("mcp", "task")])
+def test_b4_exec_sessions_are_jobs(root, source, kind):
+    Session(root, 1, source=source).started()
+    a = one(poll(CodexReader(root=root), {}))
+    assert a["kind"] == kind
+
+
+def test_b4_an_exec_session_walks_to_the_tower(root, tmp_path):
+    from lamptown.status.watch import default_plot
+
+    Session(root, 1, source="exec").started()
+    Session(root, 2, source="vscode").started()
+    status = tmp_path / "status"
+    with Watcher(status, [CodexReader(root=root)], tz=UTC) as w:
+        w.tick(NOW)
+    assert default_plot(read_status(status_path(aid(1), status))) == "tower"
+    assert default_plot(read_status(status_path(aid(2), status))) == "boathouse"
+# --- end review-fix: B2 4 ---

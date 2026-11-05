@@ -30,7 +30,8 @@ What it reads (all read-only):
   ``rollout_path`` of sessions started before the window, as above.)
 
 One rollout file is one session; its first line is ``session_meta`` (the thread ``id``,
-``cwd``, ``timestamp``, ``source``). The record id is the hook adapter's,
+``cwd``, ``timestamp``, ``source``; a ``source`` of ``exec``, a ``codex exec`` run, makes the
+record a ``job``: the tower; any other a ``task``). The record id is the hook adapter's,
 :func:`lamptown.status.adapters.codex.thread_id` (``codex-`` + the last 12 hex digits of the
 UUID: its random end, as UUIDv7 ids start with a millisecond clock), so hooks and this reader
 share one record (two sessions with the same id end get the full id instead). A line whose time
@@ -142,6 +143,7 @@ _TS_RE = re.compile(rb'"timestamp"\s*:\s*"([^"]{1,40})"')
 _TYPE_RE = re.compile(rb'"type"\s*:\s*"([A-Za-z_]{1,64})"')
 _ID_RE = re.compile(rb'"id"\s*:\s*"(' + _UUID.encode() + rb')"')
 _CWD_RE = re.compile(rb'"cwd"\s*:\s*' + _STR.encode())
+_EXEC_RE = re.compile(rb'"source"\s*:\s*"exec"')  # review-fix: B2 4
 _CHANGES_RE = re.compile(rb'"changes"\s*:\s*\{\s*' + _STR.encode() + rb"\s*:")
 _PATCH_RE = re.compile(r"^\*\*\* (?:Add|Update|Delete) File: (.+?)\s*$|^\*\*\* Move to: (.+?)\s*$",
                        re.MULTILINE)
@@ -407,6 +409,7 @@ class CodexReader:
             source, thread_source = pl.get("source"), pl.get("thread_source")
             meta["par"] = _spawn_parent(source)
             meta["ig"] = thread_source == "guardian_review" or _guardian(source)
+            meta["job"] = source == "exec"  # review-fix: B2 4 (`codex exec`: headless, a job)
         else:  # a huge first line: what a regex finds in its head
             if not _TYPE_RE.search(line[:4096]) or b"session_meta" not in line[:4096]:
                 return None
@@ -417,6 +420,7 @@ class CodexReader:
             ts = _TS_RE.search(line)
             start = _when(ts.group(1).decode("ascii", "replace")) if ts else None
             meta["par"], meta["ig"] = "", b"guardian" in line[:META_HEAD]
+            meta["job"] = _EXEC_RE.search(line[:META_HEAD]) is not None  # review-fix: B2 4
         if not meta["sid"] and name_id:
             meta["sid"] = name_id.group(1)
         if not meta["sid"]:
@@ -539,6 +543,8 @@ class CodexReader:
         s: dict[str, Any] = {"sid": sid, "id": aid, "p": project_folder(meta["cwd"])[:80],
                              "st": None, "at": meta["start"], "start": meta["start"],
                              "par": meta["par"] or "", "fh": [], "hw": 0}
+        if meta.get("job"):
+            s["jb"] = 1  # review-fix: B2 4
         if meta["ig"]:
             s["ig"] = 1
         return s
@@ -665,7 +671,8 @@ class CodexReader:
         st = s.get("st") or "ok"  # a session with no turn yet: started, idle
         msg = s.get("msg") if s.get("st") else "new"
         change: dict[str, Any] = {
-            "id": s["id"], "at": s.get("at") or None, "agent": AGENT, "kind": "task",
+            "id": s["id"], "at": s.get("at") or None, "agent": AGENT,
+            "kind": "job" if s.get("jb") else "task",  # review-fix: B2 4
             "title": s.get("ti") or s.get("p") or DISPLAY, "state": st,
             "message": MESSAGES.get(str(msg), MESSAGES["working"]),
             "needs_you": list(NEED) if st == "waiting" else [],
