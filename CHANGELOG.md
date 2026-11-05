@@ -16,11 +16,17 @@ Fixes from a whole-project review: privacy gaps closed, crashes fixed, idle room
   and need, even in a status file written by hand.
 - When a folder becomes private, the Watcher reads every record again. Saved projects, the event
   log, `town-history.js` and open-file counts drop its names, and private sessions keep no titles
-  in saved state.
+  in saved state. A build run before the Watcher's next pass masks that history too.
+- A private agent shows only a known tool word (claude, codex, ...), never its free-text `agent`
+  field. Making a folder private keeps the history of public git repos the config can place.
+- A home folder in `/var/home`, `/export/home`, `Documents and Settings` or network-share form
+  never names a project, and project names lose e-mail addresses and secrets.
 - The skill shelf's padlock tip names the folder, never its path.
 - Secrets are masked in every title, message and room text: `token=...`, `Bearer ...`, JSON
-  (`"token": "..."`), secret flags (`--password ...`) and well-known token shapes (`ghp_`, `sk-`,
-  `xoxb-`, `AKIA`, `glpat-`). URL-encoded paths are cut like plain ones. The status `agent` field,
+  (`"token": "..."`), secret flags (`--password ...`, glued `-pSECRET`), `PASS=` values,
+  well-known token shapes (`ghp_`, `sk-`, `xoxb-`, `AKIA`, `glpat-`, `AIza`, `hf_`, `npm_`), JWTs
+  and PEM private keys, URL passwords, webhook paths and signed-link signatures. URL-encoded
+  paths are cut like plain ones. The status `agent` field,
   link labels, vault note names, project names and the harbour's newest commit subject get the
   same path, e-mail and secret cuts as titles.
 - A leak-hunter test plants made-up paths, e-mails, tokens and private titles in every input the
