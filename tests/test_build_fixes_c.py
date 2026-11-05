@@ -211,6 +211,10 @@ out["weekly"] = parse("weekly mon 03:00").next_after(now).isoformat()
 u = dt.datetime(2026, 11, 1, 9, 30, tzinfo=dt.UTC)  # 01:30 the second time (PST)
 back = u.astimezone(LOCAL)
 out["fold"] = [back.isoformat(), back.fold, back.astimezone(dt.UTC) == u]
+# does this OS show 01:30 twice that night? (some Linux zone data ends summer time earlier)
+import time
+walls = [time.localtime(x.timestamp())[3:5] for x in (u - dt.timedelta(hours=1), u)]
+out["twice"] = walls == [(1, 30)] * 2
 out["stamp"] = dt.datetime.fromtimestamp(u.timestamp(), tz=LOCAL).isoformat()
 print(json.dumps(out))
 '''
@@ -231,7 +235,8 @@ def test_schedules_follow_the_local_clock_across_a_clock_change(tmp_path):
         pytest.skip("this OS ignores TZ=PST8PDT, so there is no clock change to test")
     assert got["next"] == "2026-03-08T03:00:00-07:00"  # not -08:00 (the build day's offset)
     assert got["weekly"] == "2026-03-09T03:00:00-07:00"
-    assert got["fold"] == ["2026-11-01T01:30:00-08:00", 1, True]
+    # the second 01:30 has fold=1 where the OS repeats that hour; the instant always round-trips
+    assert got["fold"] == ["2026-11-01T01:30:00-08:00", int(got["twice"]), True]
     assert got["stamp"] == "2026-11-01T01:30:00-08:00"
 
 
