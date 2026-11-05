@@ -33,6 +33,25 @@ def _now(text: str) -> dt.datetime:
     return t if t.tzinfo else t.astimezone()
 
 
+# --- fix2: ENG (safe error lines) ---
+def _reason(e: BaseException) -> str:
+    """An error line's reason with no folder in it (``store.safe_reason``). A config error
+    starts with its file's path (".../lamptown.toml: town: ..."): that part is shown by
+    the file's name, so the line still says which key is wrong."""
+    from lamptown.status.store import safe_reason
+
+    if isinstance(e, OSError):
+        return safe_reason(e)
+    text = str(e).strip()
+    head, sep, rest = text.partition(": ")
+    if sep and ("/" in head or "\\" in head):
+        name = head.replace("\\", "/").rstrip("/").rpartition("/")[2]
+        text = f"{name}{sep}{rest}"
+    reason = safe_reason(ValueError(text))
+    return "it names a file or folder that can't be used" if reason == "ValueError" else reason
+# --- end fix2 ---
+
+
 def _add_build_args(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--config",
@@ -60,7 +79,7 @@ def _run_build(args: argparse.Namespace):
     try:
         config = load_config(args.config)
     except ConfigError as e:
-        print(f"lamptown: config problem: {e}", file=sys.stderr)
+        print(f"lamptown: config problem: {_reason(e)}", file=sys.stderr)
         return None, EXIT_CONFIG
     try:
         res = build(
@@ -70,7 +89,7 @@ def _run_build(args: argparse.Namespace):
             log=None if args.quiet else (lambda w: print(f"warning: {w}", file=sys.stderr)),
         )
     except OSError as e:
-        print(f"lamptown: can't write the town: {e}", file=sys.stderr)
+        print(f"lamptown: can't write the town: {_reason(e)}", file=sys.stderr)
         return None, EXIT_WRITE
     if not args.quiet:
         n = len(config.buildings)
@@ -135,7 +154,7 @@ def _watch(args: argparse.Namespace, *, open_page: bool) -> int:
     try:
         config = load_config(args.config)
     except ConfigError as e:
-        print(f"lamptown: config problem: {e}", file=sys.stderr)
+        print(f"lamptown: config problem: {_reason(e)}", file=sys.stderr)
         return EXIT_CONFIG
     if not config.live.enabled:
         print(LIVE_OFF, file=sys.stderr)

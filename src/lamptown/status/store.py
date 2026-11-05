@@ -34,6 +34,54 @@ class StatusError(ValueError):
     """A status file or a status change is not valid."""
 
 
+# --- release-fix: ENG (engine 4, privacy 5) ---
+class StatusBusy(StatusError):
+    """An existing status file can't be read right now (held open while a writer replaces it,
+    or half written by a writer that doesn't write atomically). Nothing was written."""
+
+
+READ_TRIES = 3  # an existing file that can't be read is read again this often ...
+READ_WAIT = 0.02  # ... this many seconds apart, before it counts as unreadable
+
+
+def read_existing(path: str | os.PathLike, *, tries: int = READ_TRIES,
+                  wait: float = READ_WAIT) -> dict | None:
+    """The document in ``path``, or ``None`` when there is no such file. A file that is there
+    but can't be read is tried ``tries`` times, then raises :class:`StatusBusy`."""
+    for attempt in range(max(1, tries)):
+        try:
+            return read_status(path)
+        except StatusError as exc:
+            if isinstance(exc.__cause__, FileNotFoundError):
+                return None  # gone (or never there): a new file
+            if attempt >= tries - 1:
+                raise StatusBusy(str(exc)) from exc
+        time.sleep(wait)
+    return None  # not reached
+
+
+_PATHISH = re.compile(r"[\\/~]")
+
+
+def safe_reason(exc: BaseException, *, typed: bool = False) -> str:
+    """A short reason for an error line that is safe to log or paste into an issue: an
+    ``OSError``'s ``strerror`` (never its file name), else the message's first line when it
+    holds nothing path-like, else nothing. ``typed`` puts the exception's type in front."""
+    name = type(exc).__name__
+    if isinstance(exc, OSError) and exc.strerror:
+        text = str(exc.strerror)
+    else:
+        lines = str(exc).strip().splitlines()
+        text = lines[0].strip() if lines else ""
+        if _PATHISH.search(text):
+            text = ""
+    text = text[:160]
+    if typed:
+        return f"{name}: {text}" if text else name
+    return text or name
+# --- end release-fix: ENG ---
+
+
 def utcnow() -> datetime:
     return datetime.now(UTC).replace(microsecond=0)
 
@@ -146,6 +194,7 @@ def update_status(
     directory: str | os.PathLike | None = None,
     *,
     now: datetime | None = None,
+    replace_unreadable: bool = True,
     **changes: Any,
 ) -> dict:
     """Merge ``changes`` into the existing file (if any) and write it back atomically.
@@ -153,16 +202,24 @@ def update_status(
     A change whose value is ``None`` removes that field. ``updated`` is set to ``now``.
     A new file gets ``title = id`` and ``state = "working"`` unless given. Returns the
     document that was written. Concurrent writers: last one wins, never a torn file.
+
+    An existing file that can't be read is read again a few times (:func:`read_existing`).
+    If it still can't be read, it is replaced (``replace_unreadable``, the default: a broken
+    file is fixed), or :class:`StatusBusy` is raised and nothing is written (the Watcher: a
+    record held open for a moment must not be rewritten with only the change).
     """
     path = status_path(status_id, directory)
     doc: dict = {}
-    if path.exists():
-        try:
-            old = read_status(path)
-            if not validate(old):
-                doc = old
-        except StatusError:
-            doc = {}
+    # --- release-fix: ENG (engine 4) ---
+    try:
+        old = read_existing(path)
+    except StatusBusy:
+        if not replace_unreadable:
+            raise
+        old = None
+    if old is not None and not validate(old):
+        doc = old
+    # --- end release-fix: ENG ---
     for key, value in changes.items():
         if value is None:
             doc.pop(key, None)

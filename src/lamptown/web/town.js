@@ -51,7 +51,7 @@ const AT_MS = (() => { const s = qs.get('at'); if (!s) return null; const d = ne
 const PAGE_T0 = performance.now();
 const clockNow = () => (AT_MS !== null ? AT_MS : D.fixedClock && D.builtIso ? new Date(D.builtIso).getTime() : Date.now());
 const nowMs = () => clockNow() + (AT_MS !== null || D.fixedClock ? performance.now() - PAGE_T0 : 0);
-const isApp = () => !!window.pywebview;   // inside the desktop app: always animate, label as live
+const isApp = () => !!window.pywebview;   // inside the desktop app: always animate
 const main = document.getElementById('c').getContext('2d');
 g = main;
 window.onerror = (m, s, l) => { const pre = document.createElement('pre');
@@ -926,7 +926,8 @@ function cornerBuilt() {
   if (DATA_ERR) return 'NO DATA';
   if (D.sample) return 'SAMPLE';
   if (LIVE.on) return 'LIVE';
-  return (isApp() ? 'LIVE - UPDATED ' : 'BUILT ') + String(D.built || '').toUpperCase().replace(/,/g, '');
+  // rr-fix corner: LIVE only on a fresh heartbeat, in the app too (docs/live.md): a stalled Watcher there says BUILT as well
+  return 'BUILT ' + String(D.built || '').toUpperCase().replace(/,/g, '');
 }
 function corner() {
   const built = cornerBuilt(), live = built === 'LIVE', bw = textW(built) + (live ? 5 : 0), dw = textW(CORNER.det), w = Math.max(bw, dw) + 6, x = W - w - 2, y = H - 17;
@@ -1104,9 +1105,33 @@ function syncDetails() {
   Object.assign(DET.style, { left: x + 'px', top: y + 'px', width: w + 'px', height: h + 'px' });
 }
 syncHits(); draw(T_START, true); syncDetails();
+// --- rr-fix sr live: the live agents in words, for screen readers (names only: an agent's title and its project) ---
+/* only while the corner says LIVE, and only when an agent works, waits or failed (the lighthouse's idle is silence here too):
+   "Live agents: 2 working, 1 waiting for you, 1 failed. Waiting for you: Fix save slots (Paper Kite) at Harbour." */
+const SR_LIVE = { working: 'working', waiting: 'waiting for you', error: 'failed', quiet: 'gone quiet', ok: 'done' }, SR_NAMES = 5;
+function srLive() {
+  const p = LIVE.on ? LIVE.payload : null;
+  const own = (o, k) => typeof k === 'string' && Object.prototype.hasOwnProperty.call(o, k);
+  const agents = p && Array.isArray(p.agents) ? p.agents.filter(a => a && typeof a === 'object' && a.tool !== 'ci' && own(SR_LIVE, a.state)) : [];
+  const n = {}; for (const a of agents) n[a.state] = (n[a.state] || 0) + 1;
+  if (!n.working && !n.waiting && !n.error) return '';
+  const more = p && Number.isFinite(p.more) && p.more >= 1 ? Math.floor(p.more) : 0;
+  const counts = Object.keys(SR_LIVE).filter(k => n[k]).map(k => n[k] + ' ' + SR_LIVE[k]).join(', ');
+  const words = s => s.toLowerCase().replace(/(^|\s)(\S)/g, (m, b, c) => b + c.toUpperCase());   // MOSS ENGINE -> Moss Engine
+  const who = a => (typeof a.title === 'string' && a.title.trim() ? a.title.trim().slice(0, 80) : 'An agent')
+    + (typeof a.project === 'string' && a.project ? ' (' + words(projectShown(a.project)) + ')' : '')
+    + (own(PLOT, a.plot) ? ' at ' + plotLabel(a.plot) : '');
+  const waits = agents.filter(a => a.state === 'waiting');
+  let s = 'Live agents: ' + counts + (more ? ', and ' + more + ' more' : '') + '.';
+  if (waits.length) s += ' Waiting for you: ' + waits.slice(0, SR_NAMES).map(who).join('; ')
+    + (waits.length > SR_NAMES ? '; and ' + (waits.length - SR_NAMES) + ' more' : '') + '.';
+  return s;
+}
+// --- end rr-fix sr live ---
 function srText() { // for screen readers: what moves in town, in words (the same facts the animations follow)
   const T = TRUTH, s = [];
   if (DATA_ERR) s.push("The town can't read its data: " + DATA_ERR.toLowerCase() + '.');
+  const live = srLive(); if (live) s.push(live);   // rr-fix sr live
   const lots = ORDER.filter(p => !built(p));
   if (lots.length) s.push(lots.length === 6 ? 'Every plot is an empty lot.' : 'Empty lots: ' + lots.join(', ') + '.');
   if (T.notes.length && nativeOn('library')) s.push(T.notes.length + ' untriaged note' + (T.notes.length === 1 ? '' : 's') + ' wait at ' + plotLabel('library') + '.');
@@ -1118,7 +1143,8 @@ function srText() { // for screen readers: what moves in town, in words (the sam
   if (T.running.length && built('tower')) s.push(T.running.map(j => j.name).join(', ') + ' running now.');
   if (T.hull && T.hull.busy && built('boathouse')) s.push(T.hull.name + ' is busy right now.');
   if (T.allGreen) s.push('Every building is green.');
-  document.getElementById('town-sr').textContent = s.length ? s.join(' ') : 'Nothing is moving in town: nothing is running and nothing waits on a belt.';
+  const sr = document.getElementById('town-sr'), words = s.length ? s.join(' ') : 'Nothing is moving in town: nothing is running and nothing waits on a belt.';
+  if (sr.textContent !== words) sr.textContent = words;   // rr-fix sr live: a heartbeat with the same news leaves the text alone
 }
 srText();
 function openPanel(plot, from) {
@@ -1508,6 +1534,7 @@ function setLive() {
   const on = age < LIVE_FRESH_MS && age > -LIVE_FRESH_MS;   // a time far ahead is a broken clock, not a heartbeat
   clearTimeout(LIVE.ageT); LIVE.ageT = on ? setTimeout(setLive, LIVE_FRESH_MS - age + 50) : 0;
   if (LIVE.on !== on) { LIVE.on = on; kick(); }
+  srText();   // rr-fix sr live: the live agents in words follow every payload and the corner's LIVE / BUILT
 }
 function schedulePoll() {
   clearTimeout(LIVE.timer); LIVE.timer = 0; LIVE.next = 0;

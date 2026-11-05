@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
+import re
 import sys
 import threading
 import time
@@ -64,12 +65,15 @@ class FailLog:
             return
         tb = "".join(traceback.format_tb(exc.__traceback__))
         key = f"{type(exc).__qualname__}\n{tb}"
-        last = "".join(traceback.format_exception_only(type(exc), exc)).strip()
+        # --- release-fix: ENG (privacy 5) --- the log is pasted into issues: no full paths
+        # (frames show the file from the package down; the error line is the short reason)
+        last = _safe(exc, typed=True)
         if key != self.key:
             self.key, self.count = key, 1
-            self.log(f"{self.what} failed:\n" + "".join(
-                traceback.format_exception(type(exc), exc, exc.__traceback__)))
+            self.log(f"{self.what} failed:\nTraceback (most recent call last):\n"
+                     f"{_short_files(tb)}{last}\n")
             return
+        # --- end release-fix: ENG ---
         self.count += 1
         n = self.count
         if n & (n - 1) == 0 or n % 1000 == 0:
@@ -86,6 +90,40 @@ class FailLog:
 
 def _current() -> BaseException | None:
     return sys.exc_info()[1]
+
+
+# --- release-fix: ENG (privacy 5) ---
+_FILE_RE = re.compile(r'File "([^"]+)"')
+
+
+def _short_file(name: str) -> str:
+    """A traceback's file name without the folders above the package (no login name)."""
+    parts = re.split(r"[\\/]", name)
+    for top in ("lamptown", "site-packages", "Lib", "lib"):
+        if top in parts[:-1]:
+            i = len(parts) - 1 - parts[::-1].index(top)
+            return "/".join(parts[i:] if top == "lamptown" else parts[i + 1:])
+    return parts[-1]
+
+
+def _short_files(tb: str) -> str:
+    return _FILE_RE.sub(lambda m: f'File "{_short_file(m.group(1))}"', tb)
+
+
+def _safe(exc: BaseException, typed: bool = False) -> str:
+    from lamptown.status.store import safe_reason
+
+    return safe_reason(exc, typed=typed)
+
+
+def _from_home(text: str) -> str:
+    """``text`` with the home folder written as ``~`` (a config error names its file)."""
+    home = str(Path.home())
+    if len(home) < 4:
+        return text
+    return re.sub(re.escape(home), "~", text, flags=re.IGNORECASE if sys.platform == "win32"
+                  else 0)
+# --- end release-fix: ENG ---
 
 
 # ----------------------------------------------------------------------------- building
@@ -137,9 +175,11 @@ class Builder:
                 self.on_config(cfg, out)
             res = build(cfg, out_dir=out)
         except (ConfigError, OSError) as e:
-            self.error = str(e)
+            # release-fix: ENG (privacy 5): an OSError's text holds its full path
+            self.error = str(e) if isinstance(e, ConfigError) else _safe(e, typed=True)
             if self.error != self._said:
-                self.log(f"can't build the town: {self.error}")
+                # release-fix: ENG (privacy 5): the config's path, from ~ (no login name)
+                self.log(f"can't build the town: {_from_home(self.error)}")
                 self._said = self.error
             return None
         except Exception:
@@ -270,7 +310,7 @@ class LiveFeed:
                 readers.append(make_reader(livetown.reader_entry(cfg, entry)))  # W2-left
             except Exception as e:  # one broken reader must not stop the others
                 name = entry.get("kind") or Path(str(entry.get("reader", "?"))).name
-                self._say(f"live reader {name!r} can't start: {type(e).__name__}: {e}")
+                self._say(f"live reader {name!r} can't start: {_safe(e, typed=True)}")  # ENG
         opts = livetown.watcher_options(cfg)
         self._watched = None
         if self._make is not None:
@@ -286,7 +326,7 @@ class LiveFeed:
             try:
                 w.close()
             except Exception as e:
-                self._say(f"couldn't close the watcher cleanly: {type(e).__name__}: {e}")
+                self._say(f"couldn't close the watcher cleanly: {_safe(e, typed=True)}")  # ENG
 
     def _say(self, msg: str) -> None:
         if msg not in self._said:  # each problem once, not every 3 s
@@ -354,7 +394,7 @@ class LiveFeed:
                 files = write_live_files(self.cfg, self.out, rev=self._disk_rev() or rev,
                                          now=now, ctx=self._ctx, cache=self._cache)
             except OSError as e:  # the town folder is gone or read-only: say so once, go on
-                self._say(f"can't write the live files: {e}")
+                self._say(f"can't write the live files: {_safe(e)}")  # release-fix: ENG
                 return None
             for w in getattr(files, "warnings", None) or ():  # a held file, a broken log
                 self._say(f"live files: {w}")

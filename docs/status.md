@@ -209,7 +209,11 @@ private_dirs = ["~/private"] # optional; sessions in or under these show as "Pri
 | `hide_after` | 86400 (1 day) | `ok` files older than this are left out. |
 | `expire_after` | 604800 (7 days) | `waiting`, `error` and quiet files older than this are left out, and so is an unreadable file whose own modification time is that old. |
 
-Nothing is deleted by the town; `lamptown status clear` tidies the folder.
+The town deletes no file someone else wrote; `lamptown status clear` tidies the folder. The live
+Watcher (`lamptown watch`, the app) removes only the records it wrote itself, once they are older
+than `expire_after` plus `[live] history_days`, and only while they still hold exactly what it
+wrote: a file a hook or `lamptown status run` wrote **last** stays, even one the Watcher wrote
+first.
 
 ### Private agents
 

@@ -1075,3 +1075,28 @@ def test_a_huge_finished_subagent_is_read_by_head_and_tail(tree, procs, monkeypa
     assert rec is not None and rec["message"] == "Finished" and rec["at"] == ts(-3790)
     assert rec["x-files"] == 2  # the head's and the tail's; the middle one is skipped
     assert spent < log.stat().st_size
+
+
+# --- fix-PRIV: titles = "folder" keeps no session title, not even in the saved state ---
+def test_folder_titles_keep_no_session_title_in_the_saved_state(tree, procs):
+    alive(procs)
+    tree.session("busy", name="Kite night shift", source="user")
+    tree.write(title("ai-title", "Plan the secret launch"),
+               title("custom-title", "Secret client work"), prompt(-100),
+               assistant(-90, use("ag", "Agent", prompt="x")))
+    tree.sub("a1", prompt(-80), finished=False, description="Read the secret contract")
+    state: dict = {}
+    agents, _ = poll(reader_for(tree, titles="folder"), state)
+    assert agents[MAIN]["title"] == "paper-kite"
+    assert agents[cc.sub_id(SID, "a1")]["title"] == "general-purpose"
+    saved = json.dumps(state)
+    for words in ("secret", "Secret", "Kite night shift"):
+        assert words not in saved
+    # a state an older run saved in "session" mode loses its titles at the next poll
+    state2: dict = {}
+    poll(reader_for(tree), state2)
+    assert "Secret client work" in json.dumps(state2)
+    tree.write(prompt(-50))
+    poll(reader_for(tree, titles="folder"), state2)
+    assert "Secret" not in json.dumps(state2) and "secret" not in json.dumps(state2)
+# --- end fix-PRIV ---

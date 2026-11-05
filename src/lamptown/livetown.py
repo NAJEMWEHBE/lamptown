@@ -425,6 +425,16 @@ def reader_entry(cfg: Config, entry: Mapping[str, Any]) -> dict[str, Any]:
     if out.get("kind") == "ci_gh" and "status_dir" not in out:
         out["status_dir"] = str(live_status_dir(cfg))
     # --- end L11 ---
+    # --- fix-PRIV: both open project folders, so both get the town's private folders (on top
+    # of any the entry names): a private project is never read, nor asked about on GitHub.
+    # fix2-PRIV: codex and claude_code too: they keep no private session's name or title ---
+    if out.get("kind") in ("git", "ci_gh", "codex", "claude_code"):
+        own = out.get("private_dirs")
+        own = [own] if isinstance(own, str) else (
+            [x for x in own if isinstance(x, str)] if isinstance(own, list | tuple) else [])
+        out["private_dirs"] = [*own, *private_dirs(cfg)]
+        out["config_dir"] = str(cfg.base_dir)  # relative entries count from the config's folder
+    # --- end fix-PRIV ---
     return out
 # --- end W2-left ---
 
@@ -754,7 +764,7 @@ def lighthouse_today(live: Mapping[str, Any], history: Mapping[str, Any]) -> lis
     for a in live.get("agents") or []:
         name = a.get("title") or "Agent"
         if a.get("project"):
-            name = f"{a['project']}: {name}"
+            name = f"{_shown_name(a['project']).title()} / {name}"
         rows.append({"name": name, "tool": a.get("tool") or "", "plot": a.get("plot") or "",
                      "state": WORDS.get(a.get("state"), "")})
         seen.add(str(a.get("id")))

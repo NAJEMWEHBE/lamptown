@@ -522,8 +522,8 @@ def test_the_reader_saves_only_the_runs_it_saw_going(tmp_path, gh_on_path):
     gh = Runner(ok(run(status="in_progress", conclusion="")))
     r = reader(repo, gh)
     [change] = r.poll(state, NOW).agents
-    assert state == {"open": {change["id"]: {"at": "2026-11-04T10:00:00Z",
-                                            "root": str(repo.root)}}}
+    # fix-PRIV: by record id only, never the repository's path
+    assert state == {"open": {change["id"]: {"at": "2026-11-04T10:00:00Z"}}}
     gh.answers = [ok(run())]
     r.poll(state, NOW + timedelta(minutes=3))
     assert state == {}  # its result is in

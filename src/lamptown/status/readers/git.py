@@ -16,7 +16,13 @@ The reader contract hands a reader no list of folders, so the Watcher's own fold
 in through ``status_dir``: the live town passes it when the entry names none
 (``livetown.reader_entry``; ``status_dir = false`` turns that off). A folder may be a
 sub-folder of its repository: its parents are searched for ``.git`` (at most :data:`UP`
-levels, ``repos`` entries included).
+levels, ``repos`` entries included). The status folder is listed newest record first, so a
+folder holding more than :data:`MAX_STATUS_FILES` records still finds the live ones.
+
+Private folders (``private_dirs``, given by the live town from its config): a ``repos`` entry
+or a live agent's folder (or its ``x-project``, when that is a path) in or under one is never
+opened, so nothing of a private project is read; with the status folder itself private, no
+live agent's folder is.
 
 What it reads (read-only, tailed incrementally like every reader):
 
@@ -55,7 +61,8 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from lamptown.status.adapters import project_folder
-from lamptown.status.collector import _norm, _under
+from lamptown.status.collector import _norm, _private_roots, _under
+from lamptown.status.events import path_like
 from lamptown.status.readers import MAX_AGENTS, MAX_EVENTS, Batch
 from lamptown.status.readers.tail import Budget, Line, cursor_key, forget, start_at, tail
 from lamptown.status.schema import parse_time
@@ -82,7 +89,9 @@ SMALL = Budget(total=256 * 1024, per_file=128 * 1024)
 def make_reader(options: dict) -> GitReader:
     repos = options.get("repos", options.get("repo", []))
     return GitReader(repos=[repos] if isinstance(repos, str) else list(repos or []),
-                     status_dir=options.get("status_dir"), days=options.get("days", DAYS))
+                     status_dir=options.get("status_dir"), days=options.get("days", DAYS),
+                     private_dirs=options.get("private_dirs"),  # fix-PRIV
+                     config_dir=options.get("config_dir"))
 
 
 @dataclass(frozen=True)
@@ -98,6 +107,44 @@ def _expand(path: Any) -> str:
     return os.path.normpath(os.path.expanduser(os.path.expandvars(str(path).strip())))
 
 
+# --- fix-PRIV: private folders and newest records first ---
+def private_roots(private_dirs: Any, config_dir: Any = None) -> list[str]:
+    """The private folders as compared text (the Watcher's rule): ``private_dirs`` (a path or a
+    list), relative ones from ``config_dir``. The live town passes its own
+    (``livetown.reader_entry``)."""
+    raw = [private_dirs] if isinstance(private_dirs, str | os.PathLike) else private_dirs
+    items = [str(p) for p in raw or [] if isinstance(p, str | os.PathLike) and str(p).strip()]
+    if not items:
+        return []
+    base = str(config_dir) if isinstance(config_dir, str | os.PathLike) and str(config_dir) \
+        else "."
+    return _private_roots({"private_dirs": items, "_config_dir": base})
+
+
+def hidden(roots: list[str], *paths: Any) -> bool:
+    """One of ``paths`` (a folder, or ``x-project`` when it is a path) is in or under a private
+    folder: such a project is never opened, read or asked about."""
+    return bool(roots) and any(isinstance(p, str) and p and _under(p, roots) for p in paths)
+
+
+def newest_first(folder: str | os.PathLike, limit: int) -> list[os.DirEntry]:
+    """At most ``limit`` entries of ``folder``, most recently changed first (a folder with more
+    records than the cap keeps the live ones). ``[]`` when it can't be listed."""
+    def changed(entry: os.DirEntry) -> int:
+        try:
+            return entry.stat().st_mtime_ns
+        except OSError:
+            return 0
+    try:
+        entries = list(os.scandir(folder))
+    except OSError:
+        return []
+    entries.sort(key=lambda e: e.name)
+    entries.sort(key=changed, reverse=True)  # stable: same time keeps the name order
+    return entries[:limit]
+# --- end fix-PRIV ---
+
+
 def _small(path: str, limit: int = 4096) -> str:
     """The first line of a small text file (``.git`` file, ``commondir``, ``HEAD``)."""
     try:
@@ -108,8 +155,12 @@ def _small(path: str, limit: int = 4096) -> str:
     return data.decode("utf-8", "replace").splitlines()[0].strip() if data.strip() else ""
 
 
-def find_repo(folder: str, up: int = UP) -> Repo | None:
-    """The repository ``folder`` is in (``folder`` itself or up to ``up`` parents)."""
+def find_repo(folder: str, up: int = UP, private: list[str] | None = None) -> Repo | None:
+    """The repository ``folder`` is in (``folder`` itself or up to ``up`` parents).
+
+    fix2-PRIV: ``private`` (roots as :func:`private_roots` gives them): a worktree or submodule
+    whose ``.git`` file points into a private folder, or whose ``commondir`` does, is no
+    repository here; nothing in the private folder is opened."""
     here = folder
     for _ in range(up + 1):
         dotgit = os.path.join(here, ".git")
@@ -125,8 +176,12 @@ def find_repo(folder: str, up: int = UP) -> Repo | None:
                 if not text.lower().startswith("gitdir:"):
                     return None
                 gitdir = os.path.normpath(os.path.join(here, text[7:].strip()))
+                if private and hidden(private, gitdir):  # fix2-PRIV
+                    return None
             rel = _small(os.path.join(gitdir, "commondir"))
             common = os.path.normpath(os.path.join(gitdir, rel)) if rel else gitdir
+            if private and hidden(private, common):  # fix2-PRIV
+                return None
             return Repo(root=here, gitdir=gitdir, common=common)
         parent = os.path.dirname(here)
         if not parent or parent == here:
@@ -178,9 +233,16 @@ class GitReader:
     name = "git"
 
     def __init__(self, repos: list[Any] | None = None, status_dir: Any = None,
-                 days: int = DAYS) -> None:
-        self.repos = [p for p in (_expand(r) for r in repos or []) if p]
+                 days: int = DAYS, private_dirs: Any = None, config_dir: Any = None) -> None:
+        # --- fix-PRIV: a project in a private folder is never opened (nor its status folder's
+        # agents, when the status folder itself is private) ---
+        self.private = private_roots(private_dirs, config_dir)
+        self.repos = [p for p in (_expand(r) for r in repos or []) if p
+                      and not hidden(self.private, p)]
         self.status_dir = default_dir(status_dir) if status_dir else None
+        if self.status_dir is not None and hidden(self.private, str(self.status_dir)):
+            self.status_dir = None
+        # --- end fix-PRIV ---
         self.days = days if isinstance(days, int) and 0 < days <= 31 else DAYS
         self._found: dict[str, tuple[Repo | None, datetime]] = {}  # folder -> repo (memory)
         self._records: dict[str, tuple[list[int], dict | None]] = {}  # status file cache
@@ -190,7 +252,7 @@ class GitReader:
         known = self._found.get(folder)
         if known is not None and now - known[1] < (RECHECK if known[0] is None else REFIND):
             return known[0]  # a found one is looked for again too: a nearer `git init`
-        repo = find_repo(folder)
+        repo = find_repo(folder, private=self.private)  # fix2-PRIV
         self._found[folder] = (repo, now)
         return repo
 
@@ -198,13 +260,10 @@ class GitReader:
         """Live agent records in ``status_dir``: ``{"id", "folder", "since", "updated"}``."""
         if self.status_dir is None:
             return []
-        try:
-            entries = sorted(os.scandir(self.status_dir), key=lambda e: e.name)
-        except OSError:
-            return []
+        entries = newest_first(self.status_dir, MAX_STATUS_FILES)  # fix-PRIV: before the cap
         out: list[dict] = []
         seen: set[str] = set()
-        for entry in entries[:MAX_STATUS_FILES]:
+        for entry in entries:
             if not entry.name.endswith(".json") or entry.name.startswith("."):
                 continue
             seen.add(entry.name)
@@ -223,7 +282,7 @@ class GitReader:
                     raw = None
                 doc = _record(raw) if raw is not None else None
                 self._records[entry.name] = (sig, doc)
-            if doc is None:
+            if doc is None or hidden(self.private, doc["folder"], doc["xp"]):  # fix-PRIV
                 continue
             updated = parse_time(doc["updated"])
             if doc["state"] not in ("working", "waiting") and (
@@ -471,7 +530,9 @@ def _record(doc: dict) -> dict | None:
     # --- end L11 ci_gh ---
     since = parse_time(doc.get("started")) if isinstance(doc.get("started"), str) else None
     commits = doc.get("x-commits")
+    xp = doc.get("x-project")  # fix-PRIV: a path here is checked against private_dirs too
     return {"id": sid, "folder": os.path.normpath(folder), "state": state, "updated": updated,
+            "xp": str(xp) if path_like(xp) else "",
             "since": since.isoformat() if since else "",
             "commits": commits if isinstance(commits, int) and commits > 0 else 0}
 

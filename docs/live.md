@@ -95,23 +95,31 @@ message text, prompts, replies, tool input, file contents, file paths, commit me
 author names. A changed file is counted by a salted hash, kept only in the Watcher's saved state.
 
 A path inside a title is cut to its final name. Once a title holds the start of a path (a drive
-such as `d:/` or `d:\`, `~/`, a UNC share `\\server` or `//server/`, any `scheme://` URL such as
+such as `d:/` or `d:\`, `~/`, a UNC share `\\server` or `//server/`, a file or editor URL such as
 `file://` or `vscode-remote://`, or a system root such as `/Users/`, `/home/`, `/mnt/`, `/srv/`,
 `/tmp/`, `/Volumes/` or a Git Bash drive `/d/`), everything from there up to the path's last `/`
 or `\` goes. Folder names may hold spaces, so the path counts as going on to the end of the title,
 a quote or backtick, or a `, ` right after a file name. A title that goes on past a path can lose
 words this way (`Fix c:/temp and the save/load test` shows as `Fix load test`): showing too
 little is the safe side. A user name is never shown, even as the last part (`see /home/you` shows
-as `see ~`). One limit: a path with none of those starts (`/work/My Project/x.py`) is only cut
+as `see ~`). An e-mail address shows as "someone" (also `you@buildbox` or `you%40example.org`).
+A web address shows none of itself, since its last part is often a person's handle or a
+repository's name: `https://example.com/you`, `github.com/you/kite`, `localhost:3000/x`,
+`10.0.0.5/x` and a remote such as `git@example.com:you/kite.git` all show as `link`. Without a
+scheme, a host counts only when it ends in a known top-level domain (`.com`, `.org`, `.dev`,
+`.io`, a country's...), so `main.go/x`, `data.csv/x` or `Socket.IO/WebRTC` stay as they are.
+One limit: a path with none of those starts (`/work/My Project/x.py`) is only cut
 over names without spaces, because `/api/users endpoint` could be a title's own words. That one
 shows as `My Project/x.py`.
 
 Claude Code's session title is written by Claude Code from your first message, so it can carry
-your words: `titles = "folder"` on that reader names sessions by their project folder instead.
+your words: `titles = "folder"` on that reader names sessions by their project folder instead,
+and then keeps no session or task title at all, not even in its saved state.
 
 **Private folders.** An agent working in or under a folder in `[live] private_dirs` (or a
 `status_dir` source's `private_dirs`) shows as "Private agent": no name, no project, no berth, a
-hashed id. An agent started in your home folder or at a drive root has no project name (the
+hashed id. The `git` and `ci_gh` readers never open such a project at all: its reflogs are not
+read, GitHub is not asked about it, and no note names it. An agent started in your home folder or at a drive root has no project name (the
 folder's name there would be your login name).
 
 **Folders named by date.** A tool that makes one folder per chat often names it by the date and
@@ -152,7 +160,8 @@ kind = "ci_gh"          # needs gh (cli.github.com), logged in with `gh auth log
 - **What reaches the town.** One record per repository: the project folder's name, the
   workflow's name and the result. Never logs, commit messages, branch names, URLs, the owner's or
   any user's name, or `gh`'s own error text. Its only saved state is the runs it last saw going
-  (the record's id, when, and the repository's folder), so a restarted town picks them up again.
+  (the record's id and when, no path), so a restarted town picks them up again: it finds the
+  repository from that CI record's own folder in the status folder.
 - **How it reads.** A CI run is no agent: no Lamplighter walks for it and the lighthouse doesn't
   count it. It is the pennant on its project's boat at the harbour (amber running, green passed,
   red failed; a project with only a CI run gets its berth too), a line in the berth's hover
@@ -223,15 +232,19 @@ says what is still open, most urgent first. The keys are in
 [rooms.md](rooms.md#lighthouse-the-keepers-book).
 
 `[live] history_days` sets how many days (1 to 31, 7 by default). The Watcher removes event
-files older than that.
+files older than that. It also removes the status records it wrote itself (one per Claude Code
+session or subagent, or Codex session) once they are older than `expire_after` plus those days,
+so the status folder stays small; a file a hook or `status run` wrote **last** stays
+(`lamptown status clear` tidies those). It never tidies on its first tick or right after the
+clock jumps ahead.
 
 ## The desktop app
 
 `lamptown app` runs the same Watcher inside the app. It pushes each payload straight into the page
 (no file needed), and its window title counts what needs you: "1 needs you - Lamptown",
 "2 need you - Lamptown". Its corner says **LIVE** while its Watcher feeds the page; without
-`[live]` (or when the Watcher has stalled) it says "LIVE - UPDATED" and the time of the app's last
-build. While the window is
+`[live]` (or when the Watcher has stalled) it says **BUILT** and the time of the app's last
+build, as the page does. While the window is
 minimised it only runs the Watcher now and then (so the book keeps filling and the title still
 counts), and catches up the moment you bring it back.
 
@@ -264,7 +277,7 @@ any silent file ("Stopped responding", then gone quiet, then left out after 7 da
 | The corner says BUILT, no Lamplighters | No Watcher is writing `town-live.js`, or it stopped. Run `lamptown watch` (or the app) with the same `--config` and `--out` as the build. |
 | `lamptown watch` says live is off | The config has no `[live]` table, or `enabled = false`. |
 | "another Lamptown watcher is running on this status folder" | The app or another `lamptown watch` holds the folder. This one stands by; either keeps the page live. |
-| "live reader 'x' can't start" | The `kind` is unknown (the built-ins are `claude_code`, `codex` and `git`) or a reader file failed to load. The other readers still run. |
+| "live reader 'x' can't start" | The `kind` is unknown (the built-ins are `claude_code`, `codex`, `git` and `ci_gh`) or a reader file failed to load. The other readers still run. |
 | An agent shows in the wrong building | Add a `[[live.place]]` with its folder and the plot it should walk to. |
 | An agent has no berth | Its agents all work at another building, or it is private, or it started in your home folder. |
 | Many chats share one berth, or a berth is named by a date | Their folders are named by date (`2026-03-14-...`): they show as the parent folder (or the date), never the words after it. A `[[live.group]]` names them as you like. |

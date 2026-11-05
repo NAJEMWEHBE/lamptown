@@ -272,7 +272,8 @@ Lamptown is built to sit on top of private work, so it is careful by design:
   opt-in: the `ci_gh` live reader asks GitHub, through your `gh`, for a pushed project's CI
   result.)
 - **Private projects stay closed.** A project marked `private = true`, or inside a folder listed in
-  `private_dirs`, is never opened, listed or read; only whether its folder exists is checked.
+  `private_dirs`, is never opened, listed or read; only whether its folder exists is checked. The
+  live `git` and `ci_gh` readers skip it too: no reflog read, no question to GitHub.
 - **Hooks keep secrets out.** A status file written by a hook holds the lamp state, a fixed
   message ("Working", "Turn finished", a tool's name), the project folder's name and path, and
   the start of the session id. Never your prompts, the agent's replies, tool input, file contents
@@ -281,8 +282,8 @@ Lamptown is built to sit on top of private work, so it is careful by design:
   shows those sessions as "Private agent": no name, message or links.
 - **The live town keeps names only.** Its readers read Claude Code's, Codex's and git's own
   files read-only, and keep a title, a project folder's name, a tool, a state, times and
-  counts. Never prompts, replies, file contents, paths, commit messages or author names
-  ([docs/live.md](docs/live.md#what-it-reads-and-what-it-keeps)).
+  counts. Never prompts, replies, file contents, paths, e-mail or web addresses, commit
+  messages or author names ([docs/live.md](docs/live.md#what-it-reads-and-what-it-keeps)).
 - **Links are filtered.** Only `https:`, `http:` and `file:` links reach the page, and all data is
   escaped before it is inlined. In the desktop app a `file:` link never runs anything: it shows
   the file in its folder; links to network shares are refused.

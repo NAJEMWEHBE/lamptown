@@ -28,7 +28,7 @@ from datetime import UTC, date, datetime, timedelta, tzinfo
 from pathlib import Path
 from typing import Any
 
-from lamptown.status.adapters import folder_name, one_line
+from lamptown.status.adapters import DATED, folder_name, one_line
 from lamptown.status.schema import parse_time
 from lamptown.status.store import ID_RE, iso, utcnow
 
@@ -49,13 +49,61 @@ _PLOT_RE = re.compile(r"[^a-z0-9_-]+")
 # /Applications/, /workspaces/ (in any case). A drive, "~" or URL starts after anything but a
 # letter, digit, "_", ".", "~" or "-" (so in brackets, quotes, backticks or after "=" too, but
 # "save/load" is no path); a root folder after anything but a letter or digit ("x~/home/...").
+# --- fix2-PRIV: web addresses --- A web address shows none of itself (its last part is often a
+# person's handle or a private repository's name): the whole address becomes the word "link".
+# That is any URL but a file or editor one ("https://...", "ssh://..."; "file://" and
+# "vscode://file/..." are paths), and an address with no scheme: a host, an optional port, then
+# "/" and a name. A host is "localhost", an IPv4 address, "www." and more labels, or labels whose
+# last one is a known top-level domain (_TLD_ANY in any case, _TLD_LOWER in lower case only, so
+# the tech names ".NET", "Socket.IO" and "jQuery.ui", or file names such as "main.go/x",
+# "data.csv/x", "St.Louis/x", stay words). Labels may be any letters (an IDN host).
+_LABEL = r"[^\W_](?:[\w-]*[^\W_])?"
+_IPV4 = r"\d{1,3}(?:\.\d{1,3}){3}"
+_TLD_ANY = r"com|org|edu|gov|mil|int|info|biz"
+_TLD_LOWER = (r"net|io|ai|app|dev|co|me|tv|gg|fm|ly|xyz|site|online|tech|cloud|blog|wiki|email"
+              r"|page|local|lan|internal|corp|example|invalid|localhost|eu|uk|de|fr|nl|es|it|se"
+              r"|dk|fi|ch|at|be|cz|ru|ua|cn|jp|kr|au|nz|ca|us|br|mx|ar|cl|za|ie|pt|gr|tr|il|ae"
+              r"|sa|kw|qa|eg|sg|hk|tw|vn|th")
+_PORT = r"(?::\d{1,5})?"
+_WEB_HOST = (rf"(?:(?:{_LABEL}\.)+(?:{_TLD_ANY}|(?-i:{_TLD_LOWER})){_PORT}"
+             rf"|www\.(?:{_LABEL}\.)*{_LABEL}{_PORT}|localhost{_PORT}|{_IPV4}{_PORT})")
+_PATH_SCHEME_RE = re.compile(r"[a-z]|file|vscode(?:-[a-z]+)?|cursor|windsurf",  # "d:\\" a drive
+                             re.IGNORECASE)
+LINK_WORD = "link"
+# --- end fix2-PRIV ---
 _START_RE = re.compile(
-    r"(?<![\w.+~-])[A-Za-z][A-Za-z0-9+.-]*:[\\/]{2}"
+    r"(?<![\w.+~-])(?P<scheme>[A-Za-z][A-Za-z0-9+.-]*):[\\/]{2}"
     r"|(?<![\w.~-])(?:[A-Za-z]:[\\/]|~(?:[A-Za-z][\w.-]*)?[\\/])"
     r"|(?<![^\W_])(?:\\\\|//(?=[^\s\\/]+[\\/])"
-    r"|/(?:users|home|root|mnt|cygdrive|srv|opt|tmp|var|private|volumes|media|run|export|system"
-    r"|usr|etc|library|applications|workspaces?|[a-z])[\\/])",
+    # fix-PRIV: a named root may lead with "\" too ("\Users\you" has no drive)
+    r"|[\\/](?:users|home|root|mnt|cygdrive|srv|opt|tmp|var|private|volumes|media|run|export"
+    r"|system|usr|etc|library|applications|workspaces?)[\\/]|/[a-z][\\/])"
+    # fix-PRIV, fix2-PRIV: a web address with no scheme ("github.com/you/kite",
+    # "www.example.org:8080/x", "localhost:3000/x", "10.0.0.5/x")
+    rf"|(?<![\w.@~%-])(?P<web>{_WEB_HOST})/(?=[^\s/])",
     re.IGNORECASE)
+# --- fix-PRIV, fix2-PRIV: addresses --- an e-mail address is never kept: it becomes "someone".
+# Its domain is dotted or bare ("you@buildbox"), in any letters, or an IPv4 address; its last
+# label starts with a letter, so "pkg@1.2.3" and "time@12:30" are none, and neither is a version
+# or a git name after "@" ("actions/checkout@v4", "pkg@latest", "x@main", "x@1a2b3c4d").
+# "@" may be written "%40". A remote in scp form ("git@example.com:you/kite.git") becomes "link".
+# "@types/node" and "@mention" (nothing before the "@") are no address.
+_DOMAIN = rf"(?:(?:{_LABEL}\.)*[^\W\d_](?:[\w-]*[^\W_])?|{_IPV4})"
+_NOT_HOST = (r"(?!(?:v\d[\w.-]*|[0-9a-f]{7,40}|latest|next|beta|alpha|canary|rc|nightly|lts"
+             r"|stable|edge|experimental|insiders|preview|main|master|trunk|develop|head)"
+             r"(?![\w.-]))")
+_MAIL_RE = re.compile(rf"(?<![\w.+%-])[\w.+%-]+(?:@|%40){_NOT_HOST}{_DOMAIN}(?![\w-])",
+                      re.IGNORECASE)
+_SCP_RE = re.compile(rf"(?<![\w.+%-])[\w.+%-]+@{_DOMAIN}:(?=[^\s\\:\"<>|`])[^\s\"<>|`]*")
+_TRAIL_RE = re.compile(r"[.,;:!?)\]}'*]+$")  # punctuation after an address is the title's
+MAIL_WORD = "someone"
+NAME_RULE = 2  # fix2-PRIV: raise when name_only cuts more: titles a reader saved are cut again
+
+
+def _link(match: re.Match) -> str:
+    trail = _TRAIL_RE.search(match.group(0))
+    return LINK_WORD + (trail.group(0) if trail else "")
+# --- end fix-PRIV ---
 # From its start, a path RUNS to the first character no name holds in a title (" < > | or a
 # backtick), or to ", " or "; " right after a file name with an extension ("...x.py, then
 # save/load"), else to the end of the text. Its names may hold spaces, so where it ends inside
@@ -109,11 +157,26 @@ def _cut_run(text: str, start: re.Match, last: int, end: int) -> tuple[str, int]
     folders = [p for p in _SEPS_RE.split(head[:-1]) if p]  # the last one is cut off
     after = text[last + 1:end]
     if after and not after[0].isspace():  # a final name follows the separator
-        return ("~", end) if _is_home_name(folders) else ("", last + 1)
+        if _is_home_name(folders):
+            return "~", end
+        # fix-PRIV: a date-named folder (a chat's) shows as folder_name shows it, never its words
+        name = after.split(None, 1)[0]
+        if DATED.match(name):
+            return folder_name(head + name), last + 1 + len(name)
+        return "", last + 1
     # the run ends in a separator: its last folder is the final name (but not the root itself)
     if len(head.rstrip("\\/")) <= start.end() - start.start():
         return ("~" if head.startswith("~") else ""), last + 1
-    return ("~" if _is_home_name(folders[:-1]) else folders[-1]), last + 1
+    if _is_home_name(folders[:-1]):
+        return "~", last + 1
+    return (folder_name(head) if DATED.match(folders[-1]) else folders[-1]), last + 1  # fix-PRIV
+
+
+def _is_web(start: re.Match) -> bool:
+    """The path start is a web address (fix2-PRIV): a host, or a URL that is no file one."""
+    scheme = start.group("scheme")
+    return start.group("web") is not None or (
+        scheme is not None and not _PATH_SCHEME_RE.fullmatch(scheme))
 
 
 def _cut_paths(text: str) -> str:
@@ -125,7 +188,21 @@ def _cut_paths(text: str) -> str:
         if clause:
             end = clause.end() - 1
         last = max(text.rfind("/", start.start(), end), text.rfind("\\", start.start(), end))
+        if _is_web(start):  # fix2-PRIV: a web address, its final name too, becomes "link"
+            rest = text[last + 1:end]
+            name = rest.split(None, 1)[0] if rest[:1] and not rest[0].isspace() else ""
+            trail = _TRAIL_RE.search(name)
+            out += [text[pos:start.start()], LINK_WORD]
+            pos = last + 1 + len(name) - (len(trail.group(0)) if trail else 0)
+            continue
         kept, pos_next = _cut_run(text, start, last, end)
+        # fix-PRIV: a hard character inside a user name ('/home/you"r/x'): the rest of the name
+        # goes too, up to a hard character that ends it (one followed by a space, or the end)
+        if kept == "~" and hard is not None and pos_next == end == hard.start():
+            while end + 1 < len(text) and not text[end + 1].isspace():
+                more = _HARD_RE.search(text, end + 1)
+                end = more.start() if more else len(text)
+            pos_next = end
         out += [text[pos:start.start()], kept]
         pos = pos_next
     out.append(text[pos:])
@@ -141,10 +218,14 @@ def name_only(text: Any, limit: int) -> str:
     through the last separator of its run, so a folder name with spaces never stays; a title
     that goes on past it may lose words. A home folder's user name is never kept: ``"see
     /home/you"`` becomes ``"see ~"``. Relative fragments such as ``"save/load"`` stay. Lone
-    surrogates become ``?``."""
+    surrogates become ``?``. A web address (``"https://example.com/you"``,
+    ``"github.com/you/kite"``, ``"localhost:3000/x"``) and a remote in scp form
+    (``"git@example.com:you/kite.git"``) become ``"link"``, whole; an e-mail address becomes
+    ``"someone"``. A date-named (chat) folder never shows its words."""
     flat = scrub(one_line(text, 4096))
     if not flat:
         return ""
+    flat = _MAIL_RE.sub(MAIL_WORD, _SCP_RE.sub(_link, flat))  # fix-PRIV: addresses
     flat = _PATH_RE.sub(_last_part, _cut_paths(flat))
     return one_line(flat, limit)
 # --- end W2-left-fix2 ---
@@ -181,7 +262,11 @@ def _when(value: Any) -> datetime | None:
 
 # --- L3-fix: home folder ---
 # A bare home folder (or the folder of all of them), on any OS, also behind a mount.
-_HOMES_RE = re.compile(r"^(?:[a-z]:|/mnt/[a-z]|/cygdrive/[a-z]|/[a-z])?/(?:users|home)(?:/[^/]+)?$")
+# fix-PRIV: and a removable drive's own folder (/Volumes/<label>, /media/<user>/<label>,
+# /run/media/<user>/<label>): its label is often a person's name
+_HOMES_RE = re.compile(r"^(?:[a-z]:|/mnt/[a-z]|/cygdrive/[a-z]|/[a-z])?/"
+                       r"(?:(?:users|home)(?:/[^/]+)?|volumes(?:/[^/]+)?"
+                       r"|(?:run/)?media(?:/[^/]+){0,2})$")
 
 
 def _flat(path: str) -> str:

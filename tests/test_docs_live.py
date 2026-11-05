@@ -38,19 +38,24 @@ def test_contributing_checks_run_to_the_end():
 
 @browser
 def test_the_apps_corner_says_what_live_md_says(tmp_path):
-    # m1: in the app the corner says LIVE while a fresh payload feeds it, "LIVE - UPDATED <time>"
-    # only without one
+    # m1: in the app the corner says LIVE while a fresh payload feeds it, BUILT <time> without one.
+    # Release review #6: a stale payload (the app's Watcher stalled) is BUILT too, never "LIVE ..."
     r = run(build_town(tmp_path), """
       window.pywebview = {};   // the desktop app's page
       const off = cornerBuilt();
       lamptownLive({ spec: 'lamptown-live/1', at: new Date().toISOString(), agents: [] });
-      return { off, on: cornerBuilt() };""", query="?live=0")
+      const on = cornerBuilt();
+      const old = new Date(Date.now() - 60000).toISOString();   // the app's Watcher stalled
+      lamptownLive({ spec: 'lamptown-live/1', at: old, agents: [] });
+      return { off, on, stale: cornerBuilt() };""", query="?live=0")
     assert r["on"] == "LIVE"
-    assert r["off"].startswith("LIVE - UPDATED ") and r["off"] != "LIVE - UPDATED "
+    for k in ("off", "stale"):
+        assert r[k].startswith("BUILT ") and r[k] != "BUILT ", r
     app = text("docs/live.md").split("## The desktop app", 1)[1].split("\n## ", 1)[0]
     flat = " ".join(app.split())
     assert "corner says **LIVE** while its Watcher feeds the page" in flat
-    assert 'without `[live]` (or when the Watcher has stalled) it says "LIVE - UPDATED"' in flat
+    assert "without `[live]` (or when the Watcher has stalled) it says **BUILT**" in flat
+    assert "LIVE - UPDATED" not in text("docs/live.md")
 
 
 # --- W2-left-fix: the git reader's status_dir default (review W2-left #4) ---

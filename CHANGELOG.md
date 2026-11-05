@@ -16,6 +16,11 @@ The live town: your agents walk the town as they work. See [docs/live.md](docs/l
   it, and the reader's saved state moves to the new ids by itself. A status file a 0.1 Codex hook
   wrote keeps its old id, so it goes stale once after the upgrade: it ages out as any silent file
   does, or `lamptown status clear` removes it.
+- **`lighthouse` is reserved.** A building with `id = "lighthouse"` or `type = "lighthouse"` is now
+  a config error, even with `[live]` off: the name belongs to the live town's lighthouse and its
+  room. A 0.1 config with such a building (a room of your own called that, from `room_js` or the
+  `lamptown.rooms` entry point) stops loading until you rename it; the error names the building.
+  (`plot = "lighthouse"` was never a plot; its error now says why.)
 
 ### Added
 
@@ -28,7 +33,10 @@ The live town: your agents walk the town as they work. See [docs/live.md](docs/l
   `--quiet`.
 - **The Watcher**: runs the readers, writes the status files and a 7-day event log
   (`<status folder>/events/YYYY-MM-DD.jsonl`, names only), one Watcher per status folder (a
-  second one stands by), crash-safe saved state, a catch-up mode for history.
+  second one stands by), crash-safe saved state, a catch-up mode for history. It removes the
+  status files it wrote itself once they are older than `expire_after` plus `[live] history_days`
+  (14 days by default), so the status folder stays small; a file a hook or `status run` wrote
+  last is never removed. No config switch: `Watcher(remove_own=False)` in Python turns it off.
 - **Readers** that follow a tool's own files, no hooks needed: `claude_code` (sessions,
   subagents, questions and likely permission prompts, API errors, changed-file counts), `codex`
   (rollout logs and thread titles) and `git` (commits and pushes from reflogs, counted on the
@@ -54,13 +62,21 @@ The live town: your agents walk the town as they work. See [docs/live.md](docs/l
 - `lamptown demo` is live: nine made-up agents in every state, a helper, berths and a week of
   history (its book follows each `--state`, and today's page is filled at any hour).
   `--no-live` builds it without watching.
+- **For room authors**: a room may have `update(data)`, called with its new data while you're
+  inside, so it keeps its view instead of walking in again; and the kit has `K.live()` (the fresh
+  live payload, else `null`), `K.liveScript()` (load a `town-<name>.js` the way the town polls),
+  `K.pointer()` (a mouse event in the room's pixels) and `K.redraw()` (draw a still scene again)
+  ([docs/rooms.md](docs/rooms.md#bring-your-own-room), [docs/kit-k.md](docs/kit-k.md)).
+- The town page's screen-reader text says the live agents too, while the corner says LIVE and one
+  works, waits or failed: how many in each state, and who waits for you, by name and building.
 - Docs: [docs/live.md](docs/live.md); README pictures of the live town and the lighthouse room;
   [SECURITY.md](SECURITY.md) lists what the live town reads and writes.
 
 ### Changed
 
 - The page swaps new town data in place (`town-data.js`, by `rev`) instead of reloading, and says
-  LIVE only while the heartbeat is under 30 s old (else BUILT and the build time).
+  LIVE only while the heartbeat is under 30 s old (else BUILT and the build time), in the desktop
+  app too.
 - The harbour room shows a failed agent's bay as FAILED (CAN'T READ is for a project whose
   `TASKS.md` can't be read), and the live berths along its floor.
 - A session started in your home folder or at a drive root never shows the folder's name (your

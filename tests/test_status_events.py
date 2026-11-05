@@ -179,7 +179,7 @@ def test_naive_times_are_local(tmp_path):
     (r'open "C:\Users\you\secret-app\x.py"', 'open "x.py"'),  # in quotes
     ("path=/home/you/secret-app", "path=secret-app"),  # after "="
     ("file:///home/you/secret-app/x.py", "x.py"),  # a file URL
-    ("https://example.com/you/secret-app", "secret-app"),  # any URL
+    ("https://example.com/you/secret-app", "link"),  # fix2-PRIV: a web URL, whole
     (r"\\fileserver\share\you\secret-app", "secret-app"),  # UNC
     ("//fileserver/share/you/secret-app", "secret-app"),  # UNC, forward slashes
     (r"C:\Users\you there\secret-app", "secret-app"),  # a user name with a space
@@ -480,7 +480,7 @@ def test_w2leftfix_name_only_stays_fast_on_hostile_titles(text):
     ("Open file://server/share/Client Secret/x.py", "Open x.py"),
     ("Open vscode-remote://wsl+Ubuntu/home/you/Client Secret/x.py", "Open x.py"),
     ("Open vscode-remote://ssh-remote+box/home/you/Client Secret/x.py", "Open x.py"),
-    ("Open https://intranet/Client Secret/plan", "Open plan"),
+    ("Open https://intranet/Client Secret/plan", "Open link"),  # fix2-PRIV: a web URL, whole
     # finding 3: a 5+ word lowercase folder with a function word, before a short last part
     ("Open d:/notes for the acme merger deal/todo", "Open todo"),
     ("Open d:/acme merger plans of the client/src", "Open src"),

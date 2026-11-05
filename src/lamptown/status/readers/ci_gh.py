@@ -49,9 +49,15 @@ failed.
 
 Never kept or sent: logs, commit messages, branch names, run URLs, owner or user names, the
 remote's URL, ``gh``'s own error text. The ``owner/repo`` name is used for the call only, in
-memory. The only saved state is the runs last sent as going (``{"open": {record id: {"at":
-last stamp, "root": the repository's folder}}}``), so a restarted reader follows them on, even
-past the hour; everything else (when it last called, what it last sent) is in memory.
+memory. The only saved state is the runs last sent as going (``{"open": {record id: {"at": last
+stamp}}}``: no path), so a restarted reader follows them on, even past the hour (it finds the
+repository again from that record's own ``x-folder`` in the status folder, or from ``repos``);
+everything else (when it last called, what it last sent) is in memory.
+
+Private folders (``private_dirs``, passed by the live town): a repository in or under one is
+never read, never asked about (no ``gh`` call) and never named in a note. The status folder is
+listed newest record first, so a folder with more than :data:`MAX_STATUS_FILES` records still
+finds the live agents.
 
 ``gh`` is only ever run from an absolute path (:func:`find_gh`): never from the current folder,
 which ``shutil.which`` searches first on Windows.
@@ -73,8 +79,15 @@ from typing import Any
 
 from lamptown.status.adapters import project_folder
 from lamptown.status.collector import _norm
+from lamptown.status.events import path_like
 from lamptown.status.readers import Batch
-from lamptown.status.readers.git import find_repo, parse_line
+from lamptown.status.readers.git import (
+    find_repo,
+    hidden,
+    newest_first,
+    parse_line,
+    private_roots,
+)
 from lamptown.status.schema import parse_time
 from lamptown.status.store import StatusError, default_dir, iso, read_status
 
@@ -118,6 +131,7 @@ NOTES = {
 GLOBAL = ("missing", "auth", "offline", "rate", "timeout")  # problems that hold every repository
 _SLUG = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,99})$")
 _HOST = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,252})$")
+_RID = re.compile(r"^ci-gh-[0-9a-f]{10}$")  # fix-PRIV: a record id, as _id_for makes it
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _SECTION = re.compile(r'^\s*\[\s*remote\s+"([^"]+)"\s*\]')
 _URL = re.compile(r"^\s*url\s*=\s*(.+?)\s*$", re.IGNORECASE)
@@ -197,7 +211,9 @@ def make_reader(options: dict) -> CiGhReader:
     return CiGhReader(repos=[repos] if isinstance(repos, str) else list(repos or []),
                       status_dir=options.get("status_dir"), gh=options.get("gh", "gh"),
                       every=options.get("every", EVERY), timeout=options.get("timeout", TIMEOUT),
-                      hosts=[hosts] if isinstance(hosts, str) else list(hosts or []))
+                      hosts=[hosts] if isinstance(hosts, str) else list(hosts or []),
+                      private_dirs=options.get("private_dirs"),  # fix-PRIV
+                      config_dir=options.get("config_dir"))
 
 
 # ---------------------------------------------------------------- the repository's side
@@ -400,9 +416,16 @@ class CiGhReader:
 
     def __init__(self, *, repos: list[Any] | None = None, status_dir: Any = None, gh: Any = "gh",
                  every: Any = EVERY, timeout: Any = TIMEOUT, hosts: list[Any] | None = None,
-                 runner: Runner | None = None, background: bool = True) -> None:
-        self.repos = [p for p in (_expand(r) for r in repos or []) if p]
+                 runner: Runner | None = None, background: bool = True,
+                 private_dirs: Any = None, config_dir: Any = None) -> None:
+        # --- fix-PRIV: a private project is never read, asked about or named in a note ---
+        self.private = private_roots(private_dirs, config_dir)
+        self.repos = [p for p in (_expand(r) for r in repos or []) if p
+                      and not hidden(self.private, p)]
         self.status_dir = default_dir(status_dir) if status_dir else None
+        if self.status_dir is not None and hidden(self.private, str(self.status_dir)):
+            self.status_dir = None
+        # --- end fix-PRIV ---
         self.gh = gh if isinstance(gh, str) and gh.strip() else "gh"
         self.every = _number(every, EVERY, EVERY, 3600)
         self.timeout = _number(timeout, TIMEOUT, 5, 60)
@@ -425,13 +448,10 @@ class CiGhReader:
     def _live_folders(self, now: datetime) -> list[str]:
         if self.status_dir is None:
             return []
-        try:
-            entries = sorted(os.scandir(self.status_dir), key=lambda e: e.name)
-        except OSError:
-            return []
+        entries = newest_first(self.status_dir, MAX_STATUS_FILES)  # fix-PRIV: before the cap
         out: list[str] = []
         seen: set[str] = set()
-        for entry in entries[:MAX_STATUS_FILES]:
+        for entry in entries:
             if not entry.name.endswith(".json") or entry.name.startswith((".", ID_PREFIX)):
                 continue
             seen.add(entry.name)
@@ -450,7 +470,7 @@ class CiGhReader:
                     summary = None
                 self._records[entry.name] = (sig, summary)
             folder = _live_folder(summary, now)
-            if folder:
+            if folder and not (summary and hidden(self.private, folder, summary[3])):  # fix-PRIV
                 out.append(folder)
         for name in [n for n in self._records if n not in seen]:
             del self._records[name]
@@ -460,7 +480,7 @@ class CiGhReader:
         known = self._folders.get(folder)
         if known is not None and now - known[1] < REFIND:
             return self._known.get(known[0]) if known[0] else None
-        repo = find_repo(folder)
+        repo = find_repo(folder, private=self.private)  # fix2-PRIV
         if repo is None:
             self._folders[folder] = (None, now)
             return None
@@ -478,6 +498,25 @@ class CiGhReader:
         self._folders[folder] = (key, now)
         return mine
 
+    # --- fix-PRIV: a followed run's folder, from the record this reader sent for it ---
+    def _record_folder(self, rid: str) -> str:
+        """The repository folder of the CI record ``rid`` in the status folder (its
+        ``x-folder``), when that folder still hashes to ``rid`` and is not private; else ``""``."""
+        if self.status_dir is None:
+            return ""
+        try:
+            doc = read_status(os.path.join(self.status_dir, rid + ".json"))
+        except StatusError:
+            return ""
+        folder = doc.get("x-folder") if isinstance(doc, dict) else None
+        if not (isinstance(folder, str) and folder and os.path.isabs(folder)):
+            return ""
+        folder = os.path.normpath(folder)
+        if _id_for(folder) != rid or hidden(self.private, folder):
+            return ""
+        return folder
+    # --- end fix-PRIV ---
+
     # ------------------------------------------------------------ poll
     def poll(self, state: dict, now: datetime, budget: Any = None) -> Batch:
         now = now.astimezone(UTC)
@@ -486,8 +525,15 @@ class CiGhReader:
         self._open = _open_runs(state.get("open"), now)
         self._collect(now, batch)
         folders = [*self.repos, *self._live_folders(now)]
-        # a run last seen going (by this reader, or by one before a restart) is followed on
-        folders += [o["root"] for o in self._open.values() if o["root"] not in folders]
+        # a run last seen going (by this reader, or by one before a restart) is followed on:
+        # --- fix-PRIV: its folder is found again from its own record (the saved state keeps
+        # only the record id, never a path) ---
+        known = {r.rid for r in self._known.values()}
+        for rid in self._open:
+            root = "" if rid in known else self._record_folder(rid)
+            if root and root not in folders:
+                folders.append(root)
+        # --- end fix-PRIV ---
         used: set[str] = set()
         repos: dict[str, _Repo] = {}
         for folder in folders:
@@ -622,8 +668,8 @@ class CiGhReader:
         if ci == "running" or sig != repo.sent:
             repo.sent = sig
             batch.agents.append(change)
-        if ci == "running":  # remembered (saved state) until its result is in
-            self._open[repo.rid] = {"at": iso(change["at"]), "root": repo.root}
+        if ci == "running":  # remembered (saved state, no path: fix-PRIV) until its result is in
+            self._open[repo.rid] = {"at": iso(change["at"])}
         else:
             self._open.pop(repo.rid, None)
 
@@ -697,26 +743,27 @@ def _name(repo: _Repo) -> str:
 
 def _open_runs(saved: Any, now: datetime) -> dict[str, dict]:
     """The runs last sent as going, from the saved state (``{record id: {"at": its last
-    stamp, "root": the repository's folder}}``): well-formed ones of the last :data:`FOLLOW`
-    only, at most :data:`MAX_REPOS`."""
+    stamp}}``): well-formed ones of the last :data:`FOLLOW` only, at most :data:`MAX_REPOS`.
+    A ``"root"`` an older version saved is dropped (fix-PRIV: no path is saved)."""
     out: dict[str, dict] = {}
     if not isinstance(saved, dict):
         return out
     for rid, entry in saved.items():
         if len(out) >= MAX_REPOS:
             break
-        if not (isinstance(rid, str) and rid.startswith(ID_PREFIX) and isinstance(entry, dict)):
+        # fix-PRIV: only an id this reader makes (it names a status file to read)
+        if not (isinstance(rid, str) and _RID.match(rid) and isinstance(entry, dict)):
             continue
-        at, root = parse_time(entry.get("at")), entry.get("root")
-        if at is None or now - at > FOLLOW or not (isinstance(root, str) and os.path.isabs(root)):
+        at = parse_time(entry.get("at"))
+        if at is None or now - at > FOLLOW:
             continue
-        out[rid] = {"at": iso(at), "root": os.path.normpath(root)}
+        out[rid] = {"at": iso(at)}
     return out
 
 
-def _summary(doc: Any) -> tuple[str, str, datetime | None] | None:
-    """``(folder, state, updated)`` of an agent record with an absolute working folder, or
-    ``None``. CI records and project records name none."""
+def _summary(doc: Any) -> tuple[str, str, datetime | None, str] | None:
+    """``(folder, state, updated, x-project when it is a path)`` of an agent record with an
+    absolute working folder, or ``None``. CI records and project records name none."""
     if not isinstance(doc, dict):
         return None
     folder = doc.get("x-folder")
@@ -724,14 +771,17 @@ def _summary(doc: Any) -> tuple[str, str, datetime | None] | None:
         return None  # relative: it would name the Watcher's own folder
     if doc.get("kind") == "project" or doc.get("agent") == TOOL:
         return None
-    return os.path.normpath(folder), str(doc.get("state") or ""), parse_time(doc.get("updated"))
+    project = doc.get("x-project")
+    return (os.path.normpath(folder), str(doc.get("state") or ""),
+            parse_time(doc.get("updated")), str(project) if path_like(project) else "")
 
 
-def _live_folder(summary: tuple[str, str, datetime | None] | None, now: datetime) -> str | None:
+def _live_folder(summary: tuple[str, str, datetime | None, str] | None,
+                 now: datetime) -> str | None:
     """The folder of a live agent (working, waiting, or changed within :data:`LIVE_FOR`)."""
     if summary is None:
         return None
-    folder, state, updated = summary
+    folder, state, updated, _project = summary
     if state not in ("working", "waiting") and (updated is None or now - updated > LIVE_FOR):
         return None
     return folder

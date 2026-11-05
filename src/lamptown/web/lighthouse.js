@@ -137,7 +137,8 @@ const LH = (() => {
     const first = S.known === null;
     // --- live: L11 ci_gh --- a CI run (tool "ci") is no agent: its berth's pennant carries it, not the lighthouse
     const agents = Array.isArray(p.agents) ? p.agents.filter(a => a && typeof a === 'object' && a.tool !== 'ci') : [];
-    const pick = st => agents.filter(a => a.state === st && typeof a.plot === 'string' && STEP[a.plot]);
+    // --- live: rr-fix plot key --- only the town's own plots: "constructor" or "toString" is no door (as live.js's own())
+    const pick = st => agents.filter(a => a.state === st && typeof a.plot === 'string' && Object.prototype.hasOwnProperty.call(STEP, a.plot));
     S.waits = pick('waiting'); S.fails = pick('error'); S.working = agents.filter(a => a.state === 'working').length;
     // one door per building, in a steady order: waits before failures, then the longest waiting, then the town's plot order
     const doors = (list, kind) => { const m = new Map(); for (const a of list) { if (!m.has(a.plot)) m.set(a.plot, []); m.get(a.plot).push(a); }
@@ -333,6 +334,13 @@ const LH = (() => {
   // lighthouse button at all, and new town data that brings one (a swap in place) adds it on the next frame
   function place() { if (!isPlace(PLACE) && shown()) addPlace(PLACE, { hit: HIT, door: [CX, 196], word: 'lighthouse' }); }
   place();
-  TOWN_LAYERS.sea.push(sea); TOWN_LAYERS.scene.push(tower); TOWN_LAYERS.lights.push(lights);
+  // --- live: rr-fix plot key --- a layer that throws logs once (SEEN.lighthouseError), not on every frame, as live.js does
+  let ERR = null;
+  function guard(fn) {   // the hook keeps its function's name (tests find a layer by it)
+    const g = (...a) => { try { fn(...a); } catch (e) { if (!ERR) { ERR = String(e && e.stack || e); console.error(e); } SEEN.lighthouseError = ERR; } };
+    return Object.defineProperty(g, 'name', { value: fn.name });
+  }
+  TOWN_LAYERS.sea.push(guard(sea)); TOWN_LAYERS.scene.push(guard(tower)); TOWN_LAYERS.lights.push(guard(lights));
+  // --- end rr-fix plot key ---
   return { S, STEP, HIT, BOX, CX, OX, OY, LAND, BLOCK, angTo, routeOf, pathOf, TUNE };
 })();

@@ -43,7 +43,18 @@ same time is skipped, so only an event whose record was rewritten again in that 
 come twice. If the event log can't be written, the tick's state is rolled back, so its events
 come again next tick. It holds names, ids, counts, times and digests; never a folder path,
 message text or file contents (readers key files by ``tail.cursor_key``, a hash). Records past
-``expire_after`` keep only a small entry.
+``expire_after`` keep only a small entry. A tick cut short (Ctrl+C, any exception) is rolled
+back to the last finished tick, so :meth:`Watcher.close` never saves a half-done tick.
+
+Tidying: a record this Watcher wrote itself (the file still holds exactly what it wrote) is
+removed once its ``updated`` is older than ``expire_after`` plus ``keep_days`` (hidden that long,
+and its events are out of the history), so the folder and the saved state stay bounded. Files
+someone else wrote (hooks, ``status run``) or changed afterwards are never removed. Off with
+``remove_own=False`` or ``expire_after`` 0/``None``. No tidying on a run's first tick, nor on
+a tick more than :data:`TIDY_GAP` after the last finished one (a clock that jumped ahead must
+not remove a fresh record). A record that is there but can't be read for a moment is never
+rewritten with only the change: the change waits for the next tick (and :meth:`Watcher.close`
+applies what still waits, so none is lost).
 
 Plots: :func:`default_plot` is a stub (``x-plot``, else ``tower`` for jobs, else
 ``boathouse``); pass ``plot_for`` to map a record's folder to a building (L3 does).
@@ -52,6 +63,8 @@ itself) is in or under one of them are written as "Private agent", with no proje
 collector's masked id (``private-`` + a hash of the status folder and the id), so private names
 never reach the log and L3 can link a masked live record to its history. A reader event with
 no status record and no ``folder`` can't be checked, so with ``private_dirs`` set it is masked.
+Readers that keep private folders of their own (``git``, ``ci_gh``) get these too
+(:func:`share_private`).
 """
 
 from __future__ import annotations
@@ -92,11 +105,14 @@ from lamptown.status.readers.tail import Budget
 from lamptown.status.schema import parse_time, validate
 from lamptown.status.store import (
     DEFAULT_STALE_AFTER,
+    StatusBusy,
     StatusError,
     atomic_write_json,
     default_dir,
     iso,
+    read_existing,
     read_status,
+    safe_reason,
     status_path,
     update_status,
     utcnow,
@@ -113,6 +129,14 @@ MAX_PROJECTS = 2000
 RECENT_WINDOW = 120  # seconds: a push or CI result from a reader and a record counts once
 MAX_RECENT = 1000  # pushes and CI results remembered for that, at most
 STATE_EVENT = {"waiting": "wait", "ok": "done", "error": "fail", "quiet": "quiet"}
+# --- release-fix: ENG (engine 2, engine 4) ---
+HOLD_TICKS = 5  # a change for a record that can't be read is tried again this many ticks
+MAX_TIDY = 200  # own expired records looked at for removal per tick, at most
+# --- end release-fix: ENG ---
+# --- fix2: ENG 4 --- no tidying on a tick this long after the last finished one (or on the
+# first tick of a run): the clock may have jumped, and a jump must never remove a fresh record
+TIDY_GAP = timedelta(hours=1)
+# --- end fix2 ---
 BUSY = "another Lamptown watcher is running on this status folder"
 # what a lock call says when someone else holds the lock (msvcrt: EACCES or EDEADLOCK; flock:
 # EWOULDBLOCK). Anything else (ENOLCK, ENOTSUP on a network folder) is a real error.
@@ -142,6 +166,10 @@ class TickResult:
     # again soon (1 s instead of 3 s); the next tick reads with Budget.catch_up()
     behind: bool = False
     # --- end L4-fix ---
+    # --- release-fix: ENG (engine 4) --- changes put off: the record couldn't be read just
+    # now, so it isn't rewritten with only the change; they are tried again next tick
+    retry: list[str] = field(default_factory=list)
+    # --- end release-fix: ENG ---
 
     @property
     def changed(self) -> bool:
@@ -206,12 +234,40 @@ def state_kind(old: str | None, new: str) -> str | None:
 def reader_notes(reader: Any) -> list[str]:
     """A reader's ``notes`` (optional attribute) from its last poll, as ``TickResult.errors``
     lines: at most 10, each cut to 200 characters."""
-    notes = getattr(reader, "notes", None)
+    try:  # fix2: ENG 5 (a broken property is that reader's problem, not the tick's)
+        notes = getattr(reader, "notes", None)
+    except Exception:
+        return []
     if not isinstance(notes, list | tuple):
         return []
     name = getattr(reader, "name", "?")
     return [f"reader {name}: {n}"[:200] for n in notes[:10] if isinstance(n, str) and n]
 # --- end L11 ---
+
+
+# --- fix2: PRIV 5 ---
+def share_private(reader: Any, roots: list[str]) -> None:
+    """Give a reader that keeps private folders (``private``, a list: git, ci_gh) the Watcher's
+    too, and drop what they hide from its ``repos`` and ``status_dir``, as its own
+    ``private_dirs`` would have. So a Watcher built in Python covers its readers as well."""
+    try:
+        mine = getattr(reader, "private", None)
+    except Exception:
+        return
+    if not roots or not isinstance(mine, list):
+        return
+    both = [*mine, *(r for r in roots if r not in mine)]
+    reader.private = both
+
+    def hid(path: Any) -> bool:
+        return isinstance(path, str | os.PathLike) and bool(str(path)) and _under(str(path), both)
+
+    repos = getattr(reader, "repos", None)
+    if isinstance(repos, list):
+        reader.repos = [p for p in repos if not hid(p)]
+    if hid(getattr(reader, "status_dir", None)):
+        reader.status_dir = None
+# --- end fix2 ---
 
 
 # ---------------------------------------------------------------- the folder lock
@@ -260,6 +316,7 @@ class Watcher:
         heartbeat: int = HEARTBEAT,
         tz: tzinfo | None = None,
         project_for: Callable[[Any, Any], str] | None = None,  # ab: [[live.group]]
+        remove_own: bool = True,  # release-fix: ENG (engine 2)
     ) -> None:
         self.dir = default_dir(status_dir)
         self.readers = list(readers)
@@ -288,6 +345,20 @@ class Watcher:
         self._unsaved = False  # a save that had to happen failed: try again every tick
         self._behind = False  # --- L4-fix: catch-up --- (a reader said so last tick)
         self._turn = 0  # --- L4-fix: catch-up --- (which reader goes first on such a tick)
+        # --- release-fix: ENG (engine 2, engine 4) ---
+        # a record this Watcher wrote is removed once its last update is older than its expiry
+        # plus the history window (it has been hidden that long; its events are past the book)
+        self.remove_after = (expire_after + keep_days * 86400
+                             if remove_own and expire_after else None)
+        self._held: dict[str, tuple[int, dict]] = {}  # status id -> (tries, change) put off
+        self._tidied = 0  # records looked at for removal this tick
+        # --- end release-fix: ENG ---
+        # --- fix2: ENG 4, PRIV 5 ---
+        self._last_tick: datetime | None = None  # the last finished tick's time (this run)
+        self._tidy_ok = False  # this tick may remove own records (the clock looks sane)
+        for reader in self.readers:
+            share_private(reader, self.private_roots)
+        # --- end fix2 ---
 
     # ------------------------------------------------------------ lock
     def _lock(self) -> str | None:
@@ -319,14 +390,39 @@ class Watcher:
             _unlock_fd(fd)
 
     def close(self) -> None:
-        """Save the state (if this Watcher holds the folder) and let the folder go."""
+        """Save the state (if this Watcher holds the folder) and let the folder go. Only the
+        state after the last finished tick is saved: a tick cut short (Ctrl+C) never is."""
         if self._fd is None:
             return
         try:
+            # --- release-fix: ENG (engine 1) ---
+            if self._good:
+                self._state = json.loads(self._good)
+            # --- end release-fix: ENG ---
+            self._flush_held()  # fix2: ENG 2
             if self._state is not None:
                 self.save()
         finally:
             self._unlock()
+
+    # --- fix2: ENG 2 ---
+    def _flush_held(self) -> None:
+        """Closing with changes still put off (their record couldn't be read): apply each once
+        more, forced (a still unreadable file is replaced, as after :data:`HOLD_TICKS`), so
+        none is lost: the reader's cursor is already past it. Their events come from the next
+        run's folder diff. A failure here is dropped quietly: closing must not fail."""
+        if not self._held:
+            return
+        result = TickResult()
+        now = max(self._last_tick or utcnow(), utcnow())  # never before this run's ticks
+        for sid, (_tries, change) in list(self._held.items()):
+            with contextlib.suppress(Exception):
+                self._apply(dict(change), now, result, tries=HOLD_TICKS)
+            self._held.pop(sid, None)
+        self._held.clear()
+        if self._state is not None:
+            self._state["wrote"] = dict(sorted(self._wrote.items()))  # a restart knows them
+    # --- end fix2 ---
 
     def __enter__(self) -> Watcher:
         return self
@@ -396,7 +492,7 @@ class Watcher:
         try:
             atomic_write_json(self.state_path, self.state(), max_bytes=STATE_MAX_BYTES)
         except (OSError, ValueError) as exc:
-            result.errors.append(f"watcher state: {exc}"[:200])
+            result.errors.append(f"watcher state: {safe_reason(exc)}"[:200])  # release-fix: ENG
             self._unsaved = urgent
             return
         self._saved, self._saved_at, self._unsaved = text, now, False
@@ -416,11 +512,26 @@ class Watcher:
             result.busy = why == BUSY
             result.errors.append(why)
             return result
+        # --- release-fix: ENG (engine 1) --- Ctrl+C (or any exception) half-way: the readers'
+        # cursors and the folder snapshot have moved on, but their events aren't logged. Roll
+        # back to the last finished tick, so it all comes again (and close() saves only that).
+        try:
+            return self._tick(now, result)
+        except BaseException:
+            self._rollback(now)
+            raise
+        # --- end release-fix: ENG ---
+
+    def _tick(self, now: datetime, result: TickResult) -> TickResult:
         state = self.state()
         if not self._good:
             self._good = json.dumps(state, sort_keys=True)
         if self._since is None:
             self._since = iso(now)  # a run before this one may have logged events up to now
+        # --- fix2: ENG 4 --- tidy only when this tick follows a finished one within the hour
+        last = self._last_tick
+        self._tidy_ok = last is not None and now - last <= TIDY_GAP
+        # --- end fix2 ---
         if state.get("folder") is None:  # first run: what is already there is no news
             self._diff(state, now, result)
         # --- L4-fix: catch-up --- a reader behind: a big budget with a 200 ms reading
@@ -431,13 +542,24 @@ class Watcher:
             self._turn = (self._turn + 1) % len(readers)
             readers = readers[self._turn:] + readers[:self._turn]
         # --- end L4-fix ---
+        # --- release-fix: ENG (engine 4) --- changes put off last tick (record unreadable) first
+        for sid, entry in list(self._held.items()):
+            tries, change = entry
+            self._apply(dict(change), now, result, tries=tries + 1)
+            # fix2: ENG 2 --- it leaves the queue only once applied (or put off again, which
+            # replaced it): a Ctrl+C inside _apply keeps it for close()
+            if self._held.get(sid) is entry:
+                del self._held[sid]
+        # --- end release-fix: ENG ---
         reader_events: list[Mapping[str, Any]] = []
+        behind = False  # --- L4-fix: catch-up ---
         for reader in readers:
-            batch = self._poll(reader, state, now, result, budget)
+            polled = self._poll(reader, state, now, result, budget)
             result.errors.extend(reader_notes(reader))  # --- live: L11 ci_gh ---
-            if batch is None:
+            if polled is None:
                 continue
-            agents, found = list(batch.agents), list(batch.events)
+            agents, found, late = polled  # fix2: ENG 5 (read inside _poll's try)
+            behind = behind or late
             if len(agents) > MAX_AGENTS:
                 result.errors.append(f"reader {reader.name}: {len(agents)} status changes in "
                                      f"one poll, only {MAX_AGENTS} taken")
@@ -450,8 +572,7 @@ class Watcher:
                     self._apply(change, now, result)
             reader_events.extend(e for e in found[:MAX_EVENTS] if isinstance(e, Mapping))
         # --- L4-fix: catch-up ---
-        result.behind = self._behind = any(getattr(r, "behind", False) is True
-                                           for r in self.readers)
+        result.behind = self._behind = behind
         # --- end L4-fix ---
 
         folder_events = self._diff(state, now, result)
@@ -471,7 +592,7 @@ class Watcher:
                     self.dir, out, tz=self.tz, keep_days=self.keep_days, now=now,
                     seen=self._seen if replay else None)
             except (OSError, ValueError) as exc:
-                result.errors.append(f"event log: {getattr(exc, 'strerror', None) or exc}"[:200])
+                result.errors.append(f"event log: {safe_reason(exc)}"[:200])  # release-fix: ENG
                 self._rollback(now)
                 return result
         known = state["folder"] or {}
@@ -485,10 +606,13 @@ class Watcher:
         # open files group would be counted again from the readers' and the folder's replays
         self._save_tick(self._good, now, result,
                         urgent=bool(result.events or result.written) or regrouped)
+        self._last_tick = now  # fix2: ENG 4
         return result
 
     def _poll(self, reader: Reader, state: dict, now: datetime, result: TickResult,
-              budget: Budget) -> Batch | None:
+              budget: Budget) -> tuple[list, list, bool] | None:
+        """One reader's poll: its status changes, its events and whether it is still behind.
+        ``None`` when it failed (reported, its state rolled back)."""
         name = reader.name
         saved = state["readers"].get(name)
         own = copy.deepcopy(saved) if isinstance(saved, dict) else {}
@@ -501,28 +625,39 @@ class Watcher:
             if not isinstance(batch, Batch):
                 raise TypeError("poll() must return a Batch")
             json.dumps(own)  # the state must stay JSON
+            # fix2: ENG 5 --- reader data read here, so a reader whose batch or `behind`
+            # raises fails alone (before, the whole tick rolled back, every tick)
+            agents, found = list(batch.agents), list(batch.events)
+            behind = getattr(reader, "behind", False) is True
         except Exception as exc:  # one broken reader must not stop the town
             state["readers"][name] = saved if isinstance(saved, dict) else {}
-            result.errors.append(f"reader {name}: {type(exc).__name__}: {exc}"[:200])
+            result.errors.append(f"reader {name}: {safe_reason(exc, typed=True)}"[:200])  # ENG
             return None
-        return batch
+        return agents, found, behind
 
     # ------------------------------------------------------------ status changes
-    def _apply(self, change: dict, now: datetime, result: TickResult) -> None:
+    def _apply(self, change: dict, now: datetime, result: TickResult, tries: int = 0) -> None:
+        # --- release-fix: ENG (engine 4) --- a record that is there but can't be read now (a
+        # hook replacing it) is never rewritten with only the change: the change waits for the
+        # next tick, up to HOLD_TICKS times; then a still broken file is replaced, as before
+        orig = dict(change)
         sid = change.pop("id")
         at = min(change.pop("at") or now, now)
-        old = None
         path = status_path(sid, self.dir)
-        if path.exists():
-            try:
-                doc = read_status(path)
-                old = doc if not validate(doc) else None
-            except StatusError:
-                old = None
+        force = tries >= HOLD_TICKS
+        try:
+            doc = read_existing(path)
+        except StatusBusy:
+            if not force:
+                self._hold(orig, tries, result)
+                return
+            doc = None
+        old = doc if doc is not None and not validate(doc) else None
         if old is None:
             self._write(sid, {k: v for k, v in change.items() if v is not None}, at, result,
-                        ours=True)
+                        ours=True, orig=orig, tries=tries)
             return
+        # --- end release-fix: ENG ---
         updated = parse_time(old.get("updated"))
         raw = {k: v for k, v in old.items() if k != "updated"}
         # a hook may have written a lone surrogate (JSON allows "\ud83d"; UTF-8 does not): the
@@ -555,22 +690,46 @@ class Watcher:
             return  # nothing to merge, and no heartbeat due
         diff = {k: merged.get(k) for k in set(raw) | set(merged) if raw.get(k) != merged.get(k)}
         if newer:
-            self._write(sid, diff, at, result, ours=True)
+            self._write(sid, diff, at, result, ours=True, orig=orig, tries=tries)
         else:  # counters and x- fields only: the record keeps its writer's time
-            self._write(sid, diff, updated or at, result, ours=False)
+            self._write(sid, diff, updated or at, result, ours=False, orig=orig, tries=tries)
 
     def _write(self, sid: str, changes: dict, when: datetime, result: TickResult, *,
-               ours: bool) -> None:
+               ours: bool, orig: dict | None = None, tries: int = 0) -> None:
+        # --- release-fix: ENG (engine 4, privacy 5) ---
+        hold = orig is not None and tries < HOLD_TICKS
         try:
-            doc = update_status(sid, self.dir, now=when, **changes)
-        except (OSError, ValueError) as exc:  # StatusError, UnicodeError
-            result.errors.append(f"status {sid}: {exc}"[:200])
+            doc = update_status(sid, self.dir, now=when, replace_unreadable=not hold,
+                                **changes)
+        except StatusBusy:  # it couldn't be read between our read and the write: next tick
+            if orig is not None and hold:
+                self._hold(orig, tries, result)
+            else:
+                result.errors.append(f"status {sid}: can't be read")
             return
+        except (OSError, ValueError) as exc:  # StatusError, UnicodeError
+            result.errors.append(f"status {sid}: {safe_reason(exc)}"[:200])
+            return
+        # --- end release-fix: ENG ---
         result.written.append(sid)
         if ours:
             self._wrote[sid] = _digest(doc)
         else:
             self._wrote.pop(sid, None)  # its state is still the hook's
+
+    # --- release-fix: ENG (engine 4) ---
+    def _hold(self, change: dict, tries: int, result: TickResult) -> None:
+        """Put a change off to the next tick (its record can't be read just now). A newer
+        change for the same record that is put off too is merged over it."""
+        sid = change["id"]
+        before = self._held.pop(sid, None)
+        if before is not None:
+            change, tries = {**before[1], **change}, max(tries, before[0])
+        self._held[sid] = (tries, change)
+        result.retry.append(sid)
+        while len(self._held) > MAX_AGENTS:
+            del self._held[next(iter(self._held))]  # the oldest goes
+    # --- end release-fix: ENG ---
 
     # ------------------------------------------------------------ folder diff
     def _private(self, folder: Any) -> bool:
@@ -659,6 +818,7 @@ class Watcher:
             return []  # unreadable for now: keep the old snapshot
         new: dict[str, dict] = {}
         out: list[dict] = []
+        self._tidied = 0  # release-fix: ENG (engine 2)
         for path in paths:
             if path.suffix != ".json" or path.name.startswith("."):
                 continue
@@ -670,11 +830,20 @@ class Watcher:
                 st = None
             # the file id too: a rewrite of the same size within a coarse mtime still shows
             sig = [st.st_mtime_ns, st.st_size, st.st_ino or 0] if st else None
-            if prev is not None and prev.get("m") == sig:
-                if prev.get("x"):
-                    new[path.stem] = prev  # asleep and unchanged
+            if prev is not None and sig is not None and prev.get("m") == sig:
+                # --- release-fix: ENG (engine 2) --- asleep and unchanged: an own record past
+                # its removal time goes (in this same scan). An entry saved before 0.2's fix has
+                # no "u": an own one is read once more to learn its time.
+                if prev.get("x") and ("u" in prev or path.stem not in self._wrote):
+                    if not self._tidy(path, prev, sig, now):
+                        new[path.stem] = prev
                     continue
-                entry = dict(prev)
+                entry = (self._read_entry(path, sig, result) if prev.get("x")
+                         else dict(prev))
+                if entry is None:
+                    new[path.stem] = prev
+                    continue
+                # --- end release-fix: ENG ---
             else:
                 entry = self._read_entry(path, sig, result) if sig else None
                 if entry is None:
@@ -688,10 +857,58 @@ class Watcher:
             entry["at"] = iso(when) if when else entry["u"]
             if not first:
                 out.extend(self._changes(path.stem, prev, entry, now))
-            new[path.stem] = self._asleep(entry) if self._expired(entry, now) else entry
+            # --- release-fix: ENG (engine 2) --- an own record asleep keeps its time ("u"):
+            # it is removed once that is old enough
+            kept = entry
+            if self._expired(entry, now):
+                kept = self._asleep(entry)
+                if path.stem in self._wrote:
+                    kept["u"] = entry["u"]
+                    if self._tidy(path, kept, sig, now):
+                        continue
+            new[path.stem] = kept
+            # --- end release-fix: ENG ---
         state["folder"] = new
         out.extend(self._new_projects(state, new, now, announce=not first))
         return out
+
+    # --- release-fix: ENG (engine 2) ---
+    def _tidy(self, path: Path, entry: dict, sig: list[int] | None, now: datetime) -> bool:
+        """Remove an asleep record this Watcher wrote itself, once its last update is older
+        than :attr:`remove_after` (expiry plus the history window). Only when the file still
+        holds exactly what this Watcher wrote (a hook's later write keeps it for good) and is
+        unchanged since this scan's ``stat``. At most :data:`MAX_TIDY` are looked at per tick.
+        Returns whether it was removed."""
+        sid = path.stem
+        if not self.remove_after or sid not in self._wrote or sig is None:
+            return False
+        if not self._tidy_ok:
+            return False  # fix2: ENG 4 (first tick of a run, or the clock jumped): next tick
+        updated = parse_time(entry.get("u"))
+        if updated is None or now - updated <= timedelta(seconds=self.remove_after):
+            return False
+        if self._tidied >= MAX_TIDY:
+            return False  # the rest next tick
+        self._tidied += 1
+        try:
+            if path.is_symlink():
+                return False
+            doc = read_status(path)
+        except (OSError, StatusError):
+            return False
+        if _digest(doc) != self._wrote.get(sid):
+            self._wrote.pop(sid, None)  # someone else wrote it since: never this Watcher's
+            return False
+        try:
+            st = path.stat()
+            if [st.st_mtime_ns, st.st_size, st.st_ino or 0] != sig:
+                return False  # rewritten just now: it's alive
+            path.unlink()
+        except OSError:
+            return False  # held open (Windows) or read-only: try again next tick
+        self._wrote.pop(sid, None)
+        return True
+    # --- end release-fix: ENG ---
 
     def _read_entry(self, path: Path, sig: list[int], result: TickResult) -> dict | None:
         try:

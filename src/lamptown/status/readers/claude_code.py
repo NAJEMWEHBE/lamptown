@@ -86,7 +86,7 @@ Events: ``start`` at the session's start and ``files`` at the minute the files c
 history shows real times while catching up); everything else comes from the status folder.
 
 Catching up: only logs changed in the last ``days``; a live session's log over 8 MB seen for the
-first time starts 1 MB before its end (its state is right at once) and the part before that is
+first time starts 384 KB before its end (its state is right at once) and the part before that is
 read later as history ("backfill"), with whatever budget is left. Other logs are read from the
 start, within the shared budget, over as many polls as it takes; a session without a live
 process is held back (no record) until its log is read to the end, so the history gets the
@@ -125,6 +125,7 @@ from typing import Any
 from lamptown.status.adapters import folder_path, make_id, project_folder
 from lamptown.status.events import name_only
 from lamptown.status.readers import Batch
+from lamptown.status.readers.git import hidden, private_roots  # fix2-PRIV
 from lamptown.status.readers.tail import Budget, Line, cursor_key, forget, start_at, tail
 from lamptown.status.schema import parse_time
 from lamptown.status.store import iso, slug
@@ -134,6 +135,8 @@ AGENT = "claude-code"
 DISPLAY = "Claude Code"
 STATE_VERSION = 1
 
+# fix-PRIV: the session titles not kept with titles = "folder" (custom, AI-written, agent, live)
+FOLDER_DROPS = ("ct", "ai", "an", "sn", "sa")
 BIG = 8 * 1024 * 1024  # a live log bigger than this starts near its end on first sight
 BACK = 384 * 1024  # ... this far before its end (one poll's per-file budget reads it)
 HEAD_SCAN = 64 * 1024  # bytes read from a log's start to find its cwd, when needed
@@ -351,8 +354,13 @@ class ClaudeCodeReader:
     name = NAME
 
     def __init__(self, root: str | os.PathLike | None = None, *, on_stop: str = "ok",
-                 days: int = 7, titles: str = "session") -> None:
-        self.root = Path(os.path.expanduser(os.fspath(root))) if root else Path.home() / ".claude"
+                 days: int = 7, titles: str = "session", private_dirs: Any = None,
+                 config_dir: Any = None) -> None:
+        # --- fix2-PRIV: a session in a private folder keeps no title in the saved state (the
+        # Watcher adds its own private folders here too) ---
+        self.private = private_roots(private_dirs, config_dir)
+        # --- end fix2-PRIV ---
+        self.root =Path(os.path.expanduser(os.fspath(root))) if root else Path.home() / ".claude"
         self.on_stop = on_stop if on_stop in ("ok", "waiting") else "ok"
         self.window = timedelta(days=max(1, int(days)))
         self.titles = titles if titles in ("session", "folder") else "session"
@@ -746,9 +754,9 @@ class ClaudeCodeReader:
                 if doc is not None and (cached is None or doc is not cached[1]):
                     self._touched.add(key)
                     sub["fin"] = 1 if doc.get("finished") is True else 0
-                    sub["ti"] = _text(doc.get("description"), 120) or _text(
-                        doc.get("agentType"), 64)
                     sub["ty"] = _text(doc.get("agentType"), 64)
+                    if self.titles == "session":  # fix-PRIV: else no task text is kept
+                        sub["ti"] = _text(doc.get("description"), 120) or sub["ty"]
                     tool = doc.get("toolUseId")  # the parent's call that launched it
                     if isinstance(tool, str) and tool:
                         sub["tu"] = tool[:128]
@@ -842,7 +850,8 @@ class ClaudeCodeReader:
                             "ai-title": ("ai", doc.get("aiTitle")),
                             "agent-name": ("an", doc.get("agentName"))}[kind]
             text = _text(value, 200)
-            if text and (not history or not ses.get(field)):
+            # fix-PRIV: with titles = "folder" no session title is kept, not even in the state
+            if text and self.titles == "session" and (not history or not ses.get(field)):
                 ses[field] = text
             return
         message = doc.get("message")
@@ -1061,13 +1070,22 @@ class ClaudeCodeReader:
             return quick
         return ""
 
+    def _private(self, cwd: Any) -> bool:
+        """fix2-PRIV: ``cwd`` is in or under a private folder."""
+        return bool(self.private) and hidden(self.private, cwd)
+
     def _title(self, ses: dict, live: Live | None, cwd: str) -> str:
         """The session's title, or with ``titles = "folder"`` its project folder's name only
-        (Claude Code writes its titles from your first message). Never a home folder's name."""
+        (Claude Code writes its titles from your first message). Never a home folder's name.
+        fix2-PRIV: a session in a private folder keeps no title (the Watcher hides its record
+        by its ``x-folder``)."""
+        private = self._private(cwd)  # fix2-PRIV
+        if self.titles == "folder" or private:  # fix-PRIV: titles an older run kept go too
+            for key in FOLDER_DROPS:
+                ses.pop(key, None)
+            return DISPLAY if private else (project_folder(cwd) or DISPLAY)
         if live and live.name:
             ses["sn"], ses["sa"] = live.name, 1 if live.auto_name else 0
-        if self.titles == "folder":
-            return project_folder(cwd) or DISPLAY
         if ses.get("ct"):
             return ses["ct"]
         if ses.get("sn") and not ses.get("sa"):
@@ -1148,6 +1166,8 @@ class ClaudeCodeReader:
             stale = LIVE_STALE if waited else None  # a long tool call of its own, say
         else:
             state, message = "ok", "Ended"  # killed, interrupted, or its session is gone
+        if self.titles == "folder" or self._private(cwd):  # fix2-PRIV: nor a private one's
+            sub.pop("ti", None)  # fix-PRIV: a task title an older run kept
         title = sub.get("ti") if self.titles == "session" else sub.get("ty")
         change: dict[str, Any] = {
             "id": sub["id"], "at": last or iso(now), "agent": AGENT, "kind": "task",
@@ -1259,4 +1279,6 @@ def make_reader(options: Mapping[str, Any]) -> ClaudeCodeReader:
                             on_stop=str(options.get("on_stop", "ok")),
                             days=days if isinstance(days, int) and not isinstance(days, bool)
                             else 7,
-                            titles=str(options.get("titles", "session")))
+                            titles=str(options.get("titles", "session")),
+                            private_dirs=options.get("private_dirs"),  # fix2-PRIV
+                            config_dir=options.get("config_dir"))

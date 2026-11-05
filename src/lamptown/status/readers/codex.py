@@ -83,13 +83,17 @@ from typing import Any
 
 from lamptown.status.adapters import folder_path, project_folder
 from lamptown.status.adapters.codex import thread_id
+from lamptown.status.events import LIMITS, NAME_RULE, name_only
 from lamptown.status.readers import MAX_AGENTS, MAX_EVENTS, Batch
+from lamptown.status.readers.git import hidden, private_roots  # fix2-PRIV
 from lamptown.status.readers.tail import Budget, Line, cursor_key, forget, start_at, tail
 from lamptown.status.schema import parse_time
 from lamptown.status.store import iso, slug
 
 AGENT = "codex"
 DISPLAY = "Codex"
+TITLE_LIMIT = LIMITS["title"]  # fix-PRIV: a thread title is kept as the town shows it
+TITLE_RULE = NAME_RULE  # fix2-PRIV: saved titles cut by an older rule are cut again, once
 DB_NAME = "state_5.sqlite"
 DAYS = 7
 MAX_FILES = 500  # rollout files watched (most recently changed first)
@@ -145,7 +149,8 @@ _PATCH_BIG_RE = re.compile(rb"\*\*\* (?:Add|Update|Delete) File: (.+?)(?:\\n|\\r
 
 
 def make_reader(options: dict) -> CodexReader:
-    return CodexReader(**{k: v for k, v in options.items() if k in ("root", "days")})
+    return CodexReader(**{k: v for k, v in options.items()
+                          if k in ("root", "days", "private_dirs", "config_dir")})  # fix2-PRIV
 
 
 def default_root() -> Path:
@@ -196,7 +201,12 @@ class CodexReader:
 
     name = "codex"
 
-    def __init__(self, root: str | os.PathLike | None = None, days: int = DAYS) -> None:
+    def __init__(self, root: str | os.PathLike | None = None, days: int = DAYS,
+                 private_dirs: Any = None, config_dir: Any = None) -> None:
+        # --- fix2-PRIV: a session in a private folder keeps no project name or title in the
+        # saved state (the Watcher adds its own private folders here too) ---
+        self.private = private_roots(private_dirs, config_dir)
+        # --- end fix2-PRIV ---
         self.root = Path(os.path.expandvars(str(root))).expanduser() if root else default_root()
         self.days = max(1, min(int(days), 31)) if isinstance(days, int) else DAYS
         self._cwd: dict[str, str] = {}  # file key -> the session's folder (memory only)
@@ -423,6 +433,18 @@ class CodexReader:
             if not isinstance(state.get(key), kind):
                 state[key] = secrets.token_hex(8) if kind is str else {}
         cursors, sess, salt = state["files"], state["sess"], state["salt"]
+        # fix-PRIV, fix2-PRIV: a title an older version saved (raw, or cut by an older rule) is
+        # cut once; the state remembers the rule it was cut by (the Watcher hands each poll a
+        # copy, so an object's identity can't tell)
+        if state.get("tc") != TITLE_RULE:
+            for s in sess.values():
+                if isinstance(s, dict) and isinstance(s.get("ti"), str):
+                    s["ti"] = name_only(s["ti"], TITLE_LIMIT)
+            state["tc"] = TITLE_RULE
+        if not self.private:  # fix2-PRIV: no private folders (any more): no session is private
+            for s in sess.values():
+                if isinstance(s, dict) and s.pop("pv", None):
+                    s.pop("db", None)  # its title is looked up again
         for s in sess.values():  # a state saved before ids came from the id's random end
             if isinstance(s, dict) and isinstance(s.get("sid"), str) and s.get("id") == \
                     _old_id(s["sid"]):
@@ -444,6 +466,14 @@ class CodexReader:
             s = sess.get(key)
             if isinstance(s, dict) and s.get("ig"):
                 continue
+            # fix2-PRIV: with private folders, a saved session's folder is looked up once a run
+            # (even with nothing new), so one in a private folder drops what an older run kept
+            if self.private and isinstance(s, dict) and key not in self._cwd \
+                    and spend.allow() > 0:
+                meta = self._meta(path, spend)
+                if meta is not None:
+                    self._cwd[key] = meta["cwd"]
+                    self._hide(key, s)
             cur = cursors.get(key)
             if (isinstance(s, dict) and isinstance(cur, dict) and cur.get("size") == st.st_size
                     and cur.get("mtime_ns") == st.st_mtime_ns
@@ -463,6 +493,7 @@ class CodexReader:
                         continue
                     cursors.pop(key, None)
                     s["seed"] = meta["end"]  # where its log lines start
+                self._hide(key, s)  # fix2-PRIV
             if key not in cursors and isinstance(s.get("seed"), int):
                 if spend.allow() <= 0:
                     continue  # first read (and first change) next poll, with a new allowance
@@ -480,6 +511,24 @@ class CodexReader:
             s.pop("dbc", None)
             batch.agents.append(self._change(key, s, sess))
         return batch
+
+    def _hide(self, key: str, s: dict) -> None:
+        """fix2-PRIV: a session whose folder is in a private folder keeps no project name or
+        title in the state (saved in ``cursors.json``); ``pv`` marks it, so a title the thread
+        database gives later isn't kept either. Its record says "Codex"; the Watcher hides it
+        by its ``x-folder``."""
+        cwd = self._cwd.get(key)
+        if not cwd:
+            return
+        if self.private and hidden(self.private, cwd):
+            s.pop("p", None)
+            s.pop("ti", None)
+            s["pv"] = 1
+        else:
+            if s.pop("pv", None):
+                s.pop("db", None)  # no longer private: its title is looked up again
+            if not s.get("p"):
+                s["p"] = project_folder(cwd)[:80]
 
     def _new_session(self, meta: dict, sess: dict) -> dict:
         sid = meta["sid"]
@@ -524,6 +573,7 @@ class CodexReader:
                 if cwd:
                     self._cwd[key] = cwd
                     s["p"] = project_folder(cwd)[:80]
+                    self._hide(key, s)  # fix2-PRIV
                 continue
             self._signal(s, key, top=top, ptype=ptype, t=t, batch=batch)
             new = self._files_in(line, doc, top=top, ptype=ptype, s=s, salt=salt, key=key)
@@ -887,8 +937,8 @@ def _take(s: dict, row: tuple, con: sqlite3.Connection) -> bool:
     title, nick, source = row
     before = (s.get("ti"), s.get("par"))
     name = title if isinstance(title, str) and title.strip() else nick
-    if isinstance(name, str) and name.strip():
-        s["ti"] = " ".join(name.split())[:200]
+    if isinstance(name, str) and name.strip() and not s.get("pv"):  # fix2-PRIV: not private
+        s["ti"] = name_only(name, TITLE_LIMIT)  # fix-PRIV: saved, so never a path or address
     if not s.get("par"):
         s["par"] = _spawn_parent(source) or _edge(con, s["sid"])
     if (s.get("ti"), s.get("par")) != before:
