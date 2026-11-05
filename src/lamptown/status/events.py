@@ -247,9 +247,11 @@ def name_only(text: Any, limit: int) -> str:
 
 def project_name(value: Any) -> str:
     """A project's name: the last part of a folder path (any OS, percent-escaped too), at
-    most 80 characters."""
+    most 80 characters. An e-mail address in it becomes ``"someone"`` and a secret is masked,
+    as in :func:`name_only`."""
     name = folder_name(unescape_paths(value)) if isinstance(value, str) else ""
-    return one_line(scrub(name), LIMITS["project"])
+    name = mask_secrets(_MAIL_RE.sub(MAIL_WORD, scrub(name)), long_tokens=False)
+    return one_line(name, LIMITS["project"])
 
 
 def _count(value: Any) -> int | None:

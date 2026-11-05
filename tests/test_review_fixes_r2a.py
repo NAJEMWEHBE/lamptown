@@ -312,3 +312,12 @@ def test_vault_dropped_names_are_names_only(tmp_path):
     assert out["dropped"]["names"] == kept["notes"]
     for shown in out["dropped"]["names"]:
         assert CANARY not in shown and AT not in shown and "qzmail" not in shown, shown
+
+
+@pytest.mark.parametrize("value", ["wren" + AT + "qzmail.net",
+                                   "C:" + SL + "work" + SL + "wren" + AT + "qzmail.net",
+                                   "wren%40qzmail.net", "token" + "=abcdef123456"])
+def test_a_project_name_keeps_no_address_or_secret(value):
+    """A project name gets the same address and secret rules as a title."""
+    name = project_of(value, "")
+    assert "qzmail" not in name and "abcdef123456" not in name
