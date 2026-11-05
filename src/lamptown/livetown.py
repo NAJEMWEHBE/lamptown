@@ -74,7 +74,12 @@ from lamptown.status.events import (
 )
 from lamptown.status.schema import parse_time, validate
 from lamptown.status.store import DEFAULT_STALE_AFTER, StatusError, default_dir, iso, read_status
-from lamptown.status.watch import remask_pending
+from lamptown.status.watch import (  # review-fix R3b 1, 2
+    private_tool,
+    remask_pending,
+    repo_places,
+    unplaced,
+)
 
 LIVE_SPEC = "lamptown-live/1"
 HISTORY_SPEC = "lamptown-history/1"
@@ -385,6 +390,8 @@ class LiveContext:
     quiet_after: int = DEFAULT_QUIET_AFTER
     expire_after: int = DEFAULT_EXPIRE_AFTER
     group_for: GroupMap = field(default_factory=GroupMap)  # ab: [[live.group]]
+    # review-fix R3b 2: the git and ci_gh readers' repos (places a logged repo's id)
+    repos: tuple[str, ...] = ()
 
     def private(self, folder: Any, project: Any = None) -> bool:
         """In or under a private folder: the status folder, ``folder`` (``x-folder``), or
@@ -396,12 +403,29 @@ class LiveContext:
             for p in (folder, project if path_like(project) else None))
 
 
+# --- review-fix R3b 2 ---
+def reader_repos_of(cfg: Config) -> tuple[str, ...]:
+    """The ``repos`` (or ``repo``) of each ``git`` and ``ci_gh`` ``[[live.reader]]``: what the
+    Watcher's readers of those kinds watch (watch.reader_repos), as config text."""
+    out: list[str] = []
+    for entry in cfg.live.readers:
+        if entry.get("kind") not in ("git", "ci_gh"):
+            continue
+        repos = entry.get("repos", entry.get("repo", []))
+        repos = [repos] if isinstance(repos, str) else repos
+        if isinstance(repos, list | tuple):
+            out.extend(str(r) for r in repos if isinstance(r, str | os.PathLike))
+    return tuple(out)
+# --- end review-fix R3b 2 ---
+
+
 def context(cfg: Config) -> LiveContext:
     dirs = private_dirs(cfg)
     roots = _private_roots({"private_dirs": dirs, "_config_dir": str(cfg.base_dir)})
     return LiveContext(status_dir=live_status_dir(cfg), roots=roots, plot_for=plot_map(cfg),
                        history_days=cfg.live.history_days, **ageing(cfg),
-                       group_for=group_map(cfg))  # ab: [[live.group]]
+                       group_for=group_map(cfg),  # ab: [[live.group]]
+                       repos=reader_repos_of(cfg))  # review-fix R3b 2
 
 
 def watcher_options(cfg: Config) -> dict[str, Any]:
@@ -590,7 +614,8 @@ def live_payload(records: Iterable[Mapping[str, Any]], cfg: Config, now: datetim
         ci = doc.get("x-ci")
         agents.append({
             "id": out_id[r["sid"]],
-            "tool": name_only(doc.get("agent"), LIMITS["tool"]),
+            "tool": (private_tool(doc.get("agent")) if private  # review-fix R3b 1
+                     else name_only(doc.get("agent"), LIMITS["tool"])),
             "title": PRIVATE_NAME if private else name_only(doc.get("title"), LIMITS["title"]),
             "project": project, "plot": plot, "state": r["state"], "since": iso(r["since"]),
             "parent": out_id.get(parent) if isinstance(parent, str) else None,
@@ -681,7 +706,8 @@ def _history_day(day: date, events: Sequence[Mapping[str, Any]], today: date,
         plot = e.get("plot")
         if isinstance(plot, str) and plot in PLOTS:
             a["plot"] = plot
-        tool = name_only(e.get("tool"), LIMITS["tool"])
+        tool = (private_tool(e.get("tool")) if sid.startswith("private-")  # review-fix R3b 1
+                else name_only(e.get("tool"), LIMITS["tool"]))
         if tool:
             a["tool"] = tool
         minute = int((t.astimezone(UTC) - start).total_seconds() // 60)
@@ -742,7 +768,9 @@ def mask_private_history(days: list, ctx: LiveContext) -> list:
     change. So a build that runs before the Watcher has seen a folder made private (the app
     closed, the config just edited) never puts that folder's names in ``town-history.js``.
     Until the Watcher has masked its log for every private folder (``remask_pending``), an
-    agent with no record is masked too, as the Watcher does: nothing says where it ran."""
+    agent with no record is masked too when it may have run there, as the Watcher does
+    (``watch.unplaced``): a git or CI id whose repository the readers' ``repos`` or a record's
+    folder tells is checked against the private folders instead (R3b 2)."""
     if not ctx.roots:
         return days
 
@@ -753,11 +781,15 @@ def mask_private_history(days: list, ctx: LiveContext) -> list:
     known = {doc["id"] for doc in records}
     if not hidden and not unknown:
         return days
+    # --- review-fix R3b 2 ---
+    places = repo_places([*ctx.repos, *(doc.get("x-folder") for doc in records)],
+                         ctx.roots) if unknown else {}
 
     def masked(e: Any) -> bool:
         sid = e.get("id") if isinstance(e, Mapping) else None
         return (isinstance(sid, str) and not sid.startswith("private-")
-                and (sid in hidden or (unknown and sid not in known)))
+                and (sid in hidden or (unknown and unplaced(sid, known, places, ctx.private))))
+    # --- end review-fix R3b 2 ---
 
     out = []
     for day, events in days:
@@ -767,7 +799,8 @@ def mask_private_history(days: list, ctx: LiveContext) -> list:
                 kept.append(e)
             elif e.get("k") != "project":
                 kept.append({**e, "id": private_id(ctx.status_dir, e["id"]),
-                             "title": PRIVATE_NAME, "project": ""})
+                             "title": PRIVATE_NAME, "project": "",
+                             "tool": private_tool(e.get("tool"))})  # review-fix R3b 1
         out.append((day, kept))
     return out
 # --- end review-fix R2b 1 ---

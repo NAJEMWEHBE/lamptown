@@ -729,6 +729,8 @@ def test_a_bad_time_in_the_event_log_is_skipped_and_never_stops_a_build(tmp_path
     cfg, work = config(tmp_path)
     status = work / "status"
     good = '{"t":"2026-11-04T17:00:00Z","id":"codex-d","k":"start","title":"Fix save slots"}'
+    with Watcher(readers=(), tz=UTC, **L.watcher_options(cfg)) as w:  # its state is saved
+        w.tick(NOW - timedelta(hours=1))
     _write_events(status, [*BAD_TIMES, good])
     assert [e["id"] for e in ev.read_day(ev.day_path(status, NOW.date()))] == ["codex-d"]
     for line in BAD_TIMES:

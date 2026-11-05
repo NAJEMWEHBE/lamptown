@@ -302,8 +302,11 @@ def _mask(rec: Record) -> Record:
     needs = [{"text": "Needs you"}] if rec.needs else []  # town sign: "Private agent: ..."
     message = ("Not a valid status file" if rec.invalid
                else {"error": "Error", "waiting": "Needs you"}.get(rec.state, ""))
+    from lamptown.status.watch import private_tool  # review-fix R3b 1 (late: watch imports this)
+
     return replace(rec, id=f"private-{digest}", title=PRIVATE_NAME, message=message,
-                   needs=needs, links=[], folder="", private=True)
+                   needs=needs, links=[], folder="", private=True,
+                   agent=private_tool(rec.agent) or None)  # a known tool word, never free text
 
 
 # ---------------------------------------------------------------- rows

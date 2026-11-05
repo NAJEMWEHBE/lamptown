@@ -214,6 +214,13 @@ def _drop_stale(lock: Path, stale: float) -> None:
             lock.unlink()
 
 
+def drop_stale_lock(path: str | os.PathLike) -> None:
+    """A record was removed (tidied, cleared): its lock file goes too when a killed writer left
+    it (older than :data:`LOCK_STALE`). A fresh one is a writer's at work: it removes its own.
+    (review-fix R3b 4)"""
+    _drop_stale(lock_path(path), LOCK_STALE)
+
+
 @contextlib.contextmanager
 def record_lock(path: str | os.PathLike) -> Generator[bool]:
     """Hold a record's short write lock while reading, deciding and writing it, so two writers
@@ -443,6 +450,7 @@ def clear_files(
                 continue  # rewritten while we looked: it's alive
             path.unlink()
             removed.append(path)
+            drop_stale_lock(path)  # review-fix R3b 4
         except OSError as exc:
             failed.append((path, exc.strerror or type(exc).__name__))
     return removed, foreign, failed

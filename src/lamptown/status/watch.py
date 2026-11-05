@@ -119,6 +119,7 @@ from lamptown.status.store import (
     atomic_write_bytes,
     atomic_write_json,
     default_dir,
+    drop_stale_lock,
     iso,
     read_existing,
     read_status,
@@ -143,9 +144,10 @@ def private_marks(roots: Any) -> list[str]:
 
 def remask_pending(status_dir: str | os.PathLike, roots: Any) -> bool:
     """Is a private folder in ``roots`` one the Watcher's saved state hasn't masked the log
-    for (a folder just made private since its last tick)? No saved state at all: no (the
-    Watcher hasn't run, so it logged nothing; a fresh state masks nothing either). A state
-    that can't be read, or one from before 0.2.1 (no ``prs``): yes."""
+    for (a folder just made private since its last tick)? No saved state: yes when the event
+    log has lines (the state was deleted; the Watcher's next first tick masks them, R3b 3),
+    else no (it hasn't run, so it logged nothing). A state that can't be read, or one from
+    before 0.2.1 (no ``prs``): yes."""
     marks = set(private_marks(roots))
     if not marks:
         return False
@@ -155,10 +157,89 @@ def remask_pending(status_dir: str | os.PathLike, roots: Any) -> bool:
             return True
         saved = json.loads(path.read_text(encoding="utf-8")).get("prs")
     except FileNotFoundError:
-        return False
+        return _has_log(Path(status_dir))  # review-fix R3b 3
     except (OSError, ValueError, AttributeError):
         return True
     return not isinstance(saved, list) or not marks <= set(saved)
+
+
+# --- review-fix R3b 1, 2, 3 ---
+def _has_log(status_dir: Path) -> bool:
+    """Does the event log hold a day file with anything in it? (Unreadable: yes.)"""
+    try:
+        for entry in os.scandir(event_log.events_dir(status_dir)):
+            if event_log.DAY_RE.match(entry.name) and entry.stat().st_size > 0:
+                return True
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    return False
+
+
+# The tool words a private agent may show: the ones Lamptown's own adapters and readers write
+# (and a few other well-known agents). A private record's ``agent`` is free text (``status
+# set --agent``, scripts), so anything else shows as no tool ("agent" on the page).
+TOOL_WORDS = frozenset({"claude-code", "claude", "codex", "cursor", "gemini-cli", "gemini",
+                        "copilot", "aider", "git", "ci"})
+
+
+def private_tool(value: Any) -> str:
+    """A private agent's tool as shown and logged: a :data:`TOOL_WORDS` word, else ``""``."""
+    word = name_only(value, event_log.LIMITS["tool"]).casefold().replace(" ", "-")
+    word = word.replace("_", "-")
+    return word if word in TOOL_WORDS else ""
+
+
+MAX_PLACES = 2000  # folders looked at by repo_places, at most
+
+
+def repo_places(folders: Iterable[Any], private: list[str] | None = None) -> dict[str, str]:
+    """The ids a ``git`` or ``ci_gh`` reader gives the repositories of ``folders`` (the readers'
+    ``repos``, the records' ``x-folder``), each with its worktree folder: a logged line of such
+    an id with no record is then placed and checked against the private folders, not masked
+    blindly. In memory only (never saved: these are paths)."""
+    from lamptown.status.readers import ci_gh, git  # late: the readers import this package
+
+    out: dict[str, str] = {}
+    for n, folder in enumerate(folders):
+        if n >= MAX_PLACES:
+            break
+        path = git._expand(folder)
+        if not path:
+            continue
+        repo = git.find_repo(path, private=private)
+        for root in dict.fromkeys((path, repo.root if repo else path)):
+            for make in (git._id_for, ci_gh._id_for):
+                out.setdefault(make(root), root)
+    return out
+
+
+def reader_repos(readers: Iterable[Any]) -> list[str]:
+    """The ``repos`` of the ``git`` and ``ci_gh`` readers among ``readers``."""
+    out: list[str] = []
+    for reader in readers:
+        try:
+            name, repos = getattr(reader, "name", None), getattr(reader, "repos", None)
+        except Exception:
+            continue
+        if name in ("git", "ci_gh") and isinstance(repos, list):
+            out.extend(str(r) for r in repos if isinstance(r, str | os.PathLike))
+    return out
+
+
+def unplaced(sid: str, known: set[str], places: Mapping[str, str],
+             private: Callable[[str], bool]) -> bool:
+    """With a folder newly private: may the logged agent ``sid`` (no record of it in ``known``)
+    have run there? Yes unless ``places`` tells its repository and that one isn't private. The
+    Watcher's log rewrite and the build's history mask both ask this, so they agree."""
+    if sid in known:
+        return False
+    root = places.get(sid)
+    return root is None or private(root)
+# --- end review-fix R3b ---
+
+
 HEARTBEAT = 60  # seconds: an unchanged record is rewritten at most this often
 SAVE_EVERY = 20  # seconds: the saved state is written at most this often while things change
 MAX_PROJECTS = 2000
@@ -924,7 +1005,8 @@ class Watcher:
             "sa": doc.get("stale_after", self.stale_after) or 0,
             "kd": doc.get("kind", "task"),
             "ti": "" if private else title, "p": "" if private else project,
-            "to": name_only(doc.get("agent"), event_log.LIMITS["tool"]),
+            "to": (private_tool(doc.get("agent")) if private  # review-fix R3b 1
+                   else name_only(doc.get("agent"), event_log.LIMITS["tool"])),
             "pl": self._plot(doc, result), "pv": private,
             "f": _count(doc.get("x-files")), "c": _count(doc.get("x-commits")),
             "pu": _flag(doc.get("x-pushed")),
@@ -1027,11 +1109,15 @@ class Watcher:
             # --- end release-fix: ENG ---
         state["folder"] = new
         # --- review-fix: B2 1 ---
+        added = bool(set(self._marks) - set(state.get("prs") or []))
         if rebuild:
             self._rules_changed(state, old, new)
             # review-fix R2b 1: and the log, once this tick's diff is done (see _remask_log)
-            added = bool(set(self._marks) - set(state.get("prs") or []))
             self._remask = ({sid for sid, e in new.items() if e.get("pv")}, added, set(new))
+        elif first and added and _has_log(self.dir):
+            # review-fix R3b 3: no saved state (deleted) but a log: it is masked for these
+            # folders now, as remask_pending expects, before the state says it is
+            self._remask = ({sid for sid, e in new.items() if e.get("pv")}, True, set(new))
         state["pr"] = self._rules
         state["prs"] = list(self._marks)  # review-fix R2b 1
         # --- end review-fix: B2 1 ---
@@ -1089,14 +1175,18 @@ class Watcher:
         """Mask the logged events of records that are private under the new rules, in place:
         each such line gets the masked id, "Private agent" and no project, as if the record had
         always been private (its ``project`` lines go). With ``unknown`` (a rule hides a folder
-        it didn't before) a line for an agent with no record is masked too: nothing says where
-        it ran, so it can't be checked. Already masked lines stay; torn or broken lines (never
-        read) are dropped from a file that is rewritten. Only the Watcher holding the folder
-        appends to the log, so nothing is lost meanwhile; each day file is replaced atomically."""
+        it didn't before) a line for an agent with no record is masked too when it may have run
+        there (:func:`unplaced`): a ``git`` or ``ci_gh`` id whose repository a reader's
+        ``repos`` or a record's folder tells is checked instead (R3b 2). Already masked lines
+        stay (a free-text tool on one is cleaned, R3b 1); torn or broken lines (never read) are
+        dropped from a file that is rewritten. Only the Watcher holding the folder appends to
+        the log, so nothing is lost meanwhile; each day file is replaced atomically."""
         try:
             paths = sorted(event_log.events_dir(self.dir).iterdir())
         except FileNotFoundError:
             return
+        places = (repo_places([*reader_repos(self.readers), *self._record_folders()],
+                              self.private_roots) if unknown else {})
         for path in paths:
             if not event_log.DAY_RE.match(path.name) or path.is_symlink() or not path.is_file():
                 continue
@@ -1111,18 +1201,43 @@ class Watcher:
                         changed = True  # torn or broken: no reader ever sees it
                         continue
                     sid = event["id"]
-                    if not sid.startswith("private-") and (
-                            sid in private or (unknown and sid not in known)):
+                    if not sid.startswith("private-") and (sid in private or (
+                            unknown and unplaced(sid, known, places, self._private))):
                         changed = True
                         if event["k"] == "project":
                             continue  # a private record names no project
                         event = clean_event(self._mask(event))
                         if event is None:
                             continue
+                    elif sid.startswith("private-") and event.get("tool") != private_tool(
+                            event.get("tool")):  # review-fix R3b 1: an older line's free text
+                        changed = True
+                        event = {**event, "tool": private_tool(event.get("tool"))}
                     out.append(event_log.encode(event))
             if changed:
                 atomic_write_bytes(path, b"".join(out))
         self._seen = {}  # the day files' keys changed
+
+    def _record_folders(self) -> list[str]:
+        """The ``x-folder`` of each valid status record now, as ``livetown.read_records`` reads
+        them for the build (for :func:`repo_places`; not kept)."""
+        out: list[str] = []
+        try:
+            paths = sorted(p for p in self.dir.iterdir()
+                           if p.suffix == ".json" and not p.name.startswith("."))
+        except OSError:
+            return out
+        for path in paths[:MAX_PLACES]:
+            try:
+                doc = read_status(path)
+            except StatusError:
+                continue
+            if validate(doc) or doc.get("id") != path.stem:
+                continue
+            folder = doc.get("x-folder")
+            if isinstance(folder, str) and folder:
+                out.append(folder)
+        return out
 
     @staticmethod
     def _log_line(line: bytes) -> dict | None:
@@ -1170,6 +1285,7 @@ class Watcher:
         except OSError:
             return False  # held open (Windows) or read-only: try again next tick
         self._wrote.pop(sid, None)
+        drop_stale_lock(path)  # review-fix R3b 4: a killed writer's lock goes with it
         return True
     # --- end release-fix: ENG ---
 
@@ -1247,7 +1363,7 @@ class Watcher:
 
     def _mask(self, raw: dict) -> dict:
         return {**raw, "id": self.private_id(str(raw["id"])), "title": PRIVATE_NAME,
-                "project": ""}
+                "project": "", "tool": private_tool(raw.get("tool"))}  # review-fix R3b 1
 
     # ------------------------------------------------------------ events
     def _enrich(self, raw: Mapping[str, Any], snapshot: dict, now: datetime) -> dict | None:
