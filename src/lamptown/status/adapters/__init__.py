@@ -50,8 +50,50 @@ _KNOWN_TOKEN = re.compile(
     r"|(?i:sk-)(?:[A-Za-z0-9]+[-_]){0,3}[A-Za-z0-9]{16,}[A-Za-z0-9_-]*"
     r"|(?i:[sr]k_(?:live|test)_)[A-Za-z0-9]{16,}"
     r"|(?i:xox[abpr]-)[A-Za-z0-9-]{10,}|(?:AKIA|ASIA)[0-9A-Z]{16}(?![0-9A-Za-z])"
-    r"|(?i:glpat-)[A-Za-z0-9_-]{16,})")  # the prefix in any case: a room may capitalise it
+    r"|(?i:glpat-)[A-Za-z0-9_-]{16,}"  # the prefix in any case: a room may capitalise it
+    # --- review-fix R3a: more shapes --- Google (AIza...), Hugging Face (hf_...), npm
+    # (npm_...), and a JWT (three base64url parts, the first a JSON header: "eyJ")
+    r"|(?i:aiza)[A-Za-z0-9_-]{20,}|(?i:hf_)[A-Za-z0-9]{16,}|(?i:npm_)[A-Za-z0-9]{16,}"
+    r"|eyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]*)")
 # --- end review-fix R2a ---
+# --- review-fix R3a: more secret shapes ---
+# A PEM private key: its header, its body and its END line go; with no END line, the rest of
+# the text (a title cut short is all key from the header on).
+_PEM_HEAD = re.compile(r"(?i)-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY(?: BLOCK)?-----")
+_PEM_END = re.compile(r"(?i)-----END [A-Z0-9 ]{0,40}PRIVATE KEY(?: BLOCK)?-----")
+# A password glued to "-p" ("mysql -pSECRET", "7z x -pSECRET"): only after a program whose
+# "-p" takes a password, so "mkdir -p" and "docker run -p8080:80" stay. "-P" is a port.
+_PW_PROGRAM = re.compile(r"(?i)(?<![\w.-])(?:mysql[\w-]*|mariadb[\w-]*|sshpass|7z[ar]?|unrar"
+                         r"|rar)(?:\.exe)?(?![\w.-])")
+_GLUED_P = re.compile(r"(?<![\w-])-p(?=[^\s-])(?:\"[^\"]*\"|'[^']*'|\S+)")
+# A NAME that ends in "pass" ("PASS=x", "DB_PASS=x", '"pass": "x"'), but not a word that
+# holds it ("bypass=1", "compass=north", "PASSES=3", "tests pass: 12").
+_PASS_PAIR = re.compile(r"(?i)((?<![a-z])pass(?:\s*=\s*|[\"']\s*:\s*))(\"[^\"]*\"|'[^']*'|\S+)")
+# In a URL: the password of its userinfo ("https://bob:PW@host"), a webhook's secret path
+# (Slack, Discord) and a signature query value ("sig=", "X-Amz-Signature=", "Signature=").
+# "token=" and "key=" values are NAME=value pairs already.
+_URL_PASSWORD = re.compile(r"(?i)(?<![\w+.-])([a-z][a-z0-9+.-]*://[^\s/?#@:]*:)[^\s/?#@]+(?=@)")
+_WEBHOOK = re.compile(r"(?i)((?:hooks\.slack\.com/(?:services|workflows|triggers)"
+                      r"|discord(?:app)?\.com/api/webhooks)/)[^\s?#\"'<>]+")
+_SIGNED_QUERY = re.compile(r"(?i)([?&;](?:[\w-]*[-_.])?(?:sig|signature)=)[^&#\s\"'<>]+")
+
+
+def _mask_pem(text: str) -> str:
+    out, pos = [], 0
+    while (head := _PEM_HEAD.search(text, pos)) is not None:
+        out += [text[pos:head.start()], "…"]
+        end = _PEM_END.search(text, head.end())
+        pos = end.end() if end else len(text)
+    out.append(text[pos:])
+    return "".join(out)
+
+
+def _mask_glued_password(text: str) -> str:
+    program = _PW_PROGRAM.search(text)
+    if program is None:
+        return text
+    return text[:program.end()] + _GLUED_P.sub("-p…", text[program.end():])
+# --- end review-fix R3a ---
 _BEARER = re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}")
 _LONG_TOKEN = re.compile(r"[A-Za-z0-9_+/=.-]{24,}")
 
@@ -90,9 +132,17 @@ def excerpts_wanted(flag: bool = False) -> bool:
 def mask_secrets(text: str, *, long_tokens: bool = True) -> str:
     """``NAME=value`` secrets (also ``"token": "x"`` in JSON), secret flags (``--token X``),
     bearer tokens and well-known token shapes (``ghp_...``, ``sk-...``, ``xoxb-...``,
-    ``AKIA...``, ``glpat-...``) masked; long key-like runs too, unless ``long_tokens`` is off
-    (a title such as ``nightly-backup-of-the-photo-archive``)."""
+    ``AKIA...``, ``glpat-...``, ``AIza...``, ``hf_...``, ``npm_...``, a JWT, a PEM private
+    key, ``mysql -pSECRET``, ``PASS=x``, a URL's password, webhook path and signature) masked;
+    long key-like runs too, unless ``long_tokens`` is off (a title such as
+    ``nightly-backup-of-the-photo-archive``)."""
+    text = _mask_pem(text)  # review-fix R3a
+    text = _URL_PASSWORD.sub(lambda m: f"{m.group(1)}…", text)  # review-fix R3a
+    text = _WEBHOOK.sub(lambda m: f"{m.group(1)}…", text)  # review-fix R3a
+    text = _SIGNED_QUERY.sub(lambda m: f"{m.group(1)}…", text)  # review-fix R3a
     text = _KNOWN_TOKEN.sub("…", text)  # review-fix R2a
+    text = _mask_glued_password(text)  # review-fix R3a
+    text = _PASS_PAIR.sub(lambda m: f"{m.group(1)}…", text)  # review-fix R3a
     text = _SECRET_PAIR.sub(lambda m: f"{m.group(1)}{m.group(2)}…", text)
     text = _SECRET_FLAG.sub(lambda m: f"{m.group(1)}{m.group(2)}…", text)  # review-fix R2a
     text = _BEARER.sub(lambda m: f"{m.group(1)} …", text)

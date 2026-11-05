@@ -153,10 +153,11 @@ def clean_text(text: str) -> str:
 # Every string a collector returns is shown text (a job's result, an inbox title, a tool's
 # name, a skill's description, a contest's title...): its secrets are masked as a status
 # text's are (``token=x``, ``"token": "x"``, ``--password x``, bearer tokens, ``ghp_...`` and
-# other well-known shapes). Long key-like runs stay ("Built <sha>" is a result). A link is no
-# text: a value under a key named ``href``/``*Href``/``*_href``/``hrefs`` is left as it is (a
-# mask would break it). clean_text itself stays surrogates-only: build.write_atomic runs every
-# page through it.
+# other well-known shapes; review-fix R3a: also a URL's password, a webhook's path and a
+# signature value, while the rest of the URL stays). Long key-like runs stay ("Built <sha>" is
+# a result). A link is no text: a value under a key named ``href``/``*Href``/``*_href``/
+# ``hrefs`` is left as it is (a mask would break it). clean_text itself stays surrogates-only:
+# build.write_atomic runs every page through it.
 def shown_text(text: str) -> str:
     """``text`` as :func:`clean_text` gives it, with its secrets masked."""
     return mask_secrets(clean_text(text), long_tokens=False)

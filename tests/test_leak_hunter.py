@@ -86,6 +86,23 @@ FORMS: dict[str, Callable[[str], str]] = {
     "raw-ai": lambda m: "s" + "k-proj-" + m + PAD + " gl" + "pat-" + m + PAD,
     "raw-chat": lambda m: "xo" + "xb-1234-" + m + " AK" + "IA" + m.upper() + "QZ0123",
     # --- end review-fix R2a ---
+    # --- review-fix R3a: more forms --- Google, Hugging Face and npm tokens and a JWT; a PEM
+    # private key (it masks the rest of a text, so it has a form of its own); a password glued
+    # to "-p" and PASS= names; a URL's password; webhook and signed URLs; and home folders in
+    # the forms home_or_root learned (bare, so the user name is the last part)
+    # (each at most 64 characters: a status file's agent field holds no more)
+    "raw-cloud": lambda m: "AI" + "za" + m + PAD * 2 + " h" + "f_" + m + PAD,
+    "raw-jwt": lambda m: "np" + "m_" + m + PAD + " e" + "yJhbGci.eyJ" + m + ".c2ln",
+    "pem": lambda m: "-----BEGIN " + "RSA PRIV" + "ATE KEY----- MIIE" + m + "AAAA",
+    "glued-pass": lambda m: "mysql -p" + m + " PASS=" + m,
+    "url-password": lambda m: "https://bob:" + m + AT + "example.com/kite.git",
+    "url-hook": lambda m: "https://hooks." + "slack.com/services/T0/B0/" + m,
+    "url-sig": lambda m: "https://h.io/c?sig=" + m + "&X-Amz-Signature=" + m,
+    "var-home": lambda m: SL + SL.join(("var", "home", m)),
+    "export-home": lambda m: SL + SL.join(("export", "home", m)),
+    "unc-home": lambda m: BS * 2 + BS.join(("PC", "Users", m)),
+    "docs-settings": lambda m: "C:" + BS + BS.join(("Documents and Settings", m)),
+    # --- end review-fix R3a ---
 }
 PAD = "01234a"  # with a marker, the shortest run each token shape needs
 FILE_LINK = "file:" + SL * 3 + "C:" + SL + SL.join(("Users", "{}", "notes.txt"))
@@ -94,12 +111,19 @@ PATHS = (*DIRS, "file-url")
 ENCODED = ("win-encoded", "posix-encoded")  # review-fix R2a
 SECRETS = ("token", "bearer", "json-secret", "flag-secret", "raw-github", "raw-ai",
            "raw-chat")  # review-fix R2a
-SAYS = (*PATHS, *ENCODED, "email", *SECRETS)  # what a text the town shows must lose
-ALL = (*SAYS, "words")                        # what a text the town never shows must lose
+MORE_SECRETS = ("raw-cloud", "raw-jwt", "pem", "glued-pass")  # review-fix R3a
+URL_SECRETS = ("url-password", "url-hook", "url-sig")         # review-fix R3a
+HOMES = ("var-home", "export-home", "unc-home", "docs-settings")  # review-fix R3a
+OLD_SAYS = (*PATHS, *ENCODED, "email", *SECRETS)
+SAYS = (*OLD_SAYS, *MORE_SECRETS, *URL_SECRETS, *HOMES)  # what a text the town shows must lose
+# what a text the town never shows must lose: "words" proves none of it shows, so the R3a
+# forms add nothing there (and the live town shows at most MAX_AGENTS agents)
+ALL = (*OLD_SAYS, "words")
 # review-fix R2a: a room's own text (a job's result, an inbox title, a tool's name...) keeps its
 # paths (the owner's config choice) but loses its secrets; a file name loses what a name may hold
-ROOM_SAYS = SECRETS
-FILE_SAYS = ("email-file", "token", "flag-secret", "raw-github", *ENCODED)
+ROOM_SAYS = (*SECRETS, *MORE_SECRETS, *URL_SECRETS)  # review-fix R3a: and the new ones
+FILE_SAYS = ("email-file", "token", "flag-secret", "raw-github", *ENCODED,
+             "raw-cloud", "raw-jwt", "glued-pass")  # review-fix R3a
 
 
 # ----------------------------------------------------------------------------- the world
@@ -122,6 +146,7 @@ class World:
         self.live_private: list[str] = []            # more [live] private_dirs
         self.places: list[str] = []                  # [[live.place]] and [[live.group]] tables
         self.runs: list[tuple[list[str], str]] = []  # status run: (command, id)
+        self.private_runs: list[tuple[list[str], str, str]] = []  # R3a: (command, id, agent)
         self.records: dict[tuple[bool, str], dict] = {}  # status files: (private, form)
         self.shown: set[str] = set()                 # ids of the public status files
         self.form = ""                               # the form of the case being planted
@@ -136,8 +161,8 @@ class World:
 
     # The live town shows at most MAX_AGENTS agents, so the cases share them: one status file,
     # Claude Code session and Codex thread for each form, each case in its own field of it.
-    def record(self, private: bool) -> dict:
-        key = (private, self.form)
+    def record(self, private: bool, own: str = "") -> dict:
+        key = (private, own + self.form)  # review-fix R3a: ``own``: a record of its own
         if key not in self.records:
             n = self.next()
             folder = self.private / "plain" if private else self.work / "plain"
@@ -276,6 +301,12 @@ def _status_folder(w: World, text: str, m: str) -> None:
                   state="working", **{"x-folder": str(w.private / f"{text}-kite")})
 
 
+def _public_folder(w: World, text: str, m: str) -> None:
+    """review-fix R3a: a public record's folder, in a record of its own (in the form's shared
+    record, its x-project would name the project and hide what the folder gives)."""
+    w.record(False, own="folder/")["x-folder"] = text
+
+
 def _run_argv(w: World, text: str, m: str) -> None:
     w.runs.append(([sys.executable, str(w.base / "say.py"), "-", text], f"run-{w.next()}"))
 
@@ -285,6 +316,13 @@ def _run_stderr(w: World, text: str, m: str) -> None:
     said.parent.mkdir(exist_ok=True)
     said.write_text(text + "\nand a second line\n", encoding="utf-8")
     w.runs.append(([sys.executable, str(w.base / "say.py"), str(said)], f"run-{w.n}"))
+
+
+def _run_private_agent(w: World, text: str, m: str) -> None:
+    """review-fix R3a: ``status run --agent TEXT`` started in a private folder. Its id starts
+    with ``plant-``: the status file the wrapper writes holds the agent as given (an input)."""
+    w.private_runs.append(([sys.executable, str(w.base / "say.py"), "-"],
+                           f"plant-run-{w.next()}", text))
 
 
 def _run_program(w: World, text: str, m: str) -> None:
@@ -596,7 +634,12 @@ INPUTS: dict[str, tuple[tuple[str, ...], Callable[[World, str, str], None]]] = {
     "ledger.tool-name": (ROOM_SAYS, _ledger_tool),
     "shelf.description": (ROOM_SAYS, _skill_description),
     "contest.title": (ROOM_SAYS, _contest_title),
-    "status.project": ((*PATHS, *ENCODED), _status(False, **{"x-project": "{}"})),
+    "status.project": ((*PATHS, *ENCODED, *HOMES), _status(False, **{"x-project": "{}"})),
+    # review-fix R3a: a public record whose folder is a home in a form home_or_root learned,
+    # and the free-text agent of a private record (a status file, and status run --agent)
+    "status.folder": (HOMES, _public_folder),
+    "status.private-agent": (("words", "segment"), _status(True, agent="{}")),
+    "status.private-agent-run": (("words", "segment"), _run_private_agent),
 }
 # review-fix R2a: inputs whose text a room shows as it is: plain words planted there must show
 SHOWN = ("vault.dropped-file-name", "vault.inbox-title", "jobs.result", "ledger.tool-name",
@@ -748,6 +791,10 @@ def build_world(tmp: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     monkeypatch.chdir(w.work / "runs")  # a run's folder is where it starts: not this repo
     for command, status_id in w.runs:
         run_command(command, status_id, directory=w.status, kind="job", heartbeat=0)
+    (w.private / "runs").mkdir()
+    monkeypatch.chdir(w.private / "runs")  # review-fix R3a: these runs start in a private folder
+    for command, status_id, agent in w.private_runs:
+        run_command(command, status_id, directory=w.status, kind="job", heartbeat=0, agent=agent)
     start = (now - dt.timedelta(minutes=10, seconds=1)).timestamp()
     monkeypatch.setattr(cc, "process_info",
                         lambda pid: (True, start) if pid in w.pids else (False, None))
@@ -840,7 +887,8 @@ def test_the_town_read_every_input(town):
     assert len(live["agents"]) < MAX_AGENTS and not live.get("more")  # none cut off unseen
     ids = {a["id"] for a in live["agents"]}
     planted = w.shown | {i for _, i in w.runs}
-    assert len(planted) == len(SAYS) + len(INPUTS["run.argv"][0]) * 2 + 1
+    assert len(planted) == (len(SAYS) + len(INPUTS["status.folder"][0])  # R3a: its own
+                            + len(INPUTS["run.argv"][0]) * 2 + 1)
     assert planted <= ids, sorted(planted - ids)[:5]
     tools = [a["tool"] for a in live["agents"]]
     assert tools.count("claude-code") == len(w.sessions)

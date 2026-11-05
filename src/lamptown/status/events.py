@@ -281,9 +281,13 @@ def _when(value: Any) -> datetime | None:
 # A bare home folder (or the folder of all of them), on any OS, also behind a mount.
 # fix-PRIV: and a removable drive's own folder (/Volumes/<label>, /media/<user>/<label>,
 # /run/media/<user>/<label>): its label is often a person's name
-_HOMES_RE = re.compile(r"^(?:[a-z]:|/mnt/[a-z]|/cygdrive/[a-z]|/[a-z])?/"
-                       r"(?:(?:users|home)(?:/[^/]+)?|volumes(?:/[^/]+)?"
-                       r"|(?:run/)?media(?:/[^/]+){0,2})$")
+# review-fix R3a: and the homes of more systems: /var/home/<u> (Fedora Atomic), /export/home/<u>
+# (Solaris), "Documents and Settings\<u>" (old Windows), and any of them on a network share
+# (\\PC\Users\<u>, \\PC\c$\Users\<u>, \\wsl.localhost\Ubuntu\home\<u>)
+_HOMES_RE = re.compile(r"^(?:[a-z]:|/mnt/[a-z]|/cygdrive/[a-z]|/[a-z]|//[^/]+(?:/[^/]+)?)?"
+                       r"(?:/var|/export)?/"
+                       r"(?:(?:users|home|documents and settings)(?:/[^/]+)?"
+                       r"|volumes(?:/[^/]+)?|(?:run/)?media(?:/[^/]+){0,2})$")
 
 
 def _flat(path: str) -> str:
@@ -301,7 +305,9 @@ def path_like(value: Any) -> bool:
 def home_or_root(path: Any) -> bool:
     """A folder that names no project: a drive or file-system root, the home folder or one
     above it, or any bare home folder (``/home/<name>``, ``/Users/<name>``,
-    ``C:\\Users\\<name>``). Text only: nothing is opened."""
+    ``C:\\Users\\<name>``, ``/var/home/<name>``, ``/export/home/<name>``,
+    ``Documents and Settings\\<name>``, the same on a network share). Text only: nothing is
+    opened."""
     if not isinstance(path, str) or not path.strip():
         return False
     flat = _flat(path)
