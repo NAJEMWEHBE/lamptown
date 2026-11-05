@@ -43,6 +43,7 @@ from typing import Any
 from lamptown.collectors.jobs import clip, file_uri, iso, mtime, regex
 from lamptown.collectors.jobs_schedule import LOCAL
 from lamptown.collectors.jobs_schedule import parse as parse_schedule
+from lamptown.status.events import name_only
 
 MAX_FILES = 20000  # notes counted at most (the walk stops there)
 MAX_NAMES = 400  # note names sent per shelf (the count is always the true one)
@@ -125,14 +126,16 @@ def shelves(root: Path, skip: set[str], labels: dict, budget: list[int],
         files = _md_files(p, budget)
         if files:
             out.append({"key": p.name, "label": _label(p.name, labels), "n": len(files),
-                        "notes": [f.stem[:80] for f in files[:MAX_NAMES]], "href": file_uri(p)})
+                        "notes": [name_only(f.stem, 80) for f in files[:MAX_NAMES]],
+                        "href": file_uri(p)})
     order = [k for k in labels if isinstance(k, str)]
     out.sort(key=lambda s: (order.index(s["key"]) if s["key"] in order else len(order),
                             s["key"].lower()))
     if loose:
         budget[0] -= len(loose)
         out.append({"key": ".", "label": "LOOSE NOTES", "n": len(loose),
-                    "notes": [f.stem[:80] for f in loose[:MAX_NAMES]], "href": file_uri(root)})
+                    "notes": [name_only(f.stem, 80) for f in loose[:MAX_NAMES]],
+                    "href": file_uri(root)})
     return out
 
 
@@ -291,7 +294,7 @@ def collect(paths: dict, now: dt.datetime) -> dict[str, Any]:
         out["kept"] = len(kept)
         folders.append({"key": "kept", "label": _label("kept", labels) if "kept" in labels
                         else "KEPT", "n": len(kept), "kept": True,
-                        "notes": [f.stem[:80] for f in kept[:MAX_NAMES]],
+                        "notes": [name_only(f.stem, 80) for f in kept[:MAX_NAMES]],
                         "href": file_uri(kept_dir)})
     if dropped_dir is not None:
         gone = _md_files(dropped_dir, budget) if dropped_dir.is_dir() else []

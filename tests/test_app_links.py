@@ -164,3 +164,40 @@ def test_the_app_switches_off_pywebviews_own_link_opening():
     src = Path(links.__file__).with_name("window.py").read_text(encoding="utf-8")
     assert 'settings["OPEN_EXTERNAL_LINKS_IN_BROWSER"] = False' in src
     assert 'settings["OPEN_EXTERNAL_LINKS_IN_BROWSER"] = True' not in src
+
+
+LINK_PAGE = """<!doctype html><html><body>
+<a id="web" href="https://example.com/kite">kite</a><pre id="T"></pre>
+<script>var sent = [];
+window.pywebview = {api: {open_link: function (h) { sent.push(h); }}};</script>
+<script>%s</script>
+<script>
+function fire(type, button) {
+  var e = new MouseEvent(type, {bubbles: true, cancelable: true, button: button});
+  return {prevented: !document.getElementById('web').dispatchEvent(e)};
+}
+var r = {right: fire('auxclick', 2), back: fire('auxclick', 3), middle: fire('auxclick', 1),
+         click: fire('click', 0)};
+r.sent = sent.slice();
+document.getElementById('T').textContent = JSON.stringify(r);
+</script></body></html>"""
+
+
+def test_only_a_left_or_middle_click_opens_a_link(tmp_path):
+    """In a real headless browser (app job: the runner's Chrome; skipped without one): a right
+    click (the context menu) or a back/forward button never opens the link."""
+    import json
+    import re
+
+    from _browser import dump_dom, headless
+
+    page = tmp_path / "links.html"
+    page.write_text(LINK_PAGE % LINKS_JS, encoding="utf-8")
+    out = dump_dom(headless(tmp_path / "chrome", "--virtual-time-budget=2000", "--dump-dom",
+                            page.as_uri()))
+    m = re.search(r'<pre id="T">(.*?)</pre>', out, re.S)
+    assert m, out[-1500:]
+    r = json.loads(m.group(1))
+    assert r["right"] == {"prevented": False} and r["back"] == {"prevented": False}
+    assert r["middle"] == {"prevented": True} and r["click"] == {"prevented": True}
+    assert r["sent"] == ["https://example.com/kite"] * 2  # the middle click and the click

@@ -102,6 +102,41 @@ class _Api:
         return open_link(href, log=self._log)
 
 
+class _Commands:
+    """What a second launch asks for (``focus``, ``quit``). Served from the moment the lock is
+    taken, so a second copy gets its answer even while the first build is still running; the
+    window joins in with :meth:`attach` once it exists."""
+
+    def __init__(self, log: Callable[[str], None]) -> None:
+        self._log = log
+        self._lock = threading.Lock()
+        self.live: Live | None = None
+        self.win: Any = None
+        self.quit = threading.Event()
+
+    def __call__(self, cmd: str) -> None:
+        with self._lock:
+            live, win = self.live, self.win
+            if cmd == "quit":
+                self.quit.set()
+        if cmd == "focus":
+            if live is None:
+                self._log("second launch while the town builds: the window opens when it's ready")
+                return
+            self._log("second launch: bringing the window forward")
+            live.focus()
+        elif cmd == "quit":
+            self._log("asked to quit")
+            if win is not None:
+                win.destroy()
+
+    def attach(self, live: Live, win: Any) -> bool:
+        """The window exists now. False when a quit came first (don't start it)."""
+        with self._lock:
+            self.live, self.win = live, win
+            return not self.quit.is_set()
+
+
 # ----------------------------------------------------------------------------- the app
 def run_app(
     config: str | None = None,
@@ -130,24 +165,29 @@ def run_app(
             return EXIT_BUSY
         log("took over the lock from a copy that didn't answer")
     try:
-        return _run(paths, inst, log, config, out, poll, on_ready)
+        commands = _Commands(log)
+        inst.serve(commands)  # at once: the first build can be slow, a second launch can't wait
+        return _run(paths, commands, log, config, out, poll, on_ready)
     finally:
         inst.release()
 
 
-def _run(paths: AppPaths, inst: SingleInstance, log: AppLog, config, out, poll,  # noqa: PLR0917
+def _run(paths: AppPaths, commands: _Commands, log: AppLog, config, out, poll,  # noqa: PLR0917
          on_ready) -> int:
     feed = LiveFeed(log)  # the app's one Watcher (with [live] on); closed when the app ends
     try:
-        return _run_window(paths, inst, log, config, out, poll, on_ready, feed)
+        return _run_window(paths, commands, log, config, out, poll, on_ready, feed)
     finally:
         feed.close()  # saves the Watcher's state and lets the status folder go
 
 
-def _run_window(paths: AppPaths, inst: SingleInstance, log: AppLog, config, out,  # noqa: PLR0917
-                poll, on_ready, feed: LiveFeed) -> int:
+def _run_window(paths: AppPaths, commands: _Commands, log: AppLog, config,  # noqa: PLR0917
+                out, poll, on_ready, feed: LiveFeed) -> int:
     builder = Builder(config, out, log, on_config=feed.configure)
     data = builder()  # open on fresh data instead of reloading right after the window shows
+    if commands.quit.is_set():
+        log("app closed (asked to quit before the window opened)")
+        return EXIT_OK
     town = builder.town or builder.fallback_town()
     try:
         import webview
@@ -183,16 +223,9 @@ def _run_window(paths: AppPaths, inst: SingleInstance, log: AppLog, config, out,
         api._live = live
         win.events.shown += lambda *_a: (shown.set(), log("window shown"))
         win.events.loaded += lambda *_a: log(f"page loaded: {_page(win)}")
-
-        def on_command(cmd: str) -> None:
-            if cmd == "focus":
-                log("second launch: bringing the window forward")
-                live.focus()
-            elif cmd == "quit":
-                log("asked to quit")
-                win.destroy()
-
-        inst.serve(on_command)
+        if not commands.attach(live, win):
+            log("app closed (asked to quit before the window opened)")
+            return EXIT_OK
 
         started, finished = threading.Event(), threading.Event()
 

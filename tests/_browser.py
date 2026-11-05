@@ -5,9 +5,11 @@
 * ``browser``: the pytest marker for tests that need it. ``conftest.py`` skips them with the reason
   in ``WHY`` when there is no browser, or fails them when ``LAMPTOWN_REQUIRE_BROWSER=1`` (CI sets
   that, so a missing browser can't pass as a green run).
-* :func:`headless` builds the command line; :func:`dump_dom` runs it and never hangs: the output
-  goes to a file (not a pipe a stray child process could hold open), and on a timeout the whole
-  process tree is killed.
+* :func:`headless` builds the command line; :func:`run_browser` runs it and never hangs: the
+  output goes to a file (not a pipe a stray child process could hold open), on a timeout the whole
+  process tree is killed, and a timeout or a non-zero exit fails the test with the browser's
+  stderr. :func:`dump_dom` is ``run_browser(...).stdout``. Every test that starts a browser
+  uses one of them (``test_ci.py`` checks).
 """
 
 from __future__ import annotations
@@ -70,9 +72,16 @@ def _kill_tree(proc: subprocess.Popen) -> None:
         proc.wait(timeout=30)
 
 
-def dump_dom(cmd: list[str], timeout: float = TIMEOUT) -> str:
-    """Run a headless command and return its stdout. A browser that doesn't finish in
-    ``timeout`` seconds is killed (with its child processes) and the test fails."""
+def _read(f) -> str:
+    f.seek(0)
+    return f.read().decode("utf-8", errors="replace")
+
+
+def run_browser(cmd: list[str], timeout: float = TIMEOUT) -> subprocess.CompletedProcess:
+    """Run a headless browser command and return its result (text stdout and stderr). Every test
+    that starts a browser goes through here: a browser that doesn't finish in ``timeout`` seconds
+    is killed with its child processes, and a timeout or a non-zero exit fails the test with the
+    tail of the browser's stderr."""
     with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
         kwargs: dict = {"stdout": out, "stderr": err, "stdin": subprocess.DEVNULL}
         if sys.platform != "win32":
@@ -82,9 +91,15 @@ def dump_dom(cmd: list[str], timeout: float = TIMEOUT) -> str:
             proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             _kill_tree(proc)
-            err.seek(0)
-            said = err.read().decode("utf-8", errors="replace")[-1500:]
             pytest.fail(f"the browser did not finish in {timeout:g} s and was stopped: "
-                        f"{Path(cmd[0]).name}\nits last words:\n{said}")
-        out.seek(0)
-        return out.read().decode("utf-8", errors="replace")
+                        f"{Path(cmd[0]).name}\nits last words:\n{_read(err)[-1500:]}")
+        done = subprocess.CompletedProcess(cmd, proc.returncode, _read(out), _read(err))
+    if done.returncode != 0:
+        pytest.fail(f"the browser stopped with exit {done.returncode}: {Path(cmd[0]).name}\n"
+                    f"its last words:\n{done.stderr[-1500:]}")
+    return done
+
+
+def dump_dom(cmd: list[str], timeout: float = TIMEOUT) -> str:
+    """Run a headless ``--dump-dom`` command (through :func:`run_browser`) and return its stdout."""
+    return run_browser(cmd, timeout).stdout

@@ -212,10 +212,18 @@ def test_media_workflow_is_manual_and_gated_before_it_pushes(media):
     assert "noreply.github.com" in text
 
 
-@pytest.mark.skipif(not (os.environ.get("ACTIONLINT") or shutil.which("actionlint")),
-                    reason="actionlint not found (set $ACTIONLINT or put it on PATH)")
+def required_tools() -> set[str]:
+    """Tools CI installs, so their tests must not skip: ``LAMPTOWN_REQUIRE_TOOLS=a,b``."""
+    return set(os.environ.get("LAMPTOWN_REQUIRE_TOOLS", "").replace(",", " ").split())
+
+
 def test_actionlint_is_clean():
     exe = os.environ.get("ACTIONLINT") or shutil.which("actionlint")
+    if not exe:
+        why = "actionlint not found (set $ACTIONLINT or put it on PATH)"
+        if "actionlint" in required_tools():
+            pytest.fail(f"{why}; LAMPTOWN_REQUIRE_TOOLS says CI installed it")
+        pytest.skip(why)
     r = subprocess.run([exe, *sorted(str(p) for p in WF.glob("*.yml"))], cwd=ROOT,
                        capture_output=True, text=True, timeout=120, check=False)
     assert r.returncode == 0, r.stdout + r.stderr
@@ -233,6 +241,49 @@ def test_dump_dom_stops_a_hung_browser():
 def test_dump_dom_returns_stdout():
     out = _browser.dump_dom([sys.executable, "-c", "print('<pre id=\"T\">{}</pre>')"])
     assert '<pre id="T">{}</pre>' in out
+
+
+def test_run_browser_stops_a_hung_browser_and_its_children():
+    # the child starts a grandchild that holds the output open, then hangs: both must go
+    code = ("import subprocess, sys, time; "
+            "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)']); "
+            "print('started', flush=True); time.sleep(120)")
+    t = time.monotonic()
+    with pytest.raises(pytest.fail.Exception, match="did not finish"):
+        _browser.run_browser([sys.executable, "-c", code], timeout=1.5)
+    assert time.monotonic() - t < 40
+
+
+def test_run_browser_fails_on_a_bad_exit_and_keeps_stderr():
+    code = "import sys; sys.stderr.write('kite-crash-words'); sys.exit(3)"
+    with pytest.raises(pytest.fail.Exception, match=r"(?s)exit 3.*kite-crash-words"):
+        _browser.run_browser([sys.executable, "-c", code])
+
+
+def test_run_browser_returns_stdout_and_stderr():
+    code = "import sys; print('kite-out'); sys.stderr.write('kite-err')"
+    r = _browser.run_browser([sys.executable, "-c", code])
+    assert r.returncode == 0 and "kite-out" in r.stdout and "kite-err" in r.stderr
+
+
+def test_dump_dom_fails_on_a_bad_exit_and_keeps_stderr():
+    code = "import sys; print('<html>'); sys.stderr.write('kite-dom-words'); sys.exit(2)"
+    with pytest.raises(pytest.fail.Exception, match="kite-dom-words"):
+        _browser.dump_dom([sys.executable, "-c", code])
+
+
+def test_every_test_starts_the_browser_through_the_helper():
+    """No test file starts Chrome with a bare subprocess call (no kill-the-tree on a hang)."""
+    bare = re.compile(r"subprocess\.(?:run|Popen|call|check_output)\(\s*(?:cmd\b|headless\()")
+    found = []
+    for f in sorted((ROOT / "tests").glob("*.py")):
+        if f.name in {"_browser.py", "_cdp.py"}:  # the helper itself; _cdp kills its tree too
+            continue
+        text = f.read_text(encoding="utf-8")
+        if "headless(" not in text:
+            continue
+        found += [f"{f.name}: {m.group(0)}" for m in bare.finditer(text)]
+    assert found == []
 
 
 def test_headless_flags(monkeypatch, tmp_path):
@@ -266,3 +317,56 @@ def test_ci_turns_a_missing_browser_into_a_failure(tmp_path):
                            "LAMPTOWN_REQUIRE_BROWSER": "1"})
     assert r.returncode == 1, r.stdout + r.stderr
     assert "LAMPTOWN_REQUIRE_BROWSER=1" in r.stdout
+
+
+# ----------------------------------------------------------------------------- tool tests run in CI
+def test_ci_installs_the_tools_the_tool_tests_need_pinned(ci):
+    """actionlint (Linux legs, version + SHA-256 like gitleaks) and jsonschema (every leg,
+    pinned) are installed, and LAMPTOWN_REQUIRE_TOOLS turns their tests' skips into failures."""
+    test = ci["jobs"]["test"]
+    assert re.fullmatch(r"\d+\.\d+\.\d+", ci["env"]["JSONSCHEMA_VERSION"])
+    assert '"jsonschema==${JSONSCHEMA_VERSION}"' in runs(test)
+    assert test["env"]["LAMPTOWN_REQUIRE_TOOLS"] == "jsonschema"
+    (lint,) = [s for s in steps(test) if "actionlint" in s.get("name", "").lower()]
+    assert lint["if"] == "runner.os == 'Linux'"
+    assert re.fullmatch(r"\d+\.\d+\.\d+", lint["env"]["ACTIONLINT_VERSION"])
+    assert re.fullmatch(r"[0-9a-f]{64}", lint["env"]["ACTIONLINT_SHA256"])
+    assert "sha256sum -c -" in lint["run"]
+    assert "ACTIONLINT=" in lint["run"]
+    assert "LAMPTOWN_REQUIRE_TOOLS=jsonschema,actionlint" in lint["run"]
+    core = [s for s in steps(test) if 'pytest -m "not browser and not app"' in s.get("run", "")]
+    assert steps(test).index(lint) < steps(test).index(core[0])  # installed before the tests
+
+
+def _one_tool_test(test_id: str, env: dict) -> subprocess.CompletedProcess:
+    full = {k: v for k, v in os.environ.items()
+            if k not in {"ACTIONLINT", "LAMPTOWN_REQUIRE_TOOLS", "PYTEST_ADDOPTS"}}
+    full.update(env)
+    return subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "-rs", test_id],
+        cwd=ROOT, env=full, capture_output=True, text=True, timeout=120, check=False)
+
+
+@pytest.mark.skipif(bool(shutil.which("actionlint")), reason="actionlint is on PATH here")
+@pytest.mark.parametrize(("require", "code"), [("", 0), ("jsonschema,actionlint", 1)])
+def test_a_missing_actionlint_skips_unless_required(require, code):
+    r = _one_tool_test("tests/test_ci.py::test_actionlint_is_clean",
+                       {"ACTIONLINT": "", "LAMPTOWN_REQUIRE_TOOLS": require})
+    assert r.returncode == code, r.stdout + r.stderr
+    assert ("1 skipped" in r.stdout) is (code == 0)
+    assert "actionlint" in r.stdout
+
+
+@pytest.mark.parametrize(("require", "code"), [("", 0), ("jsonschema", 1)])
+def test_a_missing_jsonschema_skips_unless_required(tmp_path, require, code):
+    shadow = tmp_path / "shadow" / "jsonschema"
+    shadow.mkdir(parents=True)
+    (shadow / "__init__.py").write_text('raise ImportError("no jsonschema here")\n',
+                                        encoding="utf-8")
+    path = os.pathsep.join(filter(None, [str(shadow.parent), os.environ.get("PYTHONPATH")]))
+    r = _one_tool_test(
+        "tests/test_status_schema.py::test_matches_a_full_json_schema_validator_when_installed",
+        {"PYTHONPATH": path, "LAMPTOWN_REQUIRE_TOOLS": require})
+    assert r.returncode == code, r.stdout + r.stderr
+    assert ("1 skipped" in r.stdout) is (code == 0)
+    assert "jsonschema" in r.stdout

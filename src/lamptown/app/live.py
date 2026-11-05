@@ -30,13 +30,14 @@ from __future__ import annotations
 import datetime as dt
 import json
 import math
+import sys
 import threading
 import time
 from collections.abc import Callable
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
-from lamptown.app.links import LINKS_JS
+from lamptown.app.links import LINKS_JS, TOWN_PAGES
 from lamptown.livefeed import HEARTBEAT_MAX, FailLog
 
 DETAILS_NAME = "town-details.html"  # = lamptown.build.DETAILS_NAME; not imported, so the CLI
@@ -45,7 +46,7 @@ DETAILS_NAME = "town-details.html"  # = lamptown.build.DETAILS_NAME; not importe
 POLL = 15.0  # seconds between rebuilds while the window shows
 LIVE_POLL = 3.0  # seconds between live ticks (Watcher + town-live.js) without a feed's own
 HIDDEN_CHECK = 5.0  # seconds between "still hidden?" checks of the page while hidden
-HIDDEN_WATCH = 15.0  # seconds between Watcher ticks while hidden
+HIDDEN_WATCH = HEARTBEAT_MAX  # seconds between Watcher ticks while hidden (the heartbeat, 10 s)
 CLOCK_KEYS = ("built", "builtIso")  # what changes on every build without the data changing
 
 # Installed into every loaded page: report the Page Visibility state to the app (js_api).
@@ -245,8 +246,45 @@ class Live:
         """The window is closing or closed: no more calls into it."""
         return self.stop.is_set()
 
+    def off_town(self, url: str | None) -> bool:
+        """Is ``url`` a page that isn't the town's? The town's are ``town.html`` and
+        ``town-details.html`` in the town's folder, and the inline error page (no URL,
+        ``about:`` or ``data:``)."""
+        if not url:
+            return False
+        parts, home = urlsplit(url), urlsplit(self.town_url)
+        if parts.scheme.lower() in ("about", "data"):
+            return False
+
+        def folder(path: str) -> str:
+            d = unquote(path).rsplit("/", 1)[0]
+            return d.casefold() if sys.platform in ("win32", "darwin") else d
+
+        return not (parts.scheme.lower() == home.scheme.lower()
+                    and parts.netloc.lower() == home.netloc.lower()
+                    and folder(parts.path) == folder(home.path)
+                    and url_file_name(url) in TOWN_PAGES)
+
     def on_loaded(self, *_a) -> None:
         if self.closing:
+            return
+        try:
+            url = self.w.get_current_url()
+        except Exception:
+            url = None
+        if self.off_town(url):
+            # a link followed before LINKS_JS was in (it comes with `loaded`): go back to the
+            # town; the address itself is never logged (it comes from data)
+            self.log("the window left the town (a link opened before its guard was in): "
+                     "back to the town")
+            try:
+                load = getattr(self.w, "load_url", None)
+                if callable(load):
+                    load(self.town_url)
+                else:
+                    self.w.evaluate_js(f"location.replace({js_value(self.town_url)})")
+            except Exception as e:
+                self.log(f"couldn't bring the window back to the town: {type(e).__name__}")
             return
         try:
             self.w.evaluate_js(LINKS_JS)  # first: link clicks go through the app's safe opener

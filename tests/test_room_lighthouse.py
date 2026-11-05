@@ -17,12 +17,11 @@ import html
 import json
 import os
 import re
-import subprocess
 from pathlib import Path
 
 import pytest
 
-from _browser import CHROME, browser, headless
+from _browser import CHROME, browser, headless, run_browser
 from lamptown import build as B
 from lamptown.config import parse_config
 from test_town import NOW, PROBE, run
@@ -368,7 +367,7 @@ def shot(page: Path, body: str, png: Path, query: str, budget: int) -> Path:
     cmd = headless(page.parent / "chrome-profile", "--window-size=1600,900",
                    f"--virtual-time-budget={budget}", "--allow-file-access-from-files",
                    "--hide-scrollbars", f"--screenshot={png}", case.as_uri() + query)
-    subprocess.run(cmd, capture_output=True, timeout=180, check=False)
+    run_browser(cmd, timeout=180)
     return png
 
 
@@ -848,10 +847,9 @@ def test_screenshots_for_review(tmp_path):
     details.write_text(B.render_details(B.town_data(parse_config("", tmp_path / "x.toml"), {},
                                                     NOW), [], full), encoding="utf-8")
     png = out_dir / "details-past-days.png"
-    subprocess.run(headless(tmp_path / "chrome-details", "--window-size=1000,1800",
-                            "--hide-scrollbars", f"--screenshot={png}",
-                            details.as_uri() + "#lighthouse-days"),
-                   capture_output=True, timeout=180, check=False)
+    run_browser(headless(tmp_path / "chrome-details", "--window-size=1000,1800",
+                         "--hide-scrollbars", f"--screenshot={png}",
+                         details.as_uri() + "#lighthouse-days"), timeout=180)
     out.append(png)
     assert all(p.is_file() for p in out)
     assert html.escape("Lighthouse, the last days") in details.read_text(encoding="utf-8")

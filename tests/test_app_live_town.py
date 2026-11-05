@@ -18,7 +18,7 @@ from lamptown.app.live import (
     structure,
     window_title,
 )
-from lamptown.livefeed import Builder, LiveFeed
+from lamptown.livefeed import HEARTBEAT_MAX, Builder, LiveFeed
 from lamptown.status.store import update_status
 from lamptown.status.watch import Watcher
 from test_app_live import Counter, FakeWindow
@@ -273,8 +273,8 @@ def test_hidden_window_rebuilds_nothing_but_the_watcher_still_ticks():
     w.js.clear()
     run_for(live, 60.0, start=0.5)
     assert b.n == 0, "rebuilt while hidden"
-    # the Watcher every 15 s while hidden: at 15.5, 30.5, 45.5 and 60.5
-    assert len(feed.revs) == 1 + 4
+    # the Watcher every 10 s while hidden (the heartbeat): at 10.5, 20.5, ..., 60.5
+    assert len(feed.revs) == 1 + 6
     assert pushed(w, "lamptownLive") == [] and pushed(w, "lamptownData") == []
     assert w.calls.count("probe") == 60 // HIDDEN_CHECK  # every 5 s: "still hidden?"
     assert w.titles == ["2 need you - Harbour Watch - Lamptown"]  # the taskbar still counts
@@ -298,8 +298,6 @@ def test_a_page_that_turns_visible_through_the_probe_catches_up():
     assert b.n == 1 and len(feed.revs) == 2
 
 
-def test_hidden_watch_default_is_fifteen_seconds():
-    assert HIDDEN_WATCH == 15.0
 
 
 def test_the_loop_survives_a_crashing_feed():
@@ -639,3 +637,22 @@ def test_a_tick_that_keeps_failing_logs_one_traceback():
     feed.tick = FakeFeed().tick
     run_for(live, 3.0, start=61.0)
     assert "works again" in logs[-1]
+
+
+def test_the_hidden_watcher_keeps_the_pages_heartbeat():
+    """While hidden the Watcher still writes town-live.js at least every HEARTBEAT_MAX (10 s):
+    the page (and any browser tab on it) counts a longer gap as the feed being down."""
+    assert HIDDEN_WATCH <= HEARTBEAT_MAX
+    w, b, feed = TitledWindow(), Counter(DATA), FakeFeed(every=3.0)
+    live = Live(w, b, TOWN, data=DATA, feed=feed)
+    now = live.step(0.0)
+    w.events.minimized.fire()
+    ticks: list[float] = []
+    while now < 120.0:
+        n = len(feed.revs)
+        nxt = live.step(now)
+        if len(feed.revs) > n:
+            ticks.append(now)
+        now = max(nxt, now + 1e-6)
+    gaps = [b - a for a, b in zip(ticks, ticks[1:], strict=False)]
+    assert len(ticks) >= 10 and max(gaps) <= HEARTBEAT_MAX, ticks

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import re
 from pathlib import Path
 
@@ -137,7 +138,16 @@ def test_parse_time(text, ok):
 
 
 def test_matches_a_full_json_schema_validator_when_installed():
-    jsonschema = pytest.importorskip("jsonschema")
+    # CI installs it and says so (LAMPTOWN_REQUIRE_TOOLS): there a missing one fails, not skips
+    tools = os.environ.get("LAMPTOWN_REQUIRE_TOOLS", "").replace(",", " ").split()
+    required = "jsonschema" in tools
+    try:
+        import jsonschema
+    except ImportError as e:
+        if required:
+            pytest.fail(f"jsonschema can't be imported ({e}); LAMPTOWN_REQUIRE_TOOLS says CI "
+                        "installed it")
+        pytest.skip(f"jsonschema not installed ({e})")
     checker = jsonschema.Draft202012Validator(load_schema())
     assert not list(checker.iter_errors(GOOD))
     assert list(checker.iter_errors(_broken(state="building")))

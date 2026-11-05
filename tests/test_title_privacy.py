@@ -16,7 +16,7 @@ from lamptown.status.events import name_only
 
 DATA = Path(__file__).resolve().parent / "data" / "title_privacy.txt"
 ARROW = " -> "
-PLACEHOLDERS = {"{AT}": "@", "{BS}": "\\"}  # see the data file's header
+PLACEHOLDERS = {"{AT}": "@", "{BS}": "\\", "{SL}": "/"}  # see the data file's header
 MAX = 200
 
 
@@ -69,3 +69,23 @@ def test_a_title_loses_what_it_must(title, shown):
 @pytest.mark.parametrize("title", CASES["keep"])
 def test_a_title_keeps_what_it_may(title):
     assert name_only(title, MAX) == title
+
+
+def test_the_data_file_keeps_the_privacy_gate_quiet():
+    """Written with the placeholders, the planted paths and e-mails never trip the gate, even as
+    a new blob (no baseline): every edit of the file makes one."""
+    import importlib.util
+    import sys
+
+    tool = Path(__file__).resolve().parents[1] / "tools" / "privacy_gate.py"
+    spec = importlib.util.spec_from_file_location("lamptown_privacy_gate_t", tool)
+    assert spec and spec.loader
+    pg = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = pg
+    try:
+        spec.loader.exec_module(pg)
+        scanner = pg.Scanner(None)
+        scanner.scan_text(DATA.read_text(encoding="utf-8"), DATA.name)
+    finally:
+        sys.modules.pop(spec.name, None)
+    assert [(h.line, h.check) for h in scanner.hits] == []

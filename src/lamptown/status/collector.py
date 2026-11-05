@@ -154,6 +154,10 @@ def _walled(rec: Record) -> Record:
     rec.title = _wall(rec.title, 200, long_tokens=False) or rec.id
     rec.message = _wall(rec.message, 500)
     rec.needs = [{**need, "text": _wall(need["text"], 300) or "Needs you"} for need in rec.needs]
+    rec.links = [{**link, "label": _wall(link["label"], 100, long_tokens=False) or "link"}
+                 for link in rec.links]
+    if isinstance(rec.agent, str):
+        rec.agent = _wall(rec.agent, 80, long_tokens=False) or None
     return rec
 # --- end review-fix B1 ---
 

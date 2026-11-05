@@ -123,11 +123,14 @@ class Counter:
 
     DEFAULT = {"rooms": {"a": 1}, "built": "Mon 1 Jan, 10:00"}
 
-    def __init__(self, data: dict | None = DEFAULT) -> None:
+    def __init__(self, data: dict | None = DEFAULT, delay: float = 0.0) -> None:
         self.data = data  # None: every build fails
+        self.delay = delay  # a slow build (or a loaded runner) between the loop's check and it
         self.n = 0
 
     def __call__(self):
+        if self.delay:
+            time.sleep(self.delay)
         self.n += 1
         return None if self.data is None else dict(self.data)
 
@@ -139,6 +142,12 @@ def wait_for(cond, timeout: float = 5.0) -> bool:
             return True
         time.sleep(0.01)
     return cond()
+
+
+def hidden_cycles(w: FakeWindow, k: int, timeout: float = 10.0) -> bool:
+    """Wait until the hidden loop has asked the page ``k`` more times (``k`` loop turns)."""
+    start = w.calls.count("probe")
+    return wait_for(lambda: w.calls.count("probe") >= start + k, timeout)
 
 
 @pytest.fixture
@@ -302,7 +311,7 @@ def test_reload_urls_differ_each_time(town_uri):
 
 # ----------------------------------------------------------------------------- signals
 def test_loaded_installs_the_link_guard_and_the_visibility_watch(town_uri):
-    w = FakeWindow()
+    w = FakeWindow(town_uri)
     Live(w, Counter(), town_uri)
     w.events.loaded.fire()
     assert w.js == [LINKS_JS, VISIBILITY_JS]
@@ -310,7 +319,7 @@ def test_loaded_installs_the_link_guard_and_the_visibility_watch(town_uri):
 
 
 def test_loaded_survives_a_dead_page(town_uri):
-    w = FakeWindow()
+    w = FakeWindow(town_uri)
     logs: list[str] = []
     Live(w, Counter(), town_uri, log=logs.append)
     w.fail = True
@@ -340,20 +349,25 @@ def test_closed_stops_the_loop(town_uri):
 
 
 # ----------------------------------------------------------------------------- the loop
-def test_loop_pauses_while_minimised_and_catches_up(town_uri):
+SLOW = pytest.mark.parametrize("delay", [0.0, 0.3], ids=["fast-build", "slow-build"])
+
+
+@SLOW
+def test_loop_pauses_while_minimised_and_catches_up(town_uri, delay):
     w = FakeWindow()
-    b = Counter()
+    b = Counter(delay=delay)
     live = Live(w, b, town_uri, last=fingerprint(b.data), poll=0.05, hidden_check=0.05)
     t = threading.Thread(target=live.run, daemon=True)
     t.start()
     try:
         assert wait_for(lambda: b.n >= 3), "no rebuilds while showing"
         w.events.minimized.fire()
-        time.sleep(0.15)  # let a rebuild already running finish
+        # the loop asks the page only from its hidden branch: once it has, a rebuild already
+        # running has finished (one thread), so the count is final
+        assert wait_for(lambda: "probe" in w.calls), "never asked the page while hidden"
         n = b.n
-        time.sleep(0.4)
+        assert hidden_cycles(w, 5), "the hidden loop stopped asking the page"
         assert b.n == n, "rebuilt while minimised"
-        assert "probe" in w.calls, "never asked the page while hidden"
         # restore to maximised: only "maximized" fires; the catch-up comes at once
         live.poll = 30
         w.events.maximized.fire()
@@ -364,9 +378,10 @@ def test_loop_pauses_while_minimised_and_catches_up(town_uri):
     assert not t.is_alive()
 
 
-def test_loop_pauses_while_the_page_is_hidden(town_uri):
+@SLOW
+def test_loop_pauses_while_the_page_is_hidden(town_uri, delay):
     w = FakeWindow()
-    b = Counter()
+    b = Counter(delay=delay)
     live = Live(w, b, town_uri, last=fingerprint(b.data), poll=0.05, hidden_check=0.05)
     t = threading.Thread(target=live.run, daemon=True)
     t.start()
@@ -374,9 +389,9 @@ def test_loop_pauses_while_the_page_is_hidden(town_uri):
         assert wait_for(lambda: b.n >= 2)
         w.doc_hidden = True
         live.on_page_visibility(True)  # what the page pushes through the js_api
-        time.sleep(0.15)
-        n = b.n
-        time.sleep(0.4)
+        assert wait_for(lambda: "probe" in w.calls), "never asked the page while hidden"
+        n = b.n  # final: see test_loop_pauses_while_minimised_and_catches_up
+        assert hidden_cycles(w, 5), "the hidden loop stopped asking the page"
         assert b.n == n
         # no event this time: the 'document.hidden' poll notices the page is back
         w.doc_hidden = False
@@ -651,3 +666,136 @@ def test_a_second_launch_wakes_the_first(tmp_path, capsys):
         assert "already open" in capsys.readouterr().err
     finally:
         first.release()
+
+
+# ----------------------------------------------------------------------------- a slow first build
+class _QuickWebview:
+    """A pywebview whose window opens and is closed at once (start() returns)."""
+
+    settings: dict = {}
+    screens: list = []
+    started: list = []
+
+    @staticmethod
+    def create_window(*_a, **_k):
+        return FakeWindow()
+
+    @classmethod
+    def start(cls, *_a, **_k):
+        cls.started.append(1)
+
+
+@pytest.fixture
+def slow_build(monkeypatch):
+    """The first copy's build waits for ``go`` (a slow first build); ``building`` is set once
+    it has started."""
+    from lamptown.app import window
+
+    building, go = threading.Event(), threading.Event()
+
+    class SlowBuilder(window.Builder):
+        def __call__(self):
+            building.set()
+            assert go.wait(30), "the test never let the build finish"
+            return super().__call__()
+
+    monkeypatch.setattr(window, "Builder", SlowBuilder)
+    _QuickWebview.started = []
+    monkeypatch.setitem(sys.modules, "webview", _QuickWebview)
+    return SimpleNamespace(building=building, go=go)
+
+
+def _first_copy(tmp_path) -> tuple[threading.Thread, list]:
+    from lamptown.app.window import run_app
+
+    rc: list = []
+    cfg = write_config(tmp_path)
+    t = threading.Thread(target=lambda: rc.append(run_app(
+        str(cfg), str(tmp_path / "out"), state_dir=tmp_path / "state", echo=False)), daemon=True)
+    t.start()
+    return t, rc
+
+
+def test_a_second_launch_during_a_slow_first_build_is_answered(tmp_path, slow_build, capsys):
+    from lamptown.app.window import EXIT_OK, run_app
+
+    t, rc = _first_copy(tmp_path)
+    try:
+        assert slow_build.building.wait(10)
+        began = time.monotonic()
+        assert run_app(state_dir=tmp_path / "state", echo=False) == EXIT_OK
+        assert time.monotonic() - began < 4, "the second copy waited for an answer"
+        assert "already open" in capsys.readouterr().err
+    finally:
+        slow_build.go.set()
+        t.join(30)
+    assert rc == [EXIT_OK] and _QuickWebview.started == [1]
+    log = (tmp_path / "state" / "app.log").read_text(encoding="utf-8")
+    assert "second launch while the town builds" in log
+
+
+def test_a_quit_during_the_first_build_never_opens_the_window(tmp_path, slow_build):
+    from lamptown.app.instance import SingleInstance
+    from lamptown.app.window import EXIT_OK
+
+    t, rc = _first_copy(tmp_path)
+    try:
+        assert slow_build.building.wait(10)
+        assert SingleInstance(tmp_path / "state").send("quit", timeout=3)
+    finally:
+        slow_build.go.set()
+        t.join(30)
+    assert rc == [EXIT_OK] and _QuickWebview.started == []
+
+
+# ----------------------------------------------------------------------------- off the town
+class NavWindow(FakeWindow):
+    """A FakeWindow with pywebview's ``load_url``."""
+
+    def __init__(self, url: str) -> None:
+        super().__init__(url)
+        self.loaded_urls: list[str] = []
+
+    def load_url(self, url: str) -> None:
+        self.loaded_urls.append(url)
+
+
+@pytest.mark.parametrize("where", [
+    "https://example.com/kite",  # a web link followed before the link guard was in
+    "file:///tmp/notes/probe.txt",  # a file link
+    "town.html@elsewhere",  # a town page in another folder
+])
+def test_a_window_that_left_the_town_goes_back(town_uri, where):
+    url = (town_uri.rsplit("/", 2)[0] + "/elsewhere/town.html") if "@" in where else where
+    w = NavWindow(url)
+    logs: list[str] = []
+    Live(w, Counter(), town_uri, log=logs.append)
+    w.events.loaded.fire()
+    assert w.loaded_urls == [town_uri]
+    assert LINKS_JS not in w.js  # nothing of ours goes into a page that isn't the town's
+    assert any("left the town" in m for m in logs)
+    assert not any(where.split("@")[0] in m for m in logs), logs  # never the page's address
+
+
+@pytest.mark.parametrize("suffix", ["", "?r=101530#room=docks", "%3Fr=1", "#open=docks"])
+def test_the_towns_own_pages_stay(town_uri, suffix):
+    for page in ("town.html", "town-details.html"):
+        w = NavWindow(town_uri.rsplit("/", 1)[0] + "/" + page + suffix)
+        Live(w, Counter(), town_uri)
+        w.events.loaded.fire()
+        assert w.loaded_urls == [] and w.js == [LINKS_JS, VISIBILITY_JS], (page, suffix)
+
+
+@pytest.mark.parametrize("url", [None, "", "about:blank", "data:text/html,<p>x</p>"])
+def test_the_inline_error_page_stays(town_uri, url):
+    w = NavWindow(url)  # type: ignore[arg-type]
+    Live(w, Counter(), town_uri)
+    w.events.loaded.fire()
+    assert w.loaded_urls == [] and w.js == [LINKS_JS, VISIBILITY_JS]
+
+
+def test_without_load_url_the_page_is_sent_back_by_script(town_uri):
+    w = FakeWindow("https://example.com/kite")
+    Live(w, Counter(), town_uri)
+    w.events.loaded.fire()
+    assert w.js == [f"location.replace({json.dumps(town_uri)})"]

@@ -27,6 +27,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import lamptown
 from _browser import browser
 from _reader_guard import guard
 from lamptown import cli, livefeed
@@ -304,6 +305,10 @@ def make_town(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespac
 
 # ----------------------------------------------------------------------------- the files
 def test_folders_to_watcher_to_files(town):
+    want = os.environ.get("LAMPTOWN_E2E_PACKAGE")  # set by the midnight run for its child
+    if want:
+        got = Path(str(lamptown.__file__)).resolve()
+        assert got == Path(want), "the child runs another lamptown"
     out, wren, knots, otter, puffin = town.out, WREN, town.knots, town.otter, town.puffin
     assert town.first["need"] == 0
     p = payload(out / "town-live.js", "lamptownLive")
@@ -366,14 +371,35 @@ def test_midnight_zone():
         assert midnight_zone(utc) == local, utc
 
 
+def child_env(zone: str, package: str | None = None) -> dict[str, str]:
+    """The child Python's environment: ``TZ`` set, and the same lamptown the tests import.
+    From a checkout (``src/lamptown``) that is ``src`` on PYTHONPATH; from an installed package
+    (CI's ``pip install .``) nothing is added, so the child tests the installed one too. The child
+    checks it got the same package (``LAMPTOWN_E2E_PACKAGE``)."""
+    pkg = Path(package or str(lamptown.__file__)).resolve()
+    env = {**os.environ, "TZ": zone, "LAMPTOWN_E2E_PACKAGE": str(pkg)}
+    src = ROOT / "src"
+    if pkg.parent.parent == src.resolve():
+        env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(src), os.environ.get("PYTHONPATH")]))
+    return env
+
+
+def test_the_child_runs_the_package_the_tests_import(tmp_path, monkeypatch):
+    monkeypatch.setenv("PYTHONPATH", "kite-path")
+    here = child_env("UTC", str(ROOT / "src" / "lamptown" / "__init__.py"))
+    assert here["PYTHONPATH"].split(os.pathsep) == [str(ROOT / "src"), "kite-path"]
+    site = tmp_path / "site-packages" / "lamptown" / "__init__.py"
+    installed = child_env("UTC", str(site))
+    assert installed["PYTHONPATH"] == "kite-path"  # untouched: no src in front
+    assert installed["LAMPTOWN_E2E_PACKAGE"] == str(site.resolve()) and installed["TZ"] == "UTC"
+
+
 def test_the_files_hold_up_just_after_local_midnight(tmp_path):
     """The test above on a computer whose clock reads just after midnight, so every agent's
     first minutes (Wren starts ten minutes before) fall in yesterday's day. A zone is read once,
     as Python starts, so that test runs again in a fresh Python with ``TZ`` set to such a zone."""
     zone = midnight_zone(dt.datetime.now(dt.UTC))
-    env = {**os.environ, "TZ": zone,
-           "PYTHONPATH": os.pathsep.join(filter(None, [str(ROOT / "src"),
-                                                       os.environ.get("PYTHONPATH")]))}
+    env = child_env(zone)
     child = tmp_path / "child"
     done = subprocess.run(
         [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "--basetemp",

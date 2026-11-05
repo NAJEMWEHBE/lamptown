@@ -44,6 +44,7 @@ from pathlib import Path
 from typing import Any
 
 from lamptown.collectors.jobs import clip, file_uri, iso, mtime
+from lamptown.status.events import name_only
 
 STATUSES = {"active": "active", "paused": "paused", "parked": "paused", "closed": "closed",
             "done": "closed", "archived": "closed"}
@@ -144,7 +145,7 @@ def last_commit(root: Path, tz) -> dict[str, Any] | None:
                 when = None
             msg = re.sub(r"^(commit(?: \(\w+\))?|merge [^:]*|checkout|reset|rebase[^:]*|pull[^:]*)"
                          r": ", "", m.group(2))
-            return {"when": when, "msg": clip(msg, 120)}
+            return {"when": when, "msg": clip(name_only(msg, 120), 120)}
     return None
 
 

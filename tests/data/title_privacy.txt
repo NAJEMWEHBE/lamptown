@@ -7,9 +7,11 @@
 # [keep]  one title per line that must come out unchanged.
 #
 # Lines starting with "#" and blank lines are skipped; nothing else is trimmed or escaped
-# (a backslash is a backslash). Two placeholders keep the privacy gate quiet: write an
-# e-mail address's "@" as {AT}, and a backslash right after a drive letter ("d:\") as
-# {BS}. Invented names only: "you", example.com.
+# (a backslash is a backslash). Three placeholders keep the privacy gate quiet: write an
+# e-mail address's "@" as {AT}, a backslash right after a drive letter ("d:\") as
+# {BS}, and the slash that makes a planted path look like a real one as {SL} (after a
+# drive letter: "d:/", "/mnt/c/", "/c/", "/cygdrive/d/"; or "/var/home/").
+# Invented names only: "you", example.com.
 
 [cut]
 
@@ -41,10 +43,10 @@ cd ~/secret-app/src -> cd src
 
 # --- mounted homes, odd leads, slash commands (W2, W8)
 # W2: home folders behind a mount prefix (WSL, Git Bash, Cygwin)
-/mnt/c/Users/Sam Doe/secret-app/x.py -> x.py
-Edit /c/Users/Sam Doe/secret-app -> Edit secret-app
-/cygdrive/d/Users/Sam Doe/secret-app/x.py -> x.py
-see /mnt/d/home/sam/secret-app/x.py -> see x.py
+/mnt/c{SL}Users/Sam Doe/secret-app/x.py -> x.py
+Edit /c{SL}Users/Sam Doe/secret-app -> Edit secret-app
+/cygdrive/d{SL}Users/Sam Doe/secret-app/x.py -> x.py
+see /mnt/d{SL}home/sam/secret-app/x.py -> see x.py
 # W8: forward-slash drive paths with spaces, macOS volumes, odd leads, ~user
 d:/My Projects/secret app/x.py -> x.py
 open "d:/My Projects/secret app/x.py" now -> open "x.py" now
@@ -79,13 +81,13 @@ vscode://file/C:/Users/you there/secret-app/x.py -> x.py
 Open vscode://file/c:/Users/you there/secret-app now -> Open secret-app now
 # 1. ... and as the last part of the text
 see C:\Users\you there -> see ~
-see /mnt/c/Users/Sam Doe -> see ~
+see /mnt/c{SL}Users/Sam Doe -> see ~
 open "/Users/you there" now -> open "~" now
 # 5. other home roots, and volume labels with spaces
-/var/home/Sam Doe/secret-app/x.py -> x.py
+/var{SL}home/Sam Doe/secret-app/x.py -> x.py
 /export/home/Sam Doe/secret-app/x.py -> x.py
-/System/Volumes/Data/Users/Sam Doe/secret-app/x.py -> x.py
-/Volumes/Data/Users/Sam Doe/secret-app/x.py -> x.py
+/System/Volumes/Data{SL}Users/Sam Doe/secret-app/x.py -> x.py
+/Volumes/Data{SL}Users/Sam Doe/secret-app/x.py -> x.py
 /run/media/sam/Work Drive/secret-client/x.md -> x.md
 /media/sam/Work Drive/secret-client/x.md -> x.md
 see /media/sam/Work Drive -> see ~
@@ -98,7 +100,7 @@ Use D:/ for builds, then tidy src/a.ts and lib/b.ts -> Use b.ts
 d:/Program Files (x86)/Secret Tool/x.exe -> x.exe
 d:/Microsoft Visual Studio 2022/secret app/x.sln -> x.sln
 c:/Users/you/OneDrive - Acme Holdings Group Inc/secret plan/x.docx -> x.docx
-c:/Work/Acme Corp - Shared Documents/secret/x.md, then load -> x.md, then load
+c:{SL}Work/Acme Corp - Shared Documents/secret/x.md, then load -> x.md, then load
 # slash commands and ordinary titles stay
 Route /home page and /users list -> Route /home page and /users list
 Wire /gsd:plan and /code-review -> Wire /gsd:plan and /code-review
@@ -112,7 +114,7 @@ Edit d:/Client Acme Secret Project Alpha/main.py -> Edit main.py
 Edit d:/a b c d e f g h/x.py now -> Edit x.py now
 cd d:/Client Acme Secret Project Alpha/kite -> cd kite
 Open C:/Users/you/My Five Word Folder Name/x.py -> Open x.py
-d:/Work/Acme - Client Big Secret Plan Two/x.md, then load -> x.md, then load
+d:{SL}Work/Acme - Client Big Secret Plan Two/x.md, then load -> x.md, then load
 # ... so is a home or ~ path whose folders hold spaces
 Edit /Users/you/My Project/x.py -> Edit x.py
 Edit /home/you/one two three four five/kite/x.py -> Edit x.py
@@ -137,9 +139,9 @@ url file:///d:/Client Acme Secret Project Alpha/src/x.py -> url x.py
 Open vscode://file/d:/My Project/src/x.py now -> Open x.py now
 //server/share/My Project/src/x.py -> x.py
 unc //server/share/Client Acme Secret Project Alpha/src/x.py -> unc x.py
-/mnt/d/My Project/src/x.py -> x.py
-wsl /mnt/d/Client Acme Secret Project Alpha/src/x.py -> wsl x.py
-/cygdrive/d/My Project/src/x.py -> x.py
+/mnt/d{SL}My Project/src/x.py -> x.py
+wsl /mnt/d{SL}Client Acme Secret Project Alpha/src/x.py -> wsl x.py
+/cygdrive/d{SL}My Project/src/x.py -> x.py
 /d/My Project/src/x.py -> x.py
 gitbash /d/Client Acme Secret Project Alpha/src/x.py -> gitbash x.py
 d:{BS}My Project/src/x.py -> x.py
@@ -166,10 +168,10 @@ Edit d:/client acme secret project alpha/notes on it.txt -> Edit notes on it.txt
 # --- a path start cuts its whole run (W2-left-fix2)
 # finding 1: a doubled separator ends no folder name
 Edit d:/Client Secret//x.py -> Edit x.py
-Edit d:/a//Client Secret/x.py -> Edit x.py
+Edit d:{SL}a//Client Secret/x.py -> Edit x.py
 Edit ~/Client Secret//x.py -> Edit x.py
 Edit /home/you/Client Secret//x.py -> Edit x.py
-Edit /mnt/d//Client Secret/x.py -> Edit x.py
+Edit /mnt/d{SL}/Client Secret/x.py -> Edit x.py
 Edit file:///d:/Client Secret//x.py -> Edit x.py
 Edit d:/Client Acme Secret Project Alpha//x.py -> Edit x.py
 Edit d:{BS}{BS}Client Secret{BS}{BS}x.py -> Edit x.py
@@ -185,10 +187,10 @@ Open https://intranet/Client Secret/plan -> Open link
 # finding 3: a 5+ word lowercase folder with a function word, before a short last part
 Open d:/notes for the acme merger deal/todo -> Open todo
 Open d:/acme merger plans of the client/src -> Open src
-Open d:/old/notes for the acme merger deal/todo -> Open todo
+Open d:{SL}old/notes for the acme merger deal/todo -> Open todo
 Open ~/notes for the acme merger deal/todo -> Open todo
 Open /home/you/notes for the acme merger deal/todo -> Open todo
-Open /mnt/d/notes for the acme merger deal/todo -> Open todo
+Open /mnt/d{SL}notes for the acme merger deal/todo -> Open todo
 Open d:{BS}x{BS}notes for the acme merger deal/todo -> Open todo
 Open d:/work for the acme bank ACME/HR -> Open HR
 # finding 4: no part of a home folder's user name, whatever follows it
@@ -287,7 +289,7 @@ mailto:you{AT}example.org -> mailto:someone
 <you{AT}example.org>. -> <someone>.
 # a file or editor URL is still a path: its last part stays
 Open file:///home/you/kite/x.py -> Open x.py
-Open vscode://file/d:/kite/x.py now -> Open x.py now
+Open vscode://file/d:{SL}kite/x.py now -> Open x.py now
 
 
 [keep]

@@ -587,7 +587,10 @@ def test_write_live_files_refreshes_at_and_history_once_a_minute(tmp_path):
     res = B.build(cfg, out_dir=out, now=NOW, tz=UTC)
     first = _payload(out / "town-live.js", "lamptownLive")["at"]
     os.utime(out / "town-history.js", (time.time() - 5, time.time() - 5))
-    time.sleep(0.01)
+    # wait until the clock's millisecond stamp moves (Windows ticks every ~15.6 ms on 3.11)
+    end = time.monotonic() + 5
+    while L.stamp(datetime.now(UTC)) <= first and time.monotonic() < end:
+        time.sleep(0.001)
     cache: dict = {}
     tick = B.write_live_files(cfg, out, tz=UTC, cache=cache)
     assert tick.history is None  # written 5 s ago: not due

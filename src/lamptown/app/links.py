@@ -48,6 +48,7 @@ LINKS_JS = """(function () {
     return dir === here && PAGES.indexOf(name) >= 0;
   };
   var onClick = function (e) {
+    if (e.type === 'auxclick' && e.button !== 1) return;  /* right/back/forward: not a link open */
     var t = e.target, a = t && t.closest ? t.closest('a[href]') : null;
     if (!a) return;
     var raw = a.getAttribute('href') || '';

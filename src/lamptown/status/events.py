@@ -28,7 +28,7 @@ from datetime import UTC, date, datetime, timedelta, tzinfo
 from pathlib import Path
 from typing import Any
 
-from lamptown.status.adapters import DATED, folder_name, one_line
+from lamptown.status.adapters import DATED, folder_name, mask_secrets, one_line
 from lamptown.status.schema import parse_time
 from lamptown.status.store import ID_RE, iso, utcnow
 
@@ -221,13 +221,15 @@ def name_only(text: Any, limit: int) -> str:
     surrogates become ``?``. A web address (``"https://example.com/you"``,
     ``"github.com/you/kite"``, ``"localhost:3000/x"``) and a remote in scp form
     (``"git@example.com:you/kite.git"``) become ``"link"``, whole; an e-mail address becomes
-    ``"someone"``. A date-named (chat) folder never shows its words."""
+    ``"someone"``. A date-named (chat) folder never shows its words. A secret
+    (``token=...``, ``Bearer ...``) is masked."""
     flat = scrub(one_line(text, 4096))
     if not flat:
         return ""
     flat = _MAIL_RE.sub(MAIL_WORD, _SCP_RE.sub(_link, flat))  # fix-PRIV: addresses
     flat = _PATH_RE.sub(_last_part, _cut_paths(flat))
-    return one_line(flat, limit)
+    # masked after the cut (fast on hostile titles); a mask never makes text longer
+    return one_line(mask_secrets(one_line(flat, limit), long_tokens=False), limit)
 # --- end W2-left-fix2 ---
 
 

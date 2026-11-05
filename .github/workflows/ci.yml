@@ -4,7 +4,8 @@ name: CI
 #   privacy   the privacy gate over the tree and the full history (deny-list from a repo secret)
 #   secrets   gitleaks over the full history
 #   lint      ruff
-#   test      core tests on Windows, macOS and Linux x Python 3.11 and 3.13 (from the built package);
+#   test      core tests on Windows, macOS and Linux x Python 3.11 and 3.13 (from the built package,
+#             with jsonschema, and actionlint on Linux, so their tests run instead of skipping);
 #             on a tag, tests/test_release_consistency.py also checks the tag is v<__version__>
 #   browser   headless-Chrome room and town tests (Python 3.13, each OS), and whether docs/media
 #             still match a fresh tools/make_media.py render (where they were made)
@@ -37,6 +38,7 @@ env:
   PYTEST_VERSION: "9.2.0"
   PYYAML_VERSION: "6.0.3"
   PILLOW_VERSION: "13.0.0"  # tools/make_media.py, for the media freshness test
+  JSONSCHEMA_VERSION: "4.26.0"  # the full validator the schema test compares with
 
 jobs:
   privacy:
@@ -149,6 +151,9 @@ jobs:
         python: ["3.11", "3.13"]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
+    env:
+      # the tests that need these tools fail instead of skipping (Linux adds actionlint below)
+      LAMPTOWN_REQUIRE_TOOLS: jsonschema
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -161,7 +166,27 @@ jobs:
       # A regular (not editable) install: the tests then run against the built package, so a
       # file missing from the package data fails here instead of on a user's machine.
       - name: Install the package and the test tools
-        run: python -m pip install . "pytest==${PYTEST_VERSION}" "pyyaml==${PYYAML_VERSION}"
+        run: >-
+          python -m pip install . "pytest==${PYTEST_VERSION}" "pyyaml==${PYYAML_VERSION}"
+          "jsonschema==${JSONSCHEMA_VERSION}"
+
+      # The workflow lint (tests/test_ci.py::test_actionlint_is_clean) runs on the Linux legs.
+      - name: Install pinned actionlint (Linux)
+        if: runner.os == 'Linux'
+        env:
+          ACTIONLINT_VERSION: "1.7.12"
+          ACTIONLINT_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+        run: |
+          cd "$RUNNER_TEMP"
+          tarball="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -sSfL -o "$tarball" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${tarball}"
+          echo "${ACTIONLINT_SHA256}  ${tarball}" | sha256sum -c -
+          tar -xzf "$tarball" actionlint
+          {
+            echo "ACTIONLINT=$RUNNER_TEMP/actionlint"
+            echo "LAMPTOWN_REQUIRE_TOOLS=jsonschema,actionlint"
+          } >> "$GITHUB_ENV"
 
       - name: Core tests (no browser, no desktop window)
         run: python -m pytest -m "not browser and not app"
