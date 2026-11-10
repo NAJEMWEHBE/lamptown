@@ -409,6 +409,23 @@ def test_sanitiser_rejects_bad_ids_and_keeps_removals():
     assert out == {"id": SID, "at": None, "x-ci": None, "x-project": "moss"}
 
 
+def test_a_reader_link_scheme_in_capitals_is_written_in_lower_case(tmp_path):
+    # Schemes are case-insensitive, but agent-status/1 files must hold them in lower case.
+    needs = [{"text": "Review the kite", "href": "HTTPS://example.com/Pr/7"},
+             {"text": "Read the notes", "href": "HtTp://example.com/Notes"},
+             {"text": "Not a link", "href": "javascript:alert(1)"}]
+    hrefs = ["https://example.com/Pr/7", "http://example.com/Notes", None]
+    out = clean_agent({"id": SID, "needs_you": needs})
+    assert [n.get("href") for n in out["needs_you"]] == hrefs
+    reader = FakeReader()
+    w = Watcher(tmp_path, [reader], tz=UTC)
+    reader.agents = [_agent(state="waiting", at=T0, needs_you=needs)]
+    result = w.tick(T0)
+    assert result.errors == [] and result.written == [SID]  # one odd link drops nothing
+    doc = read_status(tmp_path / f"{SID}.json")
+    assert doc["state"] == "waiting" and [n.get("href") for n in doc["needs_you"]] == hrefs
+
+
 # ---------------------------------------------------------------- registry
 READER_FILE = '''
 from lamptown.status.readers import Batch

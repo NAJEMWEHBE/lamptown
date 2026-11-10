@@ -98,7 +98,8 @@ def test_bad_link_scheme_makes_the_file_invalid(tmp_path):
 
 
 def test_safe_href():
-    assert safe_href("HTTPS://example.com") == "HTTPS://example.com"
+    assert safe_href("HTTPS://example.com/Kite") == "https://example.com/Kite"  # scheme only
+    assert safe_href(" File:///tmp/kite.md ") == "file:///tmp/kite.md"
     for bad in ("javascript:alert(1)", "data:text/html,x", "vbscript:x", "//example.com", 7, None):
         assert safe_href(bad) is None
 

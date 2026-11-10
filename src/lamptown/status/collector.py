@@ -107,11 +107,15 @@ class Record:
 
 
 def safe_href(href: Any) -> str | None:
-    """Return ``href`` when its scheme is allowed, else ``None``."""
+    """Return ``href`` when its scheme is allowed, else ``None``. Schemes are case-insensitive;
+    the one returned is in lower case, the form agent-status/1 files must hold."""
     if not isinstance(href, str):
         return None
     text = href.strip()
-    return text if text.lower().startswith(ALLOWED_SCHEMES) and len(text) <= 2048 else None
+    scheme = next((s for s in ALLOWED_SCHEMES if text.lower().startswith(s)), None)
+    if scheme is None or len(text) > 2048:
+        return None
+    return scheme + text[len(scheme):]
 
 
 def _clean_links(items: Any, text_key: str) -> list[dict]:
