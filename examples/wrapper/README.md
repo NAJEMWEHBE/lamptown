@@ -16,9 +16,13 @@ lamptown status run --id render-trailer --stale-after 7200 -- make render
 Windows Task Scheduler: program `lamptown`, arguments
 `status run --id nightly-backup --kind job -- powershell -File backup.ps1`.
 
-While the command runs the file says `working` (rewritten every minute, so a killed wrapper
-turns red after `--stale-after`). Exit code 0 gives `ok`; anything else gives `error` with
-the exit code and the last lines of stderr. Output and the exit code pass through unchanged.
+While the command runs the file says `working` (rewritten every `--stale-after / 3` seconds
+and at least once a minute, so a killed wrapper turns red after `--stale-after`; with
+`--stale-after 0` there is no heartbeat and the lamp never ages). Exit code 0 gives `ok`;
+anything else gives `error` with the exit code, the time it took and how many lines went to
+stderr (never the text itself, which reaches your terminal as usual). A run stopped with Ctrl+C
+says "Interrupted" in place of the exit code, and a command that can't start says "Could not
+start" and the program's name. Output and the exit code pass through unchanged.
 
 From your own scripts, set fields directly:
 
