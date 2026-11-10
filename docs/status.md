@@ -18,8 +18,8 @@ too: [`spec/agent-status-1.md`](../spec/agent-status-1.md) and the JSON Schema
 | `ok` | green | running fine: idle or finished |
 | `waiting` | amber | needs you: a person must do something (`needs_you`) |
 | `working` | green in town (the building moves), cyan in rooms | running now |
-| `error` | red | something is wrong: failed, or `working` for longer than `stale_after` ("stopped responding") |
-| (quiet) | grey | `working` but silent for longer than `quiet_after` (default 6 h): "gone quiet", no longer an alert |
+| `error` | red | something is wrong: failed, or `working` for longer than `stale_after` ("stopped responding"), until it goes quiet |
+| (quiet) | grey | `working` but silent for longer than `quiet_after` (default 6 h) and its own `stale_after`: "gone quiet", no longer an alert. The spec says such a file is an `error`; here Lamptown departs from it on purpose (see [how lamps age](#how-lamps-age)) |
 
 Lamps age out, so old sessions don't glow forever: see [how lamps age](#how-lamps-age).
 
@@ -210,6 +210,19 @@ private_dirs = ["~/private"] # optional; sessions in or under these show as "Pri
 | `quiet_after` | 21600 (6 h) | a `working` file silent for longer (and longer than its `stale_after`) turns grey "Gone quiet". It no longer sets the building's lamp; a building with only quiet files is grey. |
 | `hide_after` | 86400 (1 day) | `ok` files older than this are left out. |
 | `expire_after` | 604800 (7 days) | `waiting`, `error` and quiet files older than this are left out, and so is an unreadable file whose own modification time is that old. |
+
+**Gone quiet and the spec.** agent-status/1 says a stale `working` file MUST be shown as `error`
+("stopped responding"). Lamptown does that from `stale_after` until `quiet_after` (6 h by default).
+After that it departs from the spec on purpose: the file shows as grey "gone quiet" (`missing` with
+`why: "quiet"` in room data, `"state": "missing", "quiet": true` in `lamptown status list --json`,
+`quiet` in the live town, QUIET rather than FAILED in the keeper's book). It is counted as quiet,
+not as an error, no longer sets the building's lamp, and sorts below `working` (above `ok`). A file
+whose own `stale_after` is `quiet_after` or longer never shows `error`: it goes straight from
+`working` to quiet once its `stale_after` has passed (an unconfirmed CI run does this, see
+[live.md](live.md#github-ci-runs-ci_gh)). An agent that went silent hours ago is history, not news;
+a reader of the same folder that follows the spec shows `error`. For the spec's behaviour in the
+town, set `quiet_after = 0` on every `status_dir` source (the live town and the Watcher follow the
+first one that reads the live status folder); `lamptown status list` always uses the 6 h default.
 
 The town deletes no file someone else wrote; `lamptown status clear` tidies the folder. The live
 Watcher (`lamptown watch`, the app) removes only the records it wrote itself, once they are older

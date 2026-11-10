@@ -173,9 +173,13 @@ kind = "ci_gh"          # needs gh (cli.github.com), logged in with `gh auth log
   timed out, a folder whose remote is not on GitHub: it says so once (in `lamptown watch`'s
   output and the app's log), waits (5 to 15 minutes) and tries again; the rest of the town goes
   on. If `gh` stops answering mid-run (asleep, offline), the run keeps its last known amber
-  pennant and is asked about again once `gh` answers; a run never confirmed again goes quiet
-  after 6 hours (`quiet_after`), never FAILED: CI that was not seen to fail never reads as failed.
-  (With `quiet_after = 0` or above 6 hours it ages to failed, like any silent record.)
+  pennant and is asked about again once `gh` answers. Its record's own `stale_after` is 6 hours,
+  as long as the default `quiet_after`, so a run never confirmed again goes straight to quiet
+  after 6 hours, never FAILED: CI that was not seen to fail never reads as failed. This is
+  Lamptown's deliberate departure from the spec's stale rule (see
+  [status.md](status.md#how-lamps-age)). With `quiet_after = 0` it turns FAILED after 6 hours, as
+  the spec says; with `quiet_after` above 6 hours it reads FAILED from 6 hours until
+  `quiet_after`, then quiet.
   It only runs `gh` from an absolute path: a named one, or one found on `PATH` (never the
   current folder, never a relative `PATH` entry).
 <!-- end L11 -->
@@ -186,8 +190,8 @@ kind = "ci_gh"          # needs gh (cli.github.com), logged in with `gh auth log
 |---|---|---|
 | `working` | stands at its building with a warm, steady lantern | the beam sweeps slowly over the water |
 | `waiting` | sits on the chair by the door, its lantern set down on the step; it slumps the longer it waits | a new wait flashes the lantern and rings its bell once; then a steady amber beam holds on the landing, and its light runs up the footpaths to the door that needs you |
-| `error` (failed, or working but silent past `stale_after`) | steps aside onto the path, its lantern red and lowered | the same in red (a flash, no bell) |
-| quiet (working, silent past `quiet_after`, 6 h by default) | stands with a dark lantern and a grey "?" | nothing: a quiet agent is no longer an alert |
+| `error` (failed, or working but silent past `stale_after`, until it goes quiet) | steps aside onto the path, its lantern red and lowered | the same in red (a flash, no bell) |
+| quiet (working, silent past `quiet_after`, 6 h by default, and past its own `stale_after`: the spec would show `error` here; Lamptown departs from it on purpose, see [status.md](status.md#how-lamps-age)) | stands with a dark lantern and a grey "?" | nothing: a quiet agent is no longer an alert |
 | `ok` (done) | is gone; its lantern hangs on the hook by the door for 15 minutes | nothing |
 
 - **Where an agent stands.** The reader's own choice (`x-plot`), else the clock tower for
