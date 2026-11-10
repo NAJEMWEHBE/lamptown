@@ -4,6 +4,17 @@ All notable changes to Lamptown are written down here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Lamptown uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.2.2 (Unreleased)
+
+### Fixed
+
+- A contest with a long title, a long pick name or a long file name and no title keeps its room:
+  its label and title are cut to the room's 120 characters (the label cuts the title, never what
+  to do) instead of the whole contest room turning into an error.
+- A reader that sends a link with an upper-case scheme (`HTTPS://...`) no longer freezes its
+  status: the town writes the scheme in lower case, as agent-status/1 asks, so the Watcher stops
+  refusing that record on every tick.
+
 ## 0.2.1
 
 Fixes from a whole-project review: privacy gaps closed, crashes fixed, idle rooms made still.
