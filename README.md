@@ -128,7 +128,8 @@ notify = ["lamptown", "status", "hook", "codex"]
 ```
 
 For a tool with no hooks, a script or a cron job, put the wrapper in front of it. The lamp is
-`working` while it runs, then `ok` or `error` with the last lines of stderr:
+`working` while it runs, then `ok`, or `error` with the exit code and how many lines went to
+stderr (never the text itself):
 
 ```sh
 lamptown status run --id nightly-backup --title "Nightly backup" --kind job -- ./backup.sh
