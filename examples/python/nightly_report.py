@@ -15,4 +15,5 @@ with agent_status("nightly-report", "Nightly report", agent="cron", kind="job") 
         status.progress(number - 1, len(STEPS))
         time.sleep(0.5)  # the real work goes here
     status.progress(len(STEPS), len(STEPS))
-# a clean exit writes "ok"; an exception writes "error" with its message and re-raises
+# a clean exit writes "ok"; an exception writes "error" with its type only (its text can hold
+# paths and secrets) and re-raises
