@@ -287,7 +287,7 @@ def _tidy(v: float | None) -> int | float | None:
 def _spec_base(name: str, title: str, stamp: dt.datetime, href: str) -> dict[str, Any]:
     return {
         "name": name,
-        "title": title or name,
+        "title": (title or name)[:120],  # the file stem has no length limit of its own
         "date": stamp.date().isoformat(),
         "stamp": stamp,
         "href": href,
@@ -450,24 +450,32 @@ def _one(j: Any, name: str, p: Path, stamp: dt.datetime, href: str) -> dict:
 
 
 # ----------------------------------------------------------------------------- the room data
+def _fit(base: str, tail: str, n: int = 120) -> str:
+    """``base + tail`` in at most ``n`` characters (the schema's label length): the base is cut
+    so the tail, the part that says what to do, stays whole. A tail too long for that (a long
+    pick name) keeps the base's first 24 characters and is cut at the end."""
+    if len(base) + len(tail) <= n:
+        return base + tail
+    keep = max(n - 3 - len(tail), 24)
+    out = (base[:keep].rstrip() + "..." if keep < len(base) else base) + tail
+    return out if len(out) <= n else out[: n - 3].rstrip() + "..."
+
+
 def _label(c: dict | None) -> str:
     if c is None:
         return "No contest yet"
-    t = c["title"]
     st = c["state"]
     if st == "ok":
-        return (
-            f"{t}: picked {c['pick']['name']}"
-            if c["pick"]["code"]
-            else f"{t}: decided, none picked"
-        )
-    if st == "waiting":
-        return f"{t}: results are in, unblind?" if c["step"] == "unblind" else f"{t}: pick one"
-    if st == "working":
-        return f"{t}: {c['say'].lower()}"
-    if st == "error":
-        return f"{t}: can't read it"
-    return f"{t}: no entries yet"
+        tail = f": picked {c['pick']['name']}" if c["pick"]["code"] else ": decided, none picked"
+    elif st == "waiting":
+        tail = ": results are in, unblind?" if c["step"] == "unblind" else ": pick one"
+    elif st == "working":
+        tail = f": {c['say'].lower()}"
+    elif st == "error":
+        tail = ": can't read it"
+    else:
+        tail = ": no entries yet"
+    return _fit(c["title"], tail)
 
 
 def finish(contests: list[dict], now: dt.datetime) -> dict[str, Any]:

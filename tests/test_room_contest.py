@@ -290,6 +290,37 @@ def test_the_documented_example_reads():
     assert [x["code"] for x in c["cards"] if x["finalist"]] == ["C02", "C01"]
 
 
+def _kept_by_the_room(r: dict) -> None:
+    b = B.Building(id="contest", type="contest", label="Contest", plot="contest")
+    assert B.check_room(b, r) is r  # not swapped for an error room
+
+
+def test_a_long_title_keeps_the_label_inside_the_schema(tmp_path):
+    long = "A very long contest title about naming the winter soup " * 3
+    r = from_json(write(tmp_path, dict(BASIC, title=long)))
+    assert r["state"] == "waiting" and len(r["label"]) <= 120
+    assert r["label"].endswith("...: results are in, unblind?")  # the base is cut, not the end
+    _kept_by_the_room(r)
+    big = {"code": "S3", "name": "Pumpkin Parade " * 8}
+    j = dict(BASIC, title=long, entries=[*BASIC["entries"], big], pick="S3")
+    j["rankings"] = {"A": ["S2", "S1", "S3"]}
+    r = from_json(write(tmp_path, j, "picked.json"))
+    assert r["state"] == "ok" and len(r["label"]) <= 120 and ": picked Pumpkin" in r["label"]
+    _kept_by_the_room(r)
+
+
+def test_a_long_file_name_with_no_title_fits(tmp_path):
+    stem = "night-soup-contest-" * 7  # 133 characters, the fallback title (a short path)
+    r = from_json(write(tmp_path, "{not json", stem + ".json"))
+    assert r["state"] == "error" and r["contests"][0]["name"] == stem
+    assert len(r["title"]) <= 120 and len(r["contests"][0]["title"]) <= 120
+    assert len(r["label"]) <= 120 and r["label"].endswith(": can't read it")
+    _kept_by_the_room(r)
+    r = from_json(write(tmp_path, dict(BASIC, title=None), "x" * 130 + ".json"))
+    assert len(r["title"]) <= 120 and len(r["label"]) <= 120
+    _kept_by_the_room(r)
+
+
 # ----------------------------------------------------------------------------- the room
 from _browser import browser  # noqa: E402  (shared headless browser)
 from test_town import run  # noqa: E402
